@@ -1,7 +1,7 @@
 # INFRA VR 0.13
 
 A VR mod for **INFRA** (Loiste Interactive, 2016) with motion controls. It works like
-[L4D2VR](https://github.com/keyou91/l4d2vr) and Portal 2 VR: a `d3d9.dll`
+L4D2VR(https://github.com/keyou91/l4d2vr) and Portal 2 VR(https://github.com/Gistix/portal2vr): a `d3d9.dll`
 in INFRA's `bin` folder hooks the Source engine, the game is rendered through DXVK (Vulkan), and
 the frames go to SteamVR through OpenVR.
 
@@ -155,19 +155,6 @@ the frames go to SteamVR through OpenVR.
   B (right) is reload and also "back" in menus.
 - No more `IVRCompositor::Submit failed ... 101` at startup (frames are only sent once SteamVR has
   handed out the first poses).
-
-## Why version 2 showed a black headset
-
-INFRA does not run on the Source SDK 2013 engine. Its binaries are the **Portal 2 / Alien Swarm
-branch** of Source (same interfaces as Portal 2: `VEngineClient015`, `VClient016`,
-`VEngineRenderView013`, `VMaterialSystem080`...). Version 2 used SDK 2013 interface versions and
-function numbers, so its engine hooks never installed and nothing was ever drawn into the headset
-textures. On top of that, INFRA's material system refuses to create render targets after the game
-has started, so the eye textures could not be created either.
-
-This version is rebuilt on layouts read directly out of INFRA's own `engine.dll`, `client.dll`,
-`server.dll` and `materialsystem.dll`, and every function it hooks is checked against INFRA's
-binaries (the mod finds them again by signature/RTTI if an address ever moves). It uses OpenVR.
 
 ## Requirements
 
