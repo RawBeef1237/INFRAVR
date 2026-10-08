@@ -307,7 +307,7 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
 
 // CViewRender::DrawViewModels(const CViewSetup &view, bool drawViewModel): draws the first-person
 // models into the current render target, using view.width/height and view.fovViewmodel. Each eye
-// must get its own eye view (0.10 and earlier passed the flat 1920x1080 view once, which put the
+// must get its own eye view (0.6.1 and earlier passed the flat 1920x1080 view once, which put the
 // arms in the top-left corner of the left eye only).
 void IVR_FASTCALL RenderCameraWeaponDetour(void *self, void *edx, CViewSetup *view, bool drawViewModel)
 {
