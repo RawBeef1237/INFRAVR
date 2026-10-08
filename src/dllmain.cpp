@@ -1,0 +1,598 @@
+// INFRA VR - d3d9.dll proxy (INFRA\bin\d3d9.dll).
+//
+// shaderapidx9.dll loads "d3d9.dll" from INFRA\bin. That is this DLL. It
+//   1. loads openvr_api.dll and initialises SteamVR,
+//   2. chain-loads stock DXVK (INFRA\bin\dxvk_d3d9.dll) - DXVK sees the loaded OpenVR
+//      runtime and creates its Vulkan device with the extensions SteamVR needs,
+//   3. hooks the D3D9 device (Present/Reset/CreateTexture) and, once client.dll is up,
+//      the Source engine (see hooks_game.cpp).
+#include "common.h"
+#include "config.h"
+#include "d3d_vr.h"
+#include "game.h"
+#include "hooks.h"
+#include "openvr_rt.h"
+#include "vr.h"
+
+#include <d3d9.h>
+#include <dxgi.h>
+#include <vulkan/vulkan_core.h>
+#include <cstring>
+#include <vector>
+#include <cstdio>
+
+using namespace ivr;
+
+namespace ivr {
+bool InstallClientHooks();
+bool InstallServerHooks();
+} // namespace ivr
+
+namespace {
+
+HMODULE g_realD3D9 = nullptr;
+bool g_vrInitDone = false;
+
+using Direct3DCreate9Fn = IDirect3D9 *(WINAPI *)(UINT);
+using Direct3DCreate9ExFn = HRESULT(WINAPI *)(UINT, IDirect3D9Ex **);
+using CreateDeviceFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3D9 *, UINT, D3DDEVTYPE, HWND, DWORD,
+                                                    D3DPRESENT_PARAMETERS *, IDirect3DDevice9 **);
+using CreateDeviceExFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3D9Ex *, UINT, D3DDEVTYPE, HWND, DWORD,
+                                                      D3DPRESENT_PARAMETERS *, D3DDISPLAYMODEEX *,
+                                                      IDirect3DDevice9Ex **);
+using PresentFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, const RECT *, const RECT *, HWND, const RGNDATA *);
+using PresentExFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9Ex *, const RECT *, const RECT *, HWND,
+                                                 const RGNDATA *, DWORD);
+using ResetFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, D3DPRESENT_PARAMETERS *);
+using ResetExFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9Ex *, D3DPRESENT_PARAMETERS *, D3DDISPLAYMODEEX *);
+using CreateTextureFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
+                                                     IDirect3DTexture9 **, HANDLE *);
+
+Hook<CreateDeviceFn> g_hkCreateDevice;
+Hook<CreateDeviceExFn> g_hkCreateDeviceEx;
+Hook<PresentFn> g_hkPresent;
+Hook<PresentExFn> g_hkPresentEx;
+Hook<ResetFn> g_hkReset;
+Hook<ResetExFn> g_hkResetEx;
+Hook<CreateTextureFn> g_hkCreateTexture;
+
+// Trace-only device hooks (active for one eye render, see D3DVR::trace)
+using SetRenderTargetFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, DWORD, IDirect3DSurface9 *);
+using SetViewportFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, const D3DVIEWPORT9 *);
+using StretchRectFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, IDirect3DSurface9 *, const RECT *,
+                                                   IDirect3DSurface9 *, const RECT *, D3DTEXTUREFILTERTYPE);
+using SetDepthStencilFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, IDirect3DSurface9 *);
+using DrawIndexedFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT);
+using DrawFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, UINT, UINT);
+Hook<SetRenderTargetFn> g_hkSetRenderTarget;
+Hook<SetViewportFn> g_hkSetViewport;
+Hook<StretchRectFn> g_hkStretchRect;
+Hook<SetDepthStencilFn> g_hkSetDepthStencil;
+Hook<DrawIndexedFn> g_hkDrawIndexed;
+Hook<DrawFn> g_hkDraw;
+
+void TraceDraws()
+{
+    if (g_D3D.traceDraws > 0)
+        IVR_LOG("  trace:   ... %d draws", g_D3D.traceDraws);
+    g_D3D.traceDraws = 0;
+}
+
+HRESULT STDMETHODCALLTYPE hkSetRenderTarget(IDirect3DDevice9 *self, DWORD index, IDirect3DSurface9 *surf)
+{
+    if (g_D3D.trace)
+    {
+        TraceDraws();
+        char what[32];
+        sprintf(what, "SetRenderTarget[%lu]", (unsigned long)index);
+        g_D3D.TraceSurface(what, surf);
+    }
+    return g_hkSetRenderTarget.original(self, index, surf);
+}
+
+HRESULT STDMETHODCALLTYPE hkSetDepthStencil(IDirect3DDevice9 *self, IDirect3DSurface9 *surf)
+{
+    if (g_D3D.trace)
+        g_D3D.TraceSurface("SetDepthStencil", surf);
+    return g_hkSetDepthStencil.original(self, surf);
+}
+
+HRESULT STDMETHODCALLTYPE hkSetViewport(IDirect3DDevice9 *self, const D3DVIEWPORT9 *vp)
+{
+    if (g_D3D.trace && vp)
+    {
+        TraceDraws();
+        IVR_LOG("  trace: SetViewport %lu,%lu %lux%lu", vp->X, vp->Y, vp->Width, vp->Height);
+    }
+    return g_hkSetViewport.original(self, vp);
+}
+
+HRESULT STDMETHODCALLTYPE hkStretchRect(IDirect3DDevice9 *self, IDirect3DSurface9 *src, const RECT *sr,
+                                        IDirect3DSurface9 *dst, const RECT *dr, D3DTEXTUREFILTERTYPE f)
+{
+    if (g_D3D.trace)
+    {
+        TraceDraws();
+        RECT none = {-1, -1, -1, -1};
+        g_D3D.TraceSurface("StretchRect from", src, sr ? sr : &none);
+        g_D3D.TraceSurface("              to", dst, dr ? dr : &none);
+    }
+    D3DSURFACE_DESC dd{};
+    if (g_D3D.learnCameraCopy && dst && dr && dr->left == 0 && dr->top == 0 && dr->right == g_D3D.learnW &&
+        dr->bottom == g_D3D.learnH && SUCCEEDED(dst->GetDesc(&dd)) && (LONG)dd.Width >= g_D3D.learnW &&
+        (LONG)dd.Height >= g_D3D.learnH)
+    {
+        g_D3D.learnCameraCopy = false;
+        if (g_D3D.cameraSurface != dst)
+            IVR_LOG("Camera screen texture: %p %ux%u", (void *)dst, dd.Width, dd.Height);
+        g_D3D.cameraSurface = dst;
+    }
+    else if (g_D3D.blockCameraCopy && dst && dst == g_D3D.cameraSurface)
+        return D3D_OK; // keep the picture from the camera lens
+    return g_hkStretchRect.original(self, src, sr, dst, dr, f);
+}
+
+HRESULT STDMETHODCALLTYPE hkDrawIndexed(IDirect3DDevice9 *self, D3DPRIMITIVETYPE t, INT bv, UINT mi, UINT nv, UINT si,
+                                        UINT pc)
+{
+    if (g_D3D.trace)
+        ++g_D3D.traceDraws;
+    return g_hkDrawIndexed.original(self, t, bv, mi, nv, si, pc);
+}
+
+HRESULT STDMETHODCALLTYPE hkDraw(IDirect3DDevice9 *self, D3DPRIMITIVETYPE t, UINT sv, UINT pc)
+{
+    if (g_D3D.trace)
+        ++g_D3D.traceDraws;
+    return g_hkDraw.original(self, t, sv, pc);
+}
+
+// ---- VR / DXVK bring-up ---------------------------------------------------------------------
+// On PCs with two GPUs (e.g. a CPU with built-in graphics plus a graphics card) DXVK may pick a
+// different GPU than the one SteamVR runs on; handing SteamVR a picture from the other GPU can crash
+// inside the graphics driver. Tell DXVK to use SteamVR's GPU unless the user chose one themselves.
+void PickHeadsetGpu(const std::string &conf)
+{
+    char existing[256];
+    if (GetEnvironmentVariableA("DXVK_FILTER_DEVICE_NAME", existing, sizeof(existing)))
+    {
+        IVR_LOG("GPU: DXVK_FILTER_DEVICE_NAME is set to \"%s\", leaving it", existing);
+        return;
+    }
+    if (FILE *f = fopen(conf.c_str(), "r"))
+    {
+        char line[512];
+        bool userFilter = false;
+        while (fgets(line, sizeof(line), f))
+        {
+            const char *p = line;
+            while (*p == ' ' || *p == '\t')
+                ++p;
+            if (strncmp(p, "dxvk.deviceFilter", 17) == 0)
+                userFilter = true;
+        }
+        fclose(f);
+        if (userFilter)
+        {
+            IVR_LOG("GPU: dxvk.deviceFilter is set in dxvk.conf, leaving it");
+            return;
+        }
+    }
+    int32_t adapter = -1;
+    g_VR.m_system->GetDXGIOutputInfo(&adapter);
+    HMODULE dxgi = LoadLibraryA("dxgi.dll");
+    using CreateFactoryFn = HRESULT(WINAPI *)(REFIID, void **);
+    auto create = dxgi ? reinterpret_cast<CreateFactoryFn>(GetProcAddress(dxgi, "CreateDXGIFactory1")) : nullptr;
+    IDXGIFactory1 *factory = nullptr;
+    if (!create || FAILED(create(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(&factory))) || !factory)
+    {
+        IVR_LOG("GPU: could not list the GPUs (DXGI unavailable)");
+        return;
+    }
+    LUID luid{};
+    bool haveLuid = false;
+    IDXGIAdapter1 *a = nullptr;
+    for (UINT i = 0; factory->EnumAdapters1(i, &a) != DXGI_ERROR_NOT_FOUND; ++i)
+    {
+        DXGI_ADAPTER_DESC1 d{};
+        a->GetDesc1(&d);
+        a->Release();
+        char name[128] = {};
+        WideCharToMultiByte(CP_UTF8, 0, d.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
+        IVR_LOG("GPU %u: %s%s", i, name, (int32_t)i == adapter ? "  <-- SteamVR's GPU" : "");
+        if ((int32_t)i == adapter)
+        {
+            luid = d.AdapterLuid;
+            haveLuid = true;
+        }
+    }
+    factory->Release();
+    if (!haveLuid)
+        return;
+
+    // DXVK filters by its Vulkan device name, which can differ from the Windows name: find the
+    // Vulkan device with the same LUID and use exactly its name.
+    HMODULE vk = LoadLibraryA("vulkan-1.dll");
+    auto gipa = vk ? reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(vk, "vkGetInstanceProcAddr")) : nullptr;
+    if (!gipa)
+        return;
+    auto createInstance = reinterpret_cast<PFN_vkCreateInstance>(gipa(nullptr, "vkCreateInstance"));
+    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    app.apiVersion = VK_MAKE_VERSION(1, 1, 0);
+    VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    ci.pApplicationInfo = &app;
+    VkInstance inst = VK_NULL_HANDLE;
+    if (!createInstance || createInstance(&ci, nullptr, &inst) != VK_SUCCESS)
+        return;
+    auto enumDevices = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(gipa(inst, "vkEnumeratePhysicalDevices"));
+    auto props2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(gipa(inst, "vkGetPhysicalDeviceProperties2"));
+    auto destroy = reinterpret_cast<PFN_vkDestroyInstance>(gipa(inst, "vkDestroyInstance"));
+    std::string chosen;
+    int sameName = 0;
+    if (enumDevices && props2)
+    {
+        uint32_t n = 0;
+        enumDevices(inst, &n, nullptr);
+        std::vector<VkPhysicalDevice> devs(n);
+        enumDevices(inst, &n, devs.data());
+        std::vector<std::string> names;
+        for (VkPhysicalDevice dev : devs)
+        {
+            VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+            VkPhysicalDeviceProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            p.pNext = &id;
+            props2(dev, &p);
+            names.push_back(p.properties.deviceName);
+            if (id.deviceLUIDValid && memcmp(id.deviceLUID, &luid, sizeof(luid)) == 0)
+                chosen = p.properties.deviceName;
+        }
+        for (const std::string &nm : names)
+            if (!chosen.empty() && nm.find(chosen) != std::string::npos)
+                ++sameName;
+        IVR_LOG("GPU: %u Vulkan device(s)", n);
+    }
+    if (destroy)
+        destroy(inst, nullptr);
+    if (chosen.empty())
+    {
+        IVR_LOG("GPU: SteamVR's GPU not found among the Vulkan devices - leaving the choice to DXVK");
+        return;
+    }
+    if (sameName > 1)
+    {
+        IVR_LOG("GPU: %d GPUs are called \"%s\" - leaving the choice to DXVK", sameName, chosen.c_str());
+        return;
+    }
+    SetEnvironmentVariableA("DXVK_FILTER_DEVICE_NAME", chosen.c_str());
+    IVR_LOG("GPU: DXVK will render on \"%s\", the GPU SteamVR uses", chosen.c_str());
+}
+
+void InitVROnce()
+{
+    if (g_vrInitDone)
+        return;
+    g_vrInitDone = true;
+
+    // DXVK options for VR (no vsync against the monitor, low latency) unless the user has their own.
+    std::string conf = ModuleDir() + "infravr\\dxvk.conf";
+    char existing[8];
+    if (!GetEnvironmentVariableA("DXVK_CONFIG_FILE", existing, sizeof(existing)) &&
+        GetFileAttributesA(conf.c_str()) != INVALID_FILE_ATTRIBUTES)
+        SetEnvironmentVariableA("DXVK_CONFIG_FILE", conf.c_str());
+
+    if (g_VR.Init())
+    {
+        IVR_LOG("SteamVR initialised");
+        PickHeadsetGpu(conf);
+    }
+    else
+        IVR_ERR("SteamVR is not available - INFRA will run flat. Start SteamVR and your headset first.");
+}
+
+HMODULE RealD3D9()
+{
+    if (g_realD3D9)
+        return g_realD3D9;
+    std::string dxvk = ModuleDir() + "dxvk_d3d9.dll";
+    g_realD3D9 = LoadLibraryExA(dxvk.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (g_realD3D9)
+    {
+        IVR_LOG("Loaded %s", dxvk.c_str());
+        return g_realD3D9;
+    }
+    IVR_ERR("%s not found (error %lu) - using the system d3d9.dll, the headset will stay black", dxvk.c_str(),
+            GetLastError());
+    char sys[MAX_PATH];
+    GetSystemDirectoryA(sys, MAX_PATH);
+    g_realD3D9 = LoadLibraryA((std::string(sys) + "\\d3d9.dll").c_str());
+    return g_realD3D9;
+}
+
+template <typename T>
+T RealProc(const char *name)
+{
+    HMODULE m = RealD3D9();
+    return m ? reinterpret_cast<T>(GetProcAddress(m, name)) : nullptr;
+}
+
+// ---- engine bring-up (main thread, from Present) ------------------------------------------------
+void TryInitEngine()
+{
+    static bool clientDone = false, serverDone = false;
+    static double nextTry = 0;
+    if (serverDone && clientDone)
+        return;
+    double now = NowSeconds();
+    if (now < nextTry)
+        return;
+    nextTry = now + 2.0;
+    if (!clientDone && GetModuleHandleA("client.dll") && GetModuleHandleA("engine.dll"))
+    {
+        clientDone = true;
+        if (g_Game.Init() && InstallClientHooks())
+        {
+            IVR_LOG("Engine hooks installed");
+            g_Game.ApplyVRSettings();
+            g_Game.ExecuteCommand("r_drawviewmodel 1");
+        }
+        else
+            IVR_ERR("Engine hooks could not be installed - see above");
+    }
+    if (clientDone && !serverDone && GetModuleHandleA("server.dll"))
+    {
+        serverDone = true;
+        if (!InstallServerHooks())
+            IVR_ERR("Server hooks unavailable - picked-up objects will be held in front of your eyes");
+    }
+}
+
+void OnPresent()
+{
+    TryInitEngine();
+    g_D3D.OnPresent();
+}
+
+void AfterPresent()
+{
+    if (!g_VR.Ok() || !g_Mod.Active())
+        return;
+    g_VR.m_compositor->PostPresentHandoff();
+    g_Mod.OnFrame();
+}
+
+void AdjustPresentParams(D3DPRESENT_PARAMETERS *pp)
+{
+    if (pp && g_VR.Ok())
+        pp->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE; // the headset paces the game, not the monitor
+}
+
+// ---- device hooks -----------------------------------------------------------------------------
+HRESULT STDMETHODCALLTYPE hkPresent(IDirect3DDevice9 *self, const RECT *src, const RECT *dst, HWND wnd,
+                                    const RGNDATA *dirty)
+{
+    OnPresent();
+    HRESULT hr = g_hkPresent.original(self, src, dst, wnd, dirty);
+    AfterPresent();
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE hkPresentEx(IDirect3DDevice9Ex *self, const RECT *src, const RECT *dst, HWND wnd,
+                                      const RGNDATA *dirty, DWORD flags)
+{
+    OnPresent();
+    HRESULT hr = g_hkPresentEx.original(self, src, dst, wnd, dirty, flags);
+    AfterPresent();
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE hkReset(IDirect3DDevice9 *self, D3DPRESENT_PARAMETERS *pp)
+{
+    g_D3D.OnBeforeReset();
+    AdjustPresentParams(pp);
+    return g_hkReset.original(self, pp);
+}
+
+HRESULT STDMETHODCALLTYPE hkResetEx(IDirect3DDevice9Ex *self, D3DPRESENT_PARAMETERS *pp, D3DDISPLAYMODEEX *mode)
+{
+    g_D3D.OnBeforeReset();
+    AdjustPresentParams(pp);
+    return g_hkResetEx.original(self, pp, mode);
+}
+
+HRESULT STDMETHODCALLTYPE hkCreateTexture(IDirect3DDevice9 *self, UINT w, UINT h, UINT levels, DWORD usage,
+                                          D3DFORMAT fmt, D3DPOOL pool, IDirect3DTexture9 **out, HANDLE *shared)
+{
+    HRESULT hr = g_hkCreateTexture.original(self, w, h, levels, usage, fmt, pool, out, shared);
+    if (SUCCEEDED(hr) && out && *out && g_D3D.capturing >= 0)
+        g_D3D.OnTextureCreated(*out, w, h, usage);
+    return hr;
+}
+
+void HookDevice(IDirect3DDevice9 *device, HWND window)
+{
+    void **vt = *reinterpret_cast<void ***>(device);
+    if (!g_hkPresent.Installed())
+        g_hkPresent.Install("IDirect3DDevice9::Present", vt[17], reinterpret_cast<void *>(&hkPresent));
+    if (!g_hkReset.Installed())
+        g_hkReset.Install("IDirect3DDevice9::Reset", vt[16], reinterpret_cast<void *>(&hkReset));
+    if (!g_hkCreateTexture.Installed())
+        g_hkCreateTexture.Install("IDirect3DDevice9::CreateTexture", vt[23],
+                                  reinterpret_cast<void *>(&hkCreateTexture));
+    if (!g_hkStretchRect.Installed())
+    {
+        g_hkStretchRect.Install("IDirect3DDevice9::StretchRect", vt[34], reinterpret_cast<void *>(&hkStretchRect));
+        g_hkSetRenderTarget.Install("IDirect3DDevice9::SetRenderTarget", vt[37],
+                                    reinterpret_cast<void *>(&hkSetRenderTarget));
+        g_hkSetDepthStencil.Install("IDirect3DDevice9::SetDepthStencilSurface", vt[39],
+                                    reinterpret_cast<void *>(&hkSetDepthStencil));
+        g_hkSetViewport.Install("IDirect3DDevice9::SetViewport", vt[47], reinterpret_cast<void *>(&hkSetViewport));
+        g_hkDraw.Install("IDirect3DDevice9::DrawPrimitive", vt[81], reinterpret_cast<void *>(&hkDraw));
+        g_hkDrawIndexed.Install("IDirect3DDevice9::DrawIndexedPrimitive", vt[82],
+                                reinterpret_cast<void *>(&hkDrawIndexed));
+    }
+    IDirect3DDevice9Ex *ex = nullptr;
+    if (SUCCEEDED(device->QueryInterface(__uuidof(IDirect3DDevice9Ex), reinterpret_cast<void **>(&ex))) && ex)
+    {
+        void **vtx = *reinterpret_cast<void ***>(ex);
+        if (!g_hkPresentEx.Installed())
+            g_hkPresentEx.Install("IDirect3DDevice9Ex::PresentEx", vtx[121], reinterpret_cast<void *>(&hkPresentEx));
+        if (!g_hkResetEx.Installed())
+            g_hkResetEx.Install("IDirect3DDevice9Ex::ResetEx", vtx[132], reinterpret_cast<void *>(&hkResetEx));
+        ex->Release();
+    }
+    g_D3D.OnDeviceCreated(device);
+    g_Mod.gameWindow = window;
+    if (g_VR.Ok() && !g_Mod.Active())
+        g_Mod.Init();
+}
+
+HRESULT STDMETHODCALLTYPE hkCreateDevice(IDirect3D9 *self, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD flags,
+                                         D3DPRESENT_PARAMETERS *pp, IDirect3DDevice9 **out)
+{
+    AdjustPresentParams(pp);
+    HRESULT hr = g_hkCreateDevice.original(self, adapter, type, focus, flags, pp, out);
+    if (SUCCEEDED(hr) && out && *out)
+    {
+        IVR_LOG("D3D9 device created: %ux%u, windowed %d, MSAA %d", pp->BackBufferWidth, pp->BackBufferHeight,
+                pp->Windowed, (int)pp->MultiSampleType);
+        HookDevice(*out, pp->hDeviceWindow ? pp->hDeviceWindow : focus);
+    }
+    else
+        IVR_ERR("CreateDevice failed: 0x%08lx", (unsigned long)hr);
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE hkCreateDeviceEx(IDirect3D9Ex *self, UINT adapter, D3DDEVTYPE type, HWND focus,
+                                           DWORD flags, D3DPRESENT_PARAMETERS *pp, D3DDISPLAYMODEEX *mode,
+                                           IDirect3DDevice9Ex **out)
+{
+    AdjustPresentParams(pp);
+    HRESULT hr = g_hkCreateDeviceEx.original(self, adapter, type, focus, flags, pp, mode, out);
+    if (SUCCEEDED(hr) && out && *out)
+    {
+        IVR_LOG("D3D9Ex device created: %ux%u, windowed %d, MSAA %d", pp->BackBufferWidth, pp->BackBufferHeight,
+                pp->Windowed, (int)pp->MultiSampleType);
+        HookDevice(*out, pp->hDeviceWindow ? pp->hDeviceWindow : focus);
+    }
+    else
+        IVR_ERR("CreateDeviceEx failed: 0x%08lx", (unsigned long)hr);
+    return hr;
+}
+
+void HookInterface(IDirect3D9 *d3d)
+{
+    if (!d3d)
+        return;
+    void **vt = *reinterpret_cast<void ***>(d3d);
+    if (!g_hkCreateDevice.Installed())
+        g_hkCreateDevice.Install("IDirect3D9::CreateDevice", vt[16], reinterpret_cast<void *>(&hkCreateDevice));
+    IDirect3D9Ex *ex = nullptr;
+    if (SUCCEEDED(d3d->QueryInterface(__uuidof(IDirect3D9Ex), reinterpret_cast<void **>(&ex))) && ex)
+    {
+        void **vtx = *reinterpret_cast<void ***>(ex);
+        if (!g_hkCreateDeviceEx.Installed())
+            g_hkCreateDeviceEx.Install("IDirect3D9Ex::CreateDeviceEx", vtx[20],
+                                       reinterpret_cast<void *>(&hkCreateDeviceEx));
+        ex->Release();
+    }
+}
+
+} // namespace
+
+// ---- exports ------------------------------------------------------------------------------------
+extern "C" {
+
+IDirect3D9 *WINAPI Direct3DCreate9(UINT sdk)
+{
+    InitVROnce(); // must happen before DXVK creates its Vulkan instance
+    auto fn = RealProc<Direct3DCreate9Fn>("Direct3DCreate9");
+    IDirect3D9 *d3d = fn ? fn(sdk) : nullptr;
+    HookInterface(d3d);
+    return d3d;
+}
+
+HRESULT WINAPI Direct3DCreate9Ex(UINT sdk, IDirect3D9Ex **out)
+{
+    InitVROnce();
+    auto fn = RealProc<Direct3DCreate9ExFn>("Direct3DCreate9Ex");
+    if (!fn)
+        return D3DERR_NOTAVAILABLE;
+    HRESULT hr = fn(sdk, out);
+    if (SUCCEEDED(hr) && out && *out)
+        HookInterface(*out);
+    return hr;
+}
+
+int WINAPI D3DPERF_BeginEvent(D3DCOLOR col, LPCWSTR name)
+{
+    auto fn = RealProc<int(WINAPI *)(D3DCOLOR, LPCWSTR)>("D3DPERF_BeginEvent");
+    return fn ? fn(col, name) : 0;
+}
+
+int WINAPI D3DPERF_EndEvent()
+{
+    auto fn = RealProc<int(WINAPI *)()>("D3DPERF_EndEvent");
+    return fn ? fn() : 0;
+}
+
+void WINAPI D3DPERF_SetMarker(D3DCOLOR col, LPCWSTR name)
+{
+    if (auto fn = RealProc<void(WINAPI *)(D3DCOLOR, LPCWSTR)>("D3DPERF_SetMarker"))
+        fn(col, name);
+}
+
+void WINAPI D3DPERF_SetRegion(D3DCOLOR col, LPCWSTR name)
+{
+    if (auto fn = RealProc<void(WINAPI *)(D3DCOLOR, LPCWSTR)>("D3DPERF_SetRegion"))
+        fn(col, name);
+}
+
+BOOL WINAPI D3DPERF_QueryRepeatFrame()
+{
+    auto fn = RealProc<BOOL(WINAPI *)()>("D3DPERF_QueryRepeatFrame");
+    return fn ? fn() : FALSE;
+}
+
+void WINAPI D3DPERF_SetOptions(DWORD options)
+{
+    if (auto fn = RealProc<void(WINAPI *)(DWORD)>("D3DPERF_SetOptions"))
+        fn(options);
+}
+
+DWORD WINAPI D3DPERF_GetStatus()
+{
+    auto fn = RealProc<DWORD(WINAPI *)()>("D3DPERF_GetStatus");
+    return fn ? fn() : 0;
+}
+
+HRESULT WINAPI Direct3DShaderValidatorCreate9()
+{
+    auto fn = RealProc<HRESULT(WINAPI *)()>("Direct3DShaderValidatorCreate9");
+    return fn ? fn() : E_NOTIMPL;
+}
+
+void WINAPI PSGPError() {}
+void WINAPI PSGPSampleTexture() {}
+void WINAPI DebugSetLevel() {}
+void WINAPI DebugSetMute() {}
+
+void WINAPI Direct3D9EnableMaximizedWindowedModeShim(BOOL enable)
+{
+    if (auto fn = RealProc<void(WINAPI *)(BOOL)>("Direct3D9EnableMaximizedWindowedModeShim"))
+        fn(enable);
+}
+
+} // extern "C"
+
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH)
+    {
+        DisableThreadLibraryCalls(instance);
+        LogInit((GameDir() + "infravr.log").c_str());
+        IVR_LOG("INFRA VR 3.13 loaded from %s", ModuleDir().c_str());
+        LoadConfig();
+        HooksInit();
+    }
+    return TRUE;
+}

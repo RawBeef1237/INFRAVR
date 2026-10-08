@@ -1,0 +1,193 @@
+// INFRA VR - Source engine access for INFRA (Portal 2 / Alien Swarm engine branch).
+//
+// Every index/offset below was verified against INFRA's own binaries
+// (engine.dll 2017-10-06, client.dll/server.dll 2017-12-18). They are NOT the Source
+// SDK 2013 numbers - INFRA runs on the Portal 2 branch of the engine.
+#pragma once
+#include "common.h"
+#include "mathlib.h"
+#include "vfunc.h"
+
+namespace ivr {
+
+// --- CViewSetup (Alien Swarm / Portal 2 layout, 0xF4 bytes) ---------------------------
+struct CViewSetup
+{
+    int x, y, width, height;          // 0x00
+    bool m_bOrtho;                    // 0x10
+    float orthoLeft, orthoTop, orthoRight, orthoBottom; // 0x14
+    bool m_bCustomViewMatrix;         // 0x24
+    float m_matCustomViewMatrix[3][4]; // 0x28
+    float fov;                        // 0x58
+    float fovViewmodel;               // 0x5C
+    Vector origin;                    // 0x60
+    QAngle angles;                    // 0x6C
+    float zNear;                      // 0x78
+    float zFar;                       // 0x7C
+    float zNearViewmodel;             // 0x80
+    float zFarViewmodel;              // 0x84
+    float m_flAspectRatio;            // 0x88
+    uint8_t rest[0xF4 - 0x8C];        // DoF, motion blur, off-center (0xE0..0xEC, flag byte 0xF0)
+};
+static_assert(sizeof(CViewSetup) == 0xF4, "CViewSetup size");
+static_assert(offsetof(CViewSetup, fov) == 0x58, "fov");
+static_assert(offsetof(CViewSetup, origin) == 0x60, "origin");
+static_assert(offsetof(CViewSetup, m_flAspectRatio) == 0x88, "aspect");
+
+// --- CUserCmd ------------------------------------------------------------------------
+struct CUserCmd
+{
+    void *vtable;       // 0x00
+    int command_number; // 0x04
+    int tick_count;     // 0x08
+    QAngle viewangles;  // 0x0C
+    float forwardmove;  // 0x18
+    float sidemove;     // 0x1C
+    float upmove;       // 0x20
+    int buttons;        // 0x24
+    uint8_t impulse;    // 0x28
+};
+
+enum : int
+{
+    IN_ATTACK = 1 << 0,
+    IN_JUMP = 1 << 1,
+    IN_DUCK = 1 << 2,
+    IN_FORWARD = 1 << 3,
+    IN_BACK = 1 << 4,
+    IN_USE = 1 << 5,
+    IN_MOVELEFT = 1 << 9,
+    IN_MOVERIGHT = 1 << 10,
+    IN_ATTACK2 = 1 << 11,
+    IN_RELOAD = 1 << 13,
+    IN_SPEED = 1 << 17,
+    IN_ZOOM = 1 << 19,
+};
+
+enum : int
+{
+    RENDERVIEW_DRAWVIEWMODEL = 1 << 0,
+    RENDERVIEW_DRAWHUD = 1 << 1,
+    RENDERVIEW_SUPPRESSMONITORRENDERING = 1 << 2,
+};
+
+enum : int
+{
+    PAINT_UIPANELS = 1 << 0,
+    PAINT_INGAMEPANELS = 1 << 1,
+};
+
+// Material system enums
+enum : int
+{
+    IMAGE_FORMAT_BGRA8888 = 12,
+    RT_SIZE_NO_CHANGE = 0,
+    MATERIAL_RT_DEPTH_SEPARATE = 1,
+    MATERIAL_RT_DEPTH_NONE = 2,
+    TEXTUREFLAGS_CLAMPS = 0x4,
+    TEXTUREFLAGS_CLAMPT = 0x8,
+    TEXTUREFLAGS_NOMIP = 0x100,
+    TEXTUREFLAGS_NOLOD = 0x200,
+};
+
+// --- vtable indices (verified in INFRA) ----------------------------------------------
+namespace vidx {
+// IVEngineClient (CEngineClient, "VEngineClient015")
+constexpr int GetLocalPlayer = 12;
+constexpr int GetViewAngles = 18;
+constexpr int SetViewAngles = 19;
+constexpr int IsInGame = 25;
+constexpr int IsConnected = 26;
+constexpr int ExecuteClientCmd = 104;
+// IClientEntityList ("VClientEntityList003")
+constexpr int GetClientEntity = 3;
+constexpr int GetClientEntityFromHandle = 4;
+// IMaterialSystem (CMaterialSystem, "VMaterialSystem080")
+constexpr int GetBackBufferDimensions = 33;
+constexpr int GetBackBufferFormat = 34;
+constexpr int BeginRenderTargetAllocation = 91;
+constexpr int EndRenderTargetAllocation = 92;
+constexpr int CreateNamedRenderTargetTextureEx = 96;
+constexpr int GetRenderContext = 112;
+// IMatRenderContext
+constexpr int RC_Release = 1;
+constexpr int RC_SetRenderTarget = 6;
+constexpr int RC_ClearBuffers = 12;
+constexpr int RC_ClearColor4ub = 74;
+constexpr int RC_PushRenderTargetAndViewport = 107;
+constexpr int RC_PopRenderTargetAndViewport = 111;
+constexpr int RC_OverrideAlphaWriteEnable = 184;
+// ITexture
+constexpr int TEX_GetActualWidth = 3;
+constexpr int TEX_GetActualHeight = 4;
+constexpr int TEX_IncrementReferenceCount = 10;
+// IVRenderView ("VEngineRenderView013")
+constexpr int VGui_Paint = 38;
+// ISurface ("VGUI_Surface031")
+constexpr int IsCursorVisible = 56;
+// C_BasePlayer
+constexpr int GetActiveWeapon = 243;
+} // namespace vidx
+
+struct Game
+{
+    // interfaces
+    void *engineClient = nullptr;
+    void *entityList = nullptr;
+    void *materials = nullptr;
+    void *renderView = nullptr;
+    void *surface = nullptr;
+    size_t matGameStartedFlag = 0; // CMaterialSystem byte that blocks late RT allocation
+
+    // functions (hook targets)
+    void *fnRenderView = nullptr;          // CViewRender::RenderView
+    void *fnRenderCameraWeapon = nullptr;  // CViewRender::DrawViewModels
+    void *fnCreateMove = nullptr;          // ClientModeShared::CreateMove
+    void *fnCalcViewModelView = nullptr;   // C_BasePlayer::CalcViewModelView
+    void *fnFlashlightUpdate = nullptr;    // CFlashlightEffect::UpdateLight
+    void *fnInfraFlashlightUpdate = nullptr; // INFRA's own flashlight: Update(Vector origin, Quaternion)
+    void *fnBuildTransformations = nullptr; // C_BaseAnimating::BuildTransformations
+    int boneArrayOffset = 0;               // C_BaseAnimating::m_BoneAccessor.m_pBones
+    void *fnGrabUpdateObject = nullptr;    // CGrabController::UpdateObject (server)
+    void *fnGrabUpdateObjectVM = nullptr;  // CGrabController::UpdateObjectVM (server)
+    void *fnGrabComputeError = nullptr;    // CGrabController::ComputeError (server)
+    void *fnPlayerEyeAngles = nullptr;     // CBasePlayer::EyeAngles (server)
+    void *fnPlayerShootPosition = nullptr; // CBasePlayer::Weapon_ShootPosition (server)
+
+    bool ready = false;
+
+    bool Init();
+    bool InitServer(); // server.dll (singleplayer listen server, same process)
+
+    // helpers ------------------------------------------------------------------------
+    bool IsInGame() const { return engineClient && VCall<bool>(engineClient, vidx::IsInGame); }
+    int LocalPlayerIndex() const { return engineClient ? VCall<int>(engineClient, vidx::GetLocalPlayer) : -1; }
+    void *LocalPlayer() const;
+    void *ActiveWeapon() const;
+    bool IsCursorVisible() const { return surface && VCall<bool>(surface, vidx::IsCursorVisible); }
+    void SetViewAngles(const QAngle &a) const
+    {
+        QAngle copy = a;
+        VCall<void, QAngle *>(engineClient, vidx::SetViewAngles, &copy);
+    }
+    void ExecuteCommand(const char *cmd) const;
+    // Sets a console variable, first lifting its cheat/development-only flags (found by
+    // scanning the game modules for the ConVar object; nothing is called).
+    void ForceConVar(const char *name, const char *value) const;
+    std::string ConVarString(const char *name) const; // current value, "" if not found
+    // Console settings the stereo rendering needs (run at start and on every level load).
+    void ApplyVRSettings() const;
+
+    void *RenderContext() const { return VCall<void *>(materials, vidx::GetRenderContext); }
+    static void ReleaseContext(void *ctx) { VCall<int>(ctx, vidx::RC_Release); }
+    void BackBufferSize(int &w, int &h) const
+    {
+        VCall<void, int *, int *>(materials, vidx::GetBackBufferDimensions, &w, &h);
+    }
+    // Creates a render target after the game has started (normally refused by the engine).
+    void *CreateRenderTarget(const char *name, int w, int h, int format, int depthMode);
+};
+
+extern Game g_Game;
+
+} // namespace ivr

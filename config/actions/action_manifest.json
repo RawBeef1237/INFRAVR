@@ -1,0 +1,156 @@
+{
+  "default_bindings": [
+    {
+      "controller_type": "knuckles",
+      "binding_url": "bindings_knuckles.json"
+    },
+    {
+      "controller_type": "knuckles_ev1",
+      "binding_url": "bindings_knuckles.json"
+    },
+    {
+      "controller_type": "oculus_touch",
+      "binding_url": "bindings_oculus_touch.json"
+    },
+    {
+      "controller_type": "oculus_touch_plus",
+      "binding_url": "bindings_oculus_touch.json"
+    },
+    {
+      "controller_type": "oculus_touch_v3",
+      "binding_url": "bindings_oculus_touch.json"
+    },
+    {
+      "controller_type": "oculus_touch_pro",
+      "binding_url": "bindings_oculus_touch.json"
+    },
+    {
+      "controller_type": "pico_controller",
+      "binding_url": "bindings_oculus_touch.json"
+    },
+    {
+      "controller_type": "vive_focus3_controller",
+      "binding_url": "bindings_oculus_touch.json"
+    },
+    {
+      "controller_type": "vive_cosmos_controller",
+      "binding_url": "bindings_vive_cosmos_controller.json"
+    },
+    {
+      "controller_type": "hpmotioncontroller",
+      "binding_url": "bindings_hpmotioncontroller.json"
+    },
+    {
+      "controller_type": "holographic_controller",
+      "binding_url": "bindings_holographic_controller.json"
+    },
+    {
+      "controller_type": "vive_controller",
+      "binding_url": "bindings_vive_controller.json"
+    }
+  ],
+  "actions": [
+    {
+      "name": "/actions/main/in/Move",
+      "type": "vector2"
+    },
+    {
+      "name": "/actions/main/in/Turn",
+      "type": "vector2"
+    },
+    {
+      "name": "/actions/main/in/Jump",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/Crouch",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/Sprint",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/UseRight",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/UseLeft",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/GripLeft",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/GripRight",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/Flashlight",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/Phone",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/Reload",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/Pause",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/Recenter",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/PoseLeft",
+      "type": "pose"
+    },
+    {
+      "name": "/actions/main/in/PoseRight",
+      "type": "pose"
+    },
+    {
+      "name": "/actions/main/out/HapticLeft",
+      "type": "vibration"
+    },
+    {
+      "name": "/actions/main/out/HapticRight",
+      "type": "vibration"
+    }
+  ],
+  "action_sets": [
+    {
+      "name": "/actions/main",
+      "usage": "single"
+    }
+  ],
+  "localization": [
+    {
+      "language_tag": "en_US",
+      "/actions/main": "INFRA",
+      "/actions/main/in/Move": "Move",
+      "/actions/main/in/Turn": "Turn",
+      "/actions/main/in/PoseLeft": "Left hand pose",
+      "/actions/main/in/PoseRight": "Right hand pose",
+      "/actions/main/out/HapticLeft": "Left haptics",
+      "/actions/main/out/HapticRight": "Right haptics",
+      "/actions/main/in/Jump": "Jump",
+      "/actions/main/in/Crouch": "Crouch (tap) / recenter (hold 1 s)",
+      "/actions/main/in/Sprint": "Sprint (toggle)",
+      "/actions/main/in/UseRight": "Use / camera shutter (right hand)",
+      "/actions/main/in/UseLeft": "Use / camera shutter (left hand)",
+      "/actions/main/in/GripLeft": "Grab / holster (left hand)",
+      "/actions/main/in/GripRight": "Grab / holster (right hand)",
+      "/actions/main/in/Flashlight": "Flashlight",
+      "/actions/main/in/Phone": "Phone",
+      "/actions/main/in/Reload": "Reload (camera battery) / back in menus",
+      "/actions/main/in/Pause": "Pause menu (tap) / screen mode (hold 1 s)",
+      "/actions/main/in/Recenter": "Recenter (hold 1 s, optional extra button)"
+    }
+  ]
+}

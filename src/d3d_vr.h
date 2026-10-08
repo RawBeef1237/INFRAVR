@@ -1,0 +1,152 @@
+// INFRA VR - D3D9 (DXVK) side: textures handed to SteamVR through DXVK's public
+// D3D9 <-> Vulkan interop interfaces (works with the stock DXVK release).
+#pragma once
+#include "common.h"
+#include "openvr_rt.h"
+
+#include <d3d9.h>
+
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan_core.h>
+
+namespace ivr {
+
+// {d56344f5-8d35-46fd-806d-94c351b472c1}
+static const GUID IID_ID3D9VkInteropTexture = {
+    0xd56344f5, 0x8d35, 0x46fd, {0x80, 0x6d, 0x94, 0xc3, 0x51, 0xb4, 0x72, 0xc1}};
+// {2eaa4b89-0107-4bdb-87f7-0f541c493ce0}
+static const GUID IID_ID3D9VkInteropDevice = {
+    0x2eaa4b89, 0x0107, 0x4bdb, {0x87, 0xf7, 0x0f, 0x54, 0x1c, 0x49, 0x3c, 0xe0}};
+
+struct ID3D9VkInteropTexture : public IUnknown
+{
+    virtual HRESULT STDMETHODCALLTYPE GetVulkanImageInfo(VkImage *pHandle, VkImageLayout *pLayout,
+                                                         VkImageCreateInfo *pInfo) = 0;
+};
+
+struct ID3D9VkInteropDevice : public IUnknown
+{
+    virtual void STDMETHODCALLTYPE GetVulkanHandles(VkInstance *pInstance, VkPhysicalDevice *pPhysDev,
+                                                    VkDevice *pDevice) = 0;
+    virtual void STDMETHODCALLTYPE GetSubmissionQueue(VkQueue *pQueue, uint32_t *pQueueIndex,
+                                                      uint32_t *pQueueFamilyIndex) = 0;
+    virtual void STDMETHODCALLTYPE TransitionTextureLayout(ID3D9VkInteropTexture *pTexture,
+                                                           const VkImageSubresourceRange *pSubresources,
+                                                           VkImageLayout OldLayout, VkImageLayout NewLayout) = 0;
+    virtual void STDMETHODCALLTYPE FlushRenderingCommands() = 0;
+    virtual void STDMETHODCALLTYPE LockSubmissionQueue() = 0;
+    virtual void STDMETHODCALLTYPE ReleaseSubmissionQueue() = 0;
+    virtual void STDMETHODCALLTYPE LockDevice() = 0;
+    virtual void STDMETHODCALLTYPE UnlockDevice() = 0;
+    virtual bool STDMETHODCALLTYPE WaitForResource(IDirect3DResource9 *pResource, DWORD MapFlags) = 0;
+    virtual HRESULT STDMETHODCALLTYPE CreateImage(const void *desc, IDirect3DResource9 **ppResult) = 0;
+};
+
+// A D3D9 texture whose Vulkan image can be given to SteamVR.
+struct VrTexture
+{
+    IDirect3DTexture9 *d3d = nullptr;         // not owned when captured from the engine
+    ID3D9VkInteropTexture *interop = nullptr;
+    VkImage image = VK_NULL_HANDLE;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t width = 0, height = 0;
+    bool owned = false;
+
+    bool Attach(IDirect3DTexture9 *tex, bool takeOwnership);
+    void Reset();
+    bool Valid() const { return image != VK_NULL_HANDLE; }
+};
+
+class D3DVR
+{
+public:
+    void OnDeviceCreated(IDirect3DDevice9 *device);
+    void OnBeforeReset();
+    void OnPresent(); // called right before the real Present
+
+    IDirect3DDevice9 *device = nullptr;
+    bool interopOk = false;
+
+    // Engine-owned eye/HUD textures (captured when the engine creates them).
+    VrTexture eye[2];
+    VrTexture hud;
+    // Our own textures.
+    VrTexture blank, menu;
+
+    // Set while the engine creates one of our render targets (see CreateTexture hook).
+    int capturing = -1; // 0/1 eye, 2 hud
+    // One-frame trace of render target switches/copies while the game draws the left eye
+    // (diagnostics for the stretched-lines problem).
+    bool trace = false;
+    // The camera weapon's screen texture (_rt_CameraWeapon): DrawViewModels copies the frame into
+    // it. Learned during our lens view; while blockCameraCopy is set the eye views may not overwrite it.
+    bool learnCameraCopy = false;
+    LONG learnW = 0, learnH = 0; // the lens view size: the camera copy's destination rect
+    bool blockCameraCopy = false;
+    IDirect3DSurface9 *cameraSurface = nullptr;
+    int traceDraws = 0;
+    void TraceSurface(const char *what, IDirect3DSurface9 *s, const RECT *r = nullptr);
+    void OnTextureCreated(IDirect3DTexture9 *tex, UINT w, UINT h, DWORD usage);
+    // Fallback: identify the texture currently bound as render target 0.
+    bool CaptureBoundRenderTarget(VrTexture &out, UINT width, UINT height);
+    // Once per eye: checks that the texture the game drew into is the one sent to SteamVR.
+    void CheckBoundRenderTarget(int which);
+    bool BackBufferBound() const; // the game window is the current render target
+
+    // Set when the HUD panel turned out to be opaque (it would cover the view): HUD overlay off.
+    bool hudBroken = false;
+
+private:
+    struct ProbeStats
+    {
+        bool ok = false;
+        float avg = 0, max = 0; // brightness 0..255
+        float opaque = 0;       // fraction of pixels with alpha > 200
+        int rowsSame = 0, colsSame = 0; // neighbouring rows/columns that are identical (smeared lines)
+        uint32_t hash = 0;              // of the downscaled picture: same hash = same picture
+    };
+    ProbeStats Probe(const VrTexture &t, const vr::VRTextureBounds_t *bounds);
+    void ProbeFrame(bool stereo, bool hudOn);
+    bool MeasureSmear(const VrTexture &t, const char *what, UINT &picW, UINT &picH);
+    void AutoFit(UINT picW, UINT picH);
+    void MakeOpaque(const VrTexture &t);
+    void ReleaseHelpers();
+    bool EnsureOwnTextures();
+    void BeginVulkanAccess(VrTexture *const *textures, int count);
+    void EndVulkanAccess(VrTexture *const *textures, int count);
+    vr::VRVulkanTextureData_t VulkanData(const VrTexture &t) const;
+    void CopyBackBufferToMenu();
+    void MirrorEyeToBackBuffer();
+
+    ID3D9VkInteropDevice *m_interop = nullptr;
+    VkInstance m_instance = VK_NULL_HANDLE;
+    VkPhysicalDevice m_physDev = VK_NULL_HANDLE;
+    VkDevice m_vkDevice = VK_NULL_HANDLE;
+    VkQueue m_queue = VK_NULL_HANDLE;
+    uint32_t m_queueFamily = 0;
+    UINT m_bbWidth = 0, m_bbHeight = 0;
+    IDirect3DStateBlock9 *m_stateBlock = nullptr;
+    IDirect3DSurface9 *m_probeRT = nullptr, *m_probeSys = nullptr;
+    double m_nextProbe = 0;
+    int m_probes = 0;
+    int m_blackEyeProbes = 0;
+    int m_smearChecks = 0;
+    void LogCompositorStats();
+    uint32_t m_lastEyeHash = 0;
+    int m_sameEyeProbes = 0;
+    uint32_t m_submits = 0;                 // stereo frames handed to SteamVR
+    // Last stereo frame's head pose, so a frame can be shown again (with correct reprojection)
+    // when the game skips the 3D view while its pause/phone menu is up.
+    vr::HmdMatrix34_t m_lastEyePose{};
+    bool m_haveLastEyes = false;
+    int m_phoneFrames = 0, m_phoneReused = 0;
+    uint32_t m_lastSubmits = 0, m_lastPresents = 0, m_lastDropped = 0, m_lastReprojected = 0, m_lastTimedOut = 0;
+    bool m_haveStats = false;
+    UINT m_lastPicW = 0, m_lastPicH = 0; // previous smear measurement (auto_fit wants two that agree)
+    bool m_autoFitDone = false;
+};
+
+extern D3DVR g_D3D;
+
+} // namespace ivr
