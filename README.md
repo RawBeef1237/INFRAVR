@@ -1,4 +1,4 @@
-# INFRA VR 0.13
+# INFRA VR
 
 A VR mod for **INFRA** (Loiste Interactive, 2016) with motion controls. It works like
 L4D2VR(https://github.com/keyou91/l4d2vr) and Portal 2 VR(https://github.com/Gistix/portal2vr): a `d3d9.dll`
