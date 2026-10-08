@@ -1,11 +1,11 @@
-# INFRA VR 3.8
+# INFRA VR 0.13
 
 A VR mod for **INFRA** (Loiste Interactive, 2016) with motion controls. It works like
 [L4D2VR](https://github.com/keyou91/l4d2vr) and Portal 2 VR: a `d3d9.dll`
 in INFRA's `bin` folder hooks the Source engine, the game is rendered through DXVK (Vulkan), and
 the frames go to SteamVR through OpenVR.
 
-## What changed in 3.13
+## What changed in 0.13
 
 - **World following your head while holding the phone:** with the phone out, INFRA keeps handing
   back the same view angles and ignores the ones the mod sets. The mod read that as "the game turned
@@ -22,7 +22,7 @@ the frames go to SteamVR through OpenVR.
   down again straight away. A trigger press no longer drops what a grip is holding.
   `[holsters] grip_to_carry = false` brings back the old behaviour.
 
-## What changed in 3.12
+## What changed in 0.12
 
 - **Flashlight beam in the left hand:** INFRA does not use Source's usual flashlight code; it has
   its own (the `infra_flashlight_*` settings). The mod now moves that one to the flashlight hand,
@@ -33,7 +33,7 @@ the frames go to SteamVR through OpenVR.
   drawn for. SteamVR then keeps it fixed in the world, so you can look around instead of the view
   following your head. When the menu closes the log says how many frames that happened for.
 
-## What changed in 3.11
+## What changed in 0.11
 
 - **Arms in the corner of the view:** the pass that draws the first-person models (arms,
   flashlight, camera, phone) was being given the flat 1920x1080 desktop view, and only for the
@@ -47,15 +47,15 @@ the frames go to SteamVR through OpenVR.
 - The camera's viewfinder no longer swaps to the lens view in that pass. It never drew the
   viewfinder there, only the arms.
 
-## What changed in 3.10
+## What changed in 0.10
 
 - **Arms fixed after the first tracked-hands test:** the flashlight model is now held by the hand
-  the flashlight beam comes from (in 3.9 it sat on the other controller), and its offsets are
+  the flashlight beam comes from (in 0.9 it sat on the other controller), and its offsets are
   mirrored for the left hand. The shoulders, upper arms and body of the arm models are now hidden
   on both sides, so the big sleeve that filled the corner of the view is gone; only forearms and
   hands show.
 
-## What changed in 3.9
+## What changed in 0.9
 
 - **Both hands tracked:** INFRA's camera, flashlight and phone models already contain both arms.
   Until now the whole model followed the hand holding the item, so the other arm stayed wherever
@@ -66,16 +66,16 @@ the frames go to SteamVR through OpenVR.
   in the bindings) and logged every 5 seconds for the first minute ("Finger curl ..."). Fingers do
   not move on the models yet; this checks what Quest 3 and PSVR2 report first.
 
-## What changed in 3.8
+## What changed in 0.8
 
-- **Crash at start-up on PCs with two GPUs:** the crash reports from 3.7 showed SteamVR crashing
+- **Crash at start-up on PCs with two GPUs:** the crash reports from 0.7 showed SteamVR crashing
   inside the NVIDIA driver while taking the game's first picture, with an AMD graphics driver also
   loaded (typically a CPU with built-in graphics next to the graphics card). The game could end up
   rendering on one GPU while SteamVR runs on the other. The mod now asks SteamVR which GPU it uses
   and makes DXVK render on that one. The log lists the GPUs and says which was picked; a
   `dxvk.deviceFilter` line in `infravr\dxvk.conf` still overrides it.
 
-## What changed in 3.7
+## What changed in 0.7
 
 - **Warped view on Quest 3:** the mod read SteamVR's up/down view angles the wrong way round. On
   headsets that see as far up as down (PSVR2, Index) that made no difference; on Quest 3, which
@@ -85,7 +85,7 @@ the frames go to SteamVR through OpenVR.
   and the phone model is hidden while it is open. Point with either hand and pull the trigger,
   or use the sticks, A and B. `phone_menu_in_world = false` brings back the hand-held screen.
 
-## What changed in 3.6
+## What changed in 0.6
 
 - **Frozen picture after loading a level, real fix:** on a level load INFRA frees every texture
   nobody holds on to, and that included the mod's eye images. From then on the game drew the view
@@ -95,14 +95,14 @@ the frames go to SteamVR through OpenVR.
   virtual screen like the other menus (point and pull the trigger, or left stick and A). The pause
   menu in game stays on the phone in your hand. `main_menu_in_vr = true` brings back the 3D menu.
 
-## What changed in 3.5
+## What changed in 0.5
 
 - **Frozen picture after loading a level:** when a level loads, INFRA swaps the eye images for new
   ones. The mod kept sending the old ones, so the headset and the window showed the last frame
   from before the load while the game carried on. It now follows the game to the new images
   (the log says "the game replaced its texture").
 
-## What changed in 3.4
+## What changed in 0.4
 
 - **Menus with the controllers, gamepad style:** in the main menu and other flat menus the left
   stick moves between menu items, A selects and B goes back, like INFRA's own gamepad support.
@@ -112,17 +112,17 @@ the frames go to SteamVR through OpenVR.
 - **Frozen view diagnostics:** every probe now logs how many frames went to SteamVR and how many it
   showed, and warns when the eye picture stops changing.
 
-## What changed in 3.3
+## What changed in 0.3
 
-- **Stretched lines, second round:** the screenshot from 3.2 showed the game only draws a
+- **Stretched lines, second round:** the screenshot from 0.2 showed the game only draws a
   16:9 picture in the top-left of each eye image (about 1568x882 of 2564x2634) and the rest is the
-  last row and column smeared out. 3.3 forces `mat_viewportscale` back to 1 and, if the game
+  last row and column smeared out. 0.3 forces `mat_viewportscale` back to 1 and, if the game
   still only fills part of the image, draws the view into just that part and shows only that part
   in the headset (`auto_fit = true` in infravr.ini). That costs some sharpness but no more lines.
 - **Better log:** `smear check`, `auto_fit` and `trace:` lines say exactly where the picture ends
   and which render step does it, and changed console settings are logged with their old values.
 
-## What changed in 3.2
+## What changed in 0.2
 
 - **Stretched lines in the headset:** INFRA's full-screen effects (bloom, colour correction,
   vignette, depth of field) are built for the window's size; on the larger eye images they smeared
@@ -135,12 +135,12 @@ the frames go to SteamVR through OpenVR.
   it, and you can also point at it with your other hand and pull the trigger.
   `phone_menu = false` brings back the old flat screen.
 
-## What changed in 3.1 (after the first headset test)
+## What changed in 0.1 (after the first headset test)
 
 - **Menus:** the menu screen is now solid and flat. Before, it was copied from the game window with
   the engine's leftover alpha channel, so it showed up patchy and see-through in the headset.
 - **Pointing and clicking with the controllers:** a short beam comes out of your hand and a white
-  dot shows where it meets the screen; the trigger clicks. Version 3.0 relied on SteamVR's own
+  dot shows where it meets the screen; the trigger clicks. Version 0.0 relied on SteamVR's own
   overlay laser, which takes the controllers away from the game. The INFRA window is also brought
   to the front so clicks register.
 - **Screen mode:** hold the pause button for a second to show the flat game on the virtual screen
@@ -165,7 +165,7 @@ function numbers, so its engine hooks never installed and nothing was ever drawn
 textures. On top of that, INFRA's material system refuses to create render targets after the game
 has started, so the eye textures could not be created either.
 
-Version 3 is rebuilt on layouts read directly out of INFRA's own `engine.dll`, `client.dll`,
+This version is rebuilt on layouts read directly out of INFRA's own `engine.dll`, `client.dll`,
 `server.dll` and `materialsystem.dll`, and every function it hooks is checked against INFRA's
 binaries (the mod finds them again by signature/RTTI if an address ever moves). It uses OpenVR.
 

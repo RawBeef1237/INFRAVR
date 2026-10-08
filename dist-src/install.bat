@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableDelayedExpansion
-title INFRA VR 3 installer
+title INFRA VR installer
 
 rem Installs INFRA VR into INFRA\bin:
 rem   bin\d3d9.dll          the mod (Source loads d3d9.dll from the bin folder)
