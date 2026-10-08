@@ -156,6 +156,12 @@ the frames go to SteamVR through OpenVR.
 - No more `IVRCompositor::Submit failed ... 101` at startup (frames are only sent once SteamVR has
   handed out the first poses).
 
+## Version numbers
+
+Versions are `0.MINOR.PATCH`. Small updates (bug fixes, tweaks to defaults) raise the third digit,
+for example 0.13 to 0.13.1. Larger updates (new features or reworked systems) raise the second digit
+and reset the third, for example 0.13.2 to 0.14.
+
 ## Requirements
 
 - INFRA on Steam (Windows, 32-bit `infra.exe`)
