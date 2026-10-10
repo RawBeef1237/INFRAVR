@@ -77,6 +77,7 @@ bool Game::Init()
     entityList = Require("client.dll", "VClientEntityList003");
     materials = Require("materialsystem.dll", "VMaterialSystem080");
     surface = Require("vguimatsurface.dll", "VGUI_Surface031");
+    vguiInput = Require("vgui2.dll", "VGUI_InputInternal001");
     if (!engineClient || !renderView || !entityList || !materials)
         return false;
 
@@ -128,6 +129,7 @@ bool Game::Init()
         if (!boneArrayOffset)
             fnBuildTransformations = nullptr;
     }
+    FindScreenClicker();
     ready = fnRenderView && fnCreateMove;
     return ready;
 }
@@ -326,7 +328,9 @@ void Game::ForceConVar(const char *name, const char *value) const
 
 void Game::ApplyVRSettings() const
 {
-    ExecuteCommand("mat_queue_mode 0"); // stereo rendering + interop need one render thread
+    IVR_LOG("ConVar mat_queue_mode was \"%s\"", ConVarString("mat_queue_mode").c_str());
+    ExecuteCommand("mat_queue_mode 0"); // [vr] multicore switches to 2 once the eye images exist
+    queueMode = 0;
     if (!g_Config.postProcessing)
     {
         for (const char *cv : {"mat_postprocess_enable", "mat_dof_enabled", "mat_vignette_enable",
@@ -360,6 +364,47 @@ void *Game::CreateRenderTarget(const char *name, int w, int h, int format, int d
         VCall<void>(tex, vidx::TEX_IncrementReferenceCount);
     IVR_LOG("Created render target %s %dx%d -> %p", name, w, h, tex);
     return tex;
+}
+
+// INFRA's screen clicker is a static object (g_INFRAScreenClicker) whose first member is its vtable.
+void Game::FindScreenClicker()
+{
+    void **vt = FindVTable("client.dll", ".?AVCINFRAScreenClicker@@");
+    ModuleInfo mod = GetModuleInfo("client.dll");
+    if (!vt || !mod.base)
+    {
+        IVR_LOG("INFRA screen clicker not found - its controller cursor stays as it is");
+        return;
+    }
+    const uint32_t want = reinterpret_cast<uint32_t>(vt);
+    uint8_t *known = mod.base + 0x5f66d4; // INFRA 2023 build
+    if (IsReadable(known, 8) && *reinterpret_cast<uint32_t *>(known) == want)
+        screenClicker = known;
+    for (size_t off = 0; !screenClicker && off + 8 <= mod.size; off += 4)
+    {
+        uint8_t *p = mod.base + off;
+        if (*reinterpret_cast<uint32_t *>(p) == want && reinterpret_cast<void **>(p) != vt - 1)
+            screenClicker = p;
+    }
+    IVR_LOG("INFRA screen clicker at %p", screenClicker);
+}
+
+const uint8_t *Game::ScreenClickerPanel() const
+{
+    if (!screenClicker || !IsReadable(static_cast<uint8_t *>(screenClicker) + 4, 4))
+        return nullptr;
+    const uint8_t *panel = *reinterpret_cast<uint8_t *const *>(static_cast<uint8_t *>(screenClicker) + 4);
+    return panel && IsReadable(panel, 0x1a0) ? panel : nullptr;
+}
+
+bool Game::StopControllerCursor() const
+{
+    const uint8_t *panel = ScreenClickerPanel();
+    // +0x18B: the controller moves the cursor; +0x194..0x197: d-pad / stick directions held.
+    if (!panel || (!panel[0x18B] && !*reinterpret_cast<const uint32_t *>(panel + 0x194)))
+        return false;
+    VCall<void, bool>(screenClicker, vidx::SetControllerMovesCursor, false); // also clears those
+    return true;
 }
 
 } // namespace ivr

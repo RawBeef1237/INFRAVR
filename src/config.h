@@ -37,6 +37,9 @@ struct Config
     bool leftHanded = false;
     bool mirrorToDesktop = true;
     bool mirrorFill = true; // crop the eye to the window shape (16:9) instead of letterboxing
+    int antialiasing = 4;   // MSAA samples for the eye images: 0 (off), 2, 4 or 8
+    bool multicore = false; // let the engine render on its own thread (mat_queue_mode 2)
+    std::string dxvk = "stock"; // stock = dxvk_d3d9.dll (DXVK 2.7.1), gplall = dxvk_d3d9_gplall.dll
     HudMode hudMode = HudMode::Overlay;
     float hudDistance = 1.2f, hudWidth = 1.0f, hudDown = 0.10f;
     float menuDistance = 2.2f, menuWidth = 2.4f;
@@ -55,7 +58,9 @@ struct Config
     float phoneMenuWidth = 0.32f;
     // true = the phone menu is a panel standing in the world in front of you (the phone model is
     // hidden meanwhile); false = a small screen above the phone in your off hand.
-    bool phoneMenuInWorld = true;
+    bool phoneMenuInWorld = false;
+    bool phoneMenuPointer = false; // pointer beam in the phone menu
+    bool phoneGamepad = true; // phone menu: the VR controllers act as an Xbox controller for INFRA
     float phoneMenuWorldWidth = 0.8f, phoneMenuWorldDistance = 0.9f;
 
     // [movement]
@@ -64,6 +69,8 @@ struct Config
     float smoothTurnSpeed = 150.0f;
     bool moveRelativeToHand = false;
     bool roomscale = true;
+    bool realCrouch = true;  // crouching in real life crouches in game
+    float crouchDrop = 0.30f; // metres below your standing eye height that count as crouching
     float stickDeadzone = 0.15f;
 
     // [aim]
@@ -77,6 +84,7 @@ struct Config
     float hipRadius = 0.17f;
     float backRadius = 0.26f;
     bool haptics = true;
+    bool phoneOpensMenu = true; // the phone comes out as INFRA's phone (pause) menu
     bool gripToCarry = true; // physics objects are only carried while a grip is held
 
     // [camera]

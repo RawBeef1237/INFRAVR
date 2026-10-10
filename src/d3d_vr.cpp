@@ -115,6 +115,7 @@ void D3DVR::OnBeforeReset()
 {
     IVR_LOG("D3D9 device reset");
     ReleaseHelpers();
+    ReleaseMsaa();
     // Our own textures are D3DPOOL_DEFAULT and must go before a reset. Engine textures are
     // released by the engine itself (it recreates its render targets).
     blank.Reset();
@@ -169,7 +170,7 @@ void D3DVR::CheckBoundRenderTarget(int which)
     IDirect3DSurface9 *surf = nullptr;
     IDirect3DTexture9 *tex = nullptr;
     D3DSURFACE_DESC d{};
-    if (SUCCEEDED(device->GetRenderTarget(0, &surf)) && surf)
+    if ((surf = BoundRenderTarget()) != nullptr)
     {
         surf->GetDesc(&d);
         surf->GetContainer(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&tex));
@@ -215,7 +216,7 @@ bool D3DVR::CaptureBoundRenderTarget(VrTexture &out, UINT width, UINT height)
     if (!device)
         return false;
     IDirect3DSurface9 *surf = nullptr;
-    if (FAILED(device->GetRenderTarget(0, &surf)) || !surf)
+    if ((surf = BoundRenderTarget()) == nullptr)
         return false;
     IDirect3DTexture9 *tex = nullptr;
     bool ok = false;
@@ -233,6 +234,171 @@ bool D3DVR::CaptureBoundRenderTarget(VrTexture &out, UINT width, UINT height)
     }
     surf->Release();
     return ok;
+}
+
+// --- antialiasing ---------------------------------------------------------------------------
+IDirect3DSurface9 *D3DVR::EyeSurface(int e)
+{
+    MsaaEye &m = m_msaa[e];
+    if (m.tex != eye[e].d3d)
+    {
+        m.tex = eye[e].d3d;
+        m.surf = nullptr;
+        if (m.ms)
+        {
+            m.ms->Release(); // the game replaced its texture: make a new stand-in to match
+            m.ms = nullptr;
+        }
+        m.dirty = false;
+        IDirect3DSurface9 *s = nullptr;
+        if (m.tex && SUCCEEDED(m.tex->GetSurfaceLevel(0, &s)) && s)
+        {
+            m.surf = s;
+            s->Release(); // the texture keeps it alive
+        }
+    }
+    return m.surf;
+}
+
+IDirect3DSurface9 *D3DVR::MapRenderTarget(IDirect3DSurface9 *s)
+{
+    if (!s || g_Config.antialiasing < 2 || m_msaaFailed || !device)
+        return s;
+    for (int e = 0; e < 2; ++e)
+    {
+        if (!eye[e].Valid() || s != EyeSurface(e))
+            continue;
+        MsaaEye &m = m_msaa[e];
+        if (!m.ms)
+        {
+            D3DSURFACE_DESC d{};
+            s->GetDesc(&d);
+            HRESULT hr = device->CreateRenderTarget(d.Width, d.Height, d.Format,
+                                                    (D3DMULTISAMPLE_TYPE)g_Config.antialiasing, 0, FALSE, &m.ms,
+                                                    nullptr);
+            if (FAILED(hr) || !m.ms)
+            {
+                m.ms = nullptr;
+                m_msaaFailed = true;
+                IVR_ERR("Antialiasing: could not create a %dx multisampled %ux%u eye image (0x%08lx) - off",
+                        g_Config.antialiasing, d.Width, d.Height, (unsigned long)hr);
+                return s;
+            }
+            if (!m_msaaLogged)
+            {
+                m_msaaLogged = true;
+                IVR_LOG("Antialiasing: eyes drawn with %dx MSAA (%ux%u)", g_Config.antialiasing, d.Width, d.Height);
+            }
+        }
+        m.dirty = true;
+        return m.ms;
+    }
+    return s;
+}
+
+IDirect3DSurface9 *D3DVR::MapDepth(IDirect3DSurface9 *s)
+{
+    if (!s || g_Config.antialiasing < 2 || m_msaaFailed || !device || !eye[0].Valid())
+        return s;
+    for (auto &d : m_msaaDepth)
+        if (d.src == s)
+            return d.ms;
+    D3DSURFACE_DESC desc{};
+    if (FAILED(s->GetDesc(&desc)) || desc.MultiSampleType != D3DMULTISAMPLE_NONE ||
+        desc.Width != eye[0].width || desc.Height != eye[0].height)
+        return s;
+    for (auto &d : m_msaaDepth)
+    {
+        if (d.src)
+            continue;
+        HRESULT hr = device->CreateDepthStencilSurface(desc.Width, desc.Height, desc.Format,
+                                                       (D3DMULTISAMPLE_TYPE)g_Config.antialiasing, 0, FALSE, &d.ms,
+                                                       nullptr);
+        if (FAILED(hr) || !d.ms)
+        {
+            d.ms = nullptr;
+            m_msaaFailed = true;
+            IVR_ERR("Antialiasing: could not create a multisampled depth buffer (0x%08lx) - off", (unsigned long)hr);
+            return s;
+        }
+        d.src = s;
+        return d.ms;
+    }
+    return s;
+}
+
+IDirect3DSurface9 *D3DVR::MapCopySource(IDirect3DSurface9 *s)
+{
+    if (!s || resolving)
+        return s;
+    for (auto &m : m_msaa)
+        if (m.ms && m.dirty && s == m.surf)
+            return m.ms; // the game copies from the eye while drawing it: read the stand-in
+    return s;
+}
+
+IDirect3DSurface9 *D3DVR::MapCopyDest(IDirect3DSurface9 *s)
+{
+    if (!s || resolving)
+        return s;
+    for (auto &m : m_msaa)
+        if (m.ms && s == m.surf)
+        {
+            m.dirty = true;
+            return m.ms; // would be overwritten by the resolve otherwise
+        }
+    return s;
+}
+
+void D3DVR::ResolveEyes()
+{
+    if (!device)
+        return;
+    resolving = true;
+    for (int e = 0; e < 2; ++e)
+    {
+        MsaaEye &m = m_msaa[e];
+        if (!m.ms || !m.dirty || !m.surf || m.tex != eye[e].d3d)
+            continue;
+        HRESULT hr = device->StretchRect(m.ms, nullptr, m.surf, nullptr, D3DTEXF_NONE);
+        static int s_errors = 0;
+        if (FAILED(hr) && s_errors++ < 5)
+            IVR_ERR("Antialiasing: resolving the %s eye failed (0x%08lx)", e == 0 ? "left" : "right",
+                    (unsigned long)hr);
+        m.dirty = false;
+    }
+    resolving = false;
+}
+
+void D3DVR::ReleaseMsaa()
+{
+    for (auto &m : m_msaa)
+    {
+        if (m.ms)
+            m.ms->Release();
+        m = MsaaEye();
+    }
+    for (auto &d : m_msaaDepth)
+    {
+        if (d.ms)
+            d.ms->Release();
+        d = MsaaDepth();
+    }
+}
+
+IDirect3DSurface9 *D3DVR::BoundRenderTarget()
+{
+    IDirect3DSurface9 *surf = nullptr;
+    if (!device || FAILED(device->GetRenderTarget(0, &surf)) || !surf)
+        return nullptr;
+    for (auto &m : m_msaa)
+        if (m.ms && surf == m.ms && m.surf)
+        {
+            surf->Release();
+            m.surf->AddRef();
+            return m.surf;
+        }
+    return surf;
 }
 
 bool D3DVR::EnsureOwnTextures()
@@ -691,8 +857,24 @@ void D3DVR::OnPresent()
 {
     if (!g_VR.Ok() || !g_Mod.Active() || !device || !interopOk || !g_VR.HavePoses())
         return;
+    // Every startup crash so far (NVIDIA's Vulkan driver, inside SteamVR's first Submit) came in the
+    // first seconds while INFRA was still loading its main menu map: send nothing to SteamVR until
+    // that map is in (or 20 s have passed), SteamVR keeps showing its own loading screen meanwhile.
+    double now = NowSeconds();
+    if (m_firstPresent < 0)
+        m_firstPresent = now;
+    if (!m_submitReady)
+    {
+        bool levelIn = g_Mod.firstLevelAt >= 0 && now - g_Mod.firstLevelAt > 1.0;
+        if (!levelIn && now - m_firstPresent < 20.0)
+            return;
+        m_submitReady = true;
+        IVR_LOG("Sending frames to SteamVR (%s, %.1f s after the first frame)",
+                levelIn ? "main menu loaded" : "no map loaded yet", now - m_firstPresent);
+    }
     if (!EnsureOwnTextures())
         return;
+    ResolveEyes();
 
     bool stereo = g_Mod.eyesRendered && !g_Mod.menuMode && eye[0].Valid() && eye[1].Valid();
     bool hudOn = stereo && g_Mod.hudPainted && hud.Valid() && (!hudBroken || g_Mod.phoneMenu);
@@ -713,7 +895,7 @@ void D3DVR::OnPresent()
     }
     if (stereo)
     {
-        m_lastEyePose = g_VR.Head().raw;
+        m_lastEyePose = m_haveRenderPose ? m_renderPose : g_VR.Head().raw;
         m_haveLastEyes = true;
     }
     if (g_Mod.menuMode)
@@ -781,11 +963,16 @@ void D3DVR::OnPresent()
     if (stereo)
     {
         vr::VRVulkanTextureData_t l = VulkanData(eye[0]), r = VulkanData(eye[1]);
-        vr::Texture_t tl = {&l, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
-        vr::Texture_t tr = {&r, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
+        vr::VRTextureWithPose_t tl{}, tr{};
+        tl.handle = &l;
+        tr.handle = &r;
+        tl.eType = tr.eType = vr::TextureType_Vulkan;
+        tl.eColorSpace = tr.eColorSpace = vr::ColorSpace_Auto;
+        tl.mDeviceToAbsoluteTracking = tr.mDeviceToAbsoluteTracking = m_lastEyePose;
+        vr::EVRSubmitFlags flags = m_haveRenderPose ? vr::Submit_TextureWithPose : vr::Submit_Default;
         vr::VRTextureBounds_t bl = g_VR.ViewBounds(0), br = g_VR.ViewBounds(1);
-        e0 = g_VR.m_compositor->Submit(vr::Eye_Left, &tl, &bl, vr::Submit_Default);
-        e1 = g_VR.m_compositor->Submit(vr::Eye_Right, &tr, &br, vr::Submit_Default);
+        e0 = g_VR.m_compositor->Submit(vr::Eye_Left, &tl, &bl, flags);
+        e1 = g_VR.m_compositor->Submit(vr::Eye_Right, &tr, &br, flags);
         ++m_submits;
         if (hudOn && g_VR.m_overlay)
         {

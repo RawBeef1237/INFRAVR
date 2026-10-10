@@ -110,6 +110,11 @@ void LoadConfig()
     c.leftHanded = ini.GetBool("vr.left_handed", c.leftHanded);
     c.mirrorToDesktop = ini.GetBool("vr.mirror_to_desktop", c.mirrorToDesktop);
     c.mirrorFill = ini.GetBool("vr.mirror_fill", c.mirrorFill);
+    c.antialiasing = ini.GetInt("vr.antialiasing", c.antialiasing);
+    if (c.antialiasing != 2 && c.antialiasing != 4 && c.antialiasing != 8)
+        c.antialiasing = 0;
+    c.multicore = ini.GetBool("vr.multicore", c.multicore);
+    c.dxvk = Lower(ini.GetString("vr.dxvk", c.dxvk));
     std::string hud = Lower(ini.GetString("vr.hud_mode", "overlay"));
     c.hudMode = hud == "eyes" ? HudMode::Eyes : hud == "off" ? HudMode::Off : HudMode::Overlay;
     c.hudDistance = ini.GetFloat("vr.hud_distance", c.hudDistance);
@@ -124,6 +129,8 @@ void LoadConfig()
     c.mainMenuInVR = ini.GetBool("vr.main_menu_in_vr", c.mainMenuInVR);
     c.phoneMenuWidth = ini.GetFloat("vr.phone_menu_width", c.phoneMenuWidth);
     c.phoneMenuInWorld = ini.GetBool("vr.phone_menu_in_world", c.phoneMenuInWorld);
+    c.phoneMenuPointer = ini.GetBool("vr.phone_menu_pointer", c.phoneMenuPointer);
+    c.phoneGamepad = ini.GetBool("vr.phone_gamepad", c.phoneGamepad);
     c.phoneMenuWorldWidth = ini.GetFloat("vr.phone_menu_world_width", c.phoneMenuWorldWidth);
     c.phoneMenuWorldDistance = ini.GetFloat("vr.phone_menu_world_distance", c.phoneMenuWorldDistance);
 
@@ -132,6 +139,8 @@ void LoadConfig()
     c.smoothTurnSpeed = ini.GetFloat("movement.smooth_turn_speed", c.smoothTurnSpeed);
     c.moveRelativeToHand = Lower(ini.GetString("movement.move_relative_to", "head")) == "hand";
     c.roomscale = ini.GetBool("movement.roomscale", c.roomscale);
+    c.realCrouch = ini.GetBool("movement.real_crouch", c.realCrouch);
+    c.crouchDrop = ini.GetFloat("movement.crouch_drop", c.crouchDrop);
     c.stickDeadzone = ini.GetFloat("movement.stick_deadzone", c.stickDeadzone);
 
     c.aimPitch = ini.GetFloat("aim.aim_pitch", c.aimPitch);
@@ -144,6 +153,7 @@ void LoadConfig()
     c.backRadius = ini.GetFloat("holsters.back_radius", c.backRadius);
     c.haptics = ini.GetBool("holsters.haptics", c.haptics);
     c.gripToCarry = ini.GetBool("holsters.grip_to_carry", c.gripToCarry);
+    c.phoneOpensMenu = ini.GetBool("holsters.phone_opens_menu", c.phoneOpensMenu);
     c.cameraScreenView = ini.GetBool("camera.screen_view", c.cameraScreenView);
     c.cameraScreenEvery = std::max(1, ini.GetInt("camera.screen_every", c.cameraScreenEvery));
 

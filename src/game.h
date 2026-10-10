@@ -117,6 +117,7 @@ constexpr int RC_ClearColor4ub = 74;
 constexpr int RC_PushRenderTargetAndViewport = 107;
 constexpr int RC_PopRenderTargetAndViewport = 111;
 constexpr int RC_OverrideAlphaWriteEnable = 184;
+constexpr int RC_GetCallQueue = 141; // ICallQueue* (null unless mat_queue_mode is queued)
 // ITexture
 constexpr int TEX_GetActualWidth = 3;
 constexpr int TEX_GetActualHeight = 4;
@@ -125,8 +126,14 @@ constexpr int TEX_IncrementReferenceCount = 10;
 constexpr int VGui_Paint = 38;
 // ISurface ("VGUI_Surface031")
 constexpr int IsCursorVisible = 56;
+constexpr int IsCursorLocked = 107;
+// vgui::IInputInternal (vgui2.dll VGUI_InputInternal001, checked against CInputWin32's vtable)
+constexpr int InternalKeyCodePressed = 74;
+constexpr int InternalKeyCodeReleased = 77;
 // C_BasePlayer
 constexpr int GetActiveWeapon = 243;
+// IINFRAScreenClicker (client.dll, the mouse/controller cursor on INFRA's in-world menu screens)
+constexpr int SetControllerMovesCursor = 4;
 } // namespace vidx
 
 struct Game
@@ -137,6 +144,8 @@ struct Game
     void *materials = nullptr;
     void *renderView = nullptr;
     void *surface = nullptr;
+    void *screenClicker = nullptr; // INFRA's IINFRAScreenClicker (main menu screen cursor)
+    void *vguiInput = nullptr; // vgui::IInputInternal
     size_t matGameStartedFlag = 0; // CMaterialSystem byte that blocks late RT allocation
 
     // functions (hook targets)
@@ -156,7 +165,13 @@ struct Game
 
     bool ready = false;
 
+    // Multicore rendering (mat_queue_mode 2): the engine's own thread (CreateMove, RenderView)
+    // and the thread that calls Present, which is the material system's render thread then.
+    volatile DWORD mainThread = 0, presentThread = 0;
+    mutable int queueMode = 0; // the mat_queue_mode we last asked for
+
     bool Init();
+    void FindScreenClicker();
     bool InitServer(); // server.dll (singleplayer listen server, same process)
 
     // helpers ------------------------------------------------------------------------
@@ -165,6 +180,24 @@ struct Game
     void *LocalPlayer() const;
     void *ActiveWeapon() const;
     bool IsCursorVisible() const { return surface && VCall<bool>(surface, vidx::IsCursorVisible); }
+    bool IsCursorLocked() const { return surface && VCall<bool>(surface, vidx::IsCursorLocked); }
+    // The screen clicker's panel (CINFRAScreenClickerPanel), or null before INFRA created it.
+    const uint8_t *ScreenClickerPanel() const;
+    // INFRA's main menu lets the controller move the mouse cursor once it is in controller mode;
+    // that fights the VR pointer, so it is switched off while the pointer drives the menu.
+    // Returns true if it was on.
+    bool StopControllerCursor() const;
+    // Presses and releases a ButtonCode_t (e.g. a gamepad button) straight into vgui, the way the
+    // engine forwards INFRA's own controller to its menus. Main thread only. 
+    // 1 = a panel took it, 0 = nothing has focus, -1 = no vgui input interface.
+    int VguiButton(int code) const
+    {
+        if (!vguiInput)
+            return -1;
+        bool taken = VCall<bool, int>(vguiInput, vidx::InternalKeyCodePressed, code);
+        VCall<void, int>(vguiInput, vidx::InternalKeyCodeReleased, code);
+        return taken ? 1 : 0;
+    }
     void SetViewAngles(const QAngle &a) const
     {
         QAngle copy = a;

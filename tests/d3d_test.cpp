@@ -50,6 +50,7 @@ int main()
     pp.PresentationInterval = D3DPRESENT_INTERVAL_ONE;
     IDirect3DDevice9 *dev = nullptr;
     HRESULT hr = d3d->CreateDevice(0, D3DDEVTYPE_HAL, wnd, D3DCREATE_HARDWARE_VERTEXPROCESSING, &pp, &dev);
+    g_Mod.firstLevelAt = NowSeconds() - 5.0; // as if the main menu map had loaded
     printf("CreateDevice %08lx active %d interop %d\n", (unsigned long)hr, g_Mod.Active(), g_D3D.interopOk);
     if (FAILED(hr))
         return 1;
@@ -108,6 +109,56 @@ int main()
         hr = dev->Present(nullptr, nullptr, nullptr, nullptr);
         Sleep(1600);
         printf("frame %d (%s) present %08lx\n", frame, stereo ? "stereo" : "menu", (unsigned long)hr);
+    }
+    // Antialiasing: drawing into an eye goes to a multisampled stand-in that is resolved into it.
+    {
+        IDirect3DSurface9 *eyeSurf = nullptr, *depth = nullptr, *old = nullptr, *oldDepth = nullptr;
+        eyes[1]->GetSurfaceLevel(0, &eyeSurf);
+        dev->CreateDepthStencilSurface(w, h, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, FALSE, &depth, nullptr);
+        dev->GetRenderTarget(0, &old);
+        dev->GetDepthStencilSurface(&oldDepth);
+        dev->SetRenderTarget(0, eyeSurf);
+        dev->SetDepthStencilSurface(depth);
+        IDirect3DSurface9 *bound = nullptr;
+        dev->GetRenderTarget(0, &bound);
+        D3DSURFACE_DESC bd{};
+        bound->GetDesc(&bd);
+        HRESULT ch = dev->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, D3DCOLOR_XRGB(255, 0, 255), 1.0f, 0);
+        // a copy the game makes from the eye while drawing it (like _rt_FullFrameFB)
+        IDirect3DTexture9 *copyTex = nullptr;
+        IDirect3DSurface9 *copySurf = nullptr;
+        dev->CreateTexture(512, 512, 1, D3DUSAGE_RENDERTARGET, D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT, &copyTex, nullptr);
+        copyTex->GetSurfaceLevel(0, &copySurf);
+        HRESULT cp = dev->StretchRect(eyeSurf, nullptr, copySurf, nullptr, D3DTEXF_LINEAR);
+        dev->SetRenderTarget(0, old);
+        dev->SetDepthStencilSurface(oldDepth);
+        g_D3D.ResolveEyes();
+        auto pixel = [&](IDirect3DSurface9 *src, UINT sw, UINT sh) -> DWORD {
+            IDirect3DSurface9 *sys = nullptr;
+            dev->CreateOffscreenPlainSurface(sw, sh, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &sys, nullptr);
+            dev->GetRenderTargetData(src, sys);
+            D3DLOCKED_RECT lr{};
+            DWORD v = 0;
+            if (SUCCEEDED(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY)))
+            {
+                v = static_cast<DWORD *>(lr.pBits)[(sh / 2) * (lr.Pitch / 4) + sw / 2] & 0xFFFFFF;
+                sys->UnlockRect();
+            }
+            sys->Release();
+            return v;
+        };
+        DWORD eyePx = pixel(eyeSurf, w, h), copyPx = pixel(copySurf, 512, 512);
+        printf("msaa: bound samples %d, clear %08lx, copy %08lx, eye pixel %06lx, copy pixel %06lx -> %s\n",
+               (int)bd.MultiSampleType, (unsigned long)ch, (unsigned long)cp, (unsigned long)eyePx,
+               (unsigned long)copyPx,
+               bd.MultiSampleType == D3DMULTISAMPLE_4_SAMPLES && eyePx == 0xFF00FF && copyPx == 0xFF00FF ? "OK" : "FAIL");
+        bound->Release();
+        copySurf->Release();
+        copyTex->Release();
+        old->Release();
+        oldDepth->Release();
+        depth->Release();
+        eyeSurf->Release();
     }
     // Reset path
     g_D3D.OnBeforeReset();

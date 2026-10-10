@@ -106,6 +106,7 @@ Pose VRMod::HeadWorld() const
     p.pos = m_anchor + m_residual;
     if (m_standingHeight > 0)
         p.pos.z += (h.pos.z - m_standingHeight) * m_scale;
+    p.pos.z += m_crouchComp;
     return p;
 }
 
@@ -168,6 +169,37 @@ void VRMod::OnRenderViewBegin(const CViewSetup &view)
     m_prevAnchor = origin;
     m_anchor = origin;
     m_haveAnchor = true;
+
+    // How far the game's eye is above the player's feet (lower while ducking).
+    m_eyeAboveFeet = -1.0f;
+    m_crouchComp = 0.0f;
+    if (!g_Config.realCrouch || m_feetFailed)
+        return;
+    if (void *player = g_Game.LocalPlayer())
+    {
+        void *renderable = static_cast<uint8_t *>(player) + 4; // IClientRenderable: GetRenderOrigin is 1
+        if (LooksLikeObject(renderable))
+        {
+            const Vector *feet = VCall<const Vector *>(renderable, 1);
+            if (feet && IsReadable(feet, sizeof(Vector)))
+            {
+                float d = origin.z - feet->z;
+                if (d > 8.0f && d < 100.0f)
+                    m_eyeAboveFeet = d;
+            }
+        }
+    }
+    double now = NowSeconds();
+    if (m_eyeAboveFeet < 0)
+        return;
+    if (now - m_lastDuck > 1.5)
+    {
+        if (m_standEye < 0)
+            IVR_LOG("Real crouch: the game's standing eye height is %.0f units", m_eyeAboveFeet);
+        m_standEye = m_eyeAboveFeet;
+    }
+    if (m_realCrouch && !m_crouchToggled && m_standEye > 0)
+        m_crouchComp = std::max(0.0f, m_standEye - m_eyeAboveFeet);
 }
 
 void VRMod::OnCreateMove(CUserCmd *cmd)
@@ -268,8 +300,25 @@ void VRMod::OnCreateMove(CUserCmd *cmd)
         if (m_jumpTicks > 0)
             --m_jumpTicks;
     }
-    if (m_crouchToggled)
+    if (g_Config.realCrouch && m_standingHeight > 0)
+    {
+        float drop = m_standingHeight - head.pos.z;
+        bool was = m_realCrouch;
+        if (!m_realCrouch && drop > g_Config.crouchDrop)
+            m_realCrouch = true;
+        else if (m_realCrouch && drop < g_Config.crouchDrop * 0.75f)
+            m_realCrouch = false;
+        static int s_logs = 0;
+        if (m_realCrouch != was && s_logs++ < 6)
+            IVR_LOG("Real crouch: %s (head %.2f m below standing)", m_realCrouch ? "crouching" : "standing up", drop);
+    }
+    else
+        m_realCrouch = false;
+    if (m_crouchToggled || m_realCrouch)
+    {
         cmd->buttons |= IN_DUCK;
+        m_lastDuck = now;
+    }
     if (m_sprintToggled)
         cmd->buttons |= IN_SPEED;
 
@@ -397,13 +446,19 @@ void VRMod::OnFrame()
     if (phoneMenu != wasPhone)
     {
         IVR_LOG("Phone menu %s", phoneMenu ? "open" : "closed");
+        if (!phoneMenu)
+        {
+            if (m_mouseDown)
+                SendMouseButton(false);
+            HidePointer();
+        }
         if (g_Config.phoneMenuInWorld)
         {
             // The menu stands in the world; the phone model would only get in the way.
             g_Game.ExecuteCommand(phoneMenu ? "r_drawviewmodel 0" : "r_drawviewmodel 1");
             m_phoneWorldPlaced = false;
         }
-        else if (phoneMenu)
+        else if (phoneMenu && g_Config.phoneMenuPointer)
         {
             m_savedItemHand = itemHand;
             itemHand = Offhand(); // phone in the off hand, point and click with the other one
@@ -448,6 +503,10 @@ void VRMod::OnFrame()
     else if (menuMode)
     {
         m_residual = Vector(0, 0, 0);
+        // After INFRA has seen a controller, its main menu screen lets the stick move the mouse
+        // cursor every frame, which pins it and swallows the pointer: the pointer drives it instead.
+        if (mainMenu && g_Game.StopControllerCursor())
+            IVR_LOG("Main menu: INFRA's controller cursor switched off, the pointer drives the menu");
         RunCommands(now); // CreateMove does not run while paused / in menus
         if (m_pauseTap)
         {
@@ -495,6 +554,8 @@ void VRMod::OnLevelLoaded()
 {
     std::string map = g_Game.ConVarString("host_map");
     ++m_levelLoads;
+    if (firstLevelAt < 0)
+        firstLevelAt = NowSeconds();
     std::string lower = map;
     for (char &c : lower)
         c = (char)tolower((unsigned char)c);
@@ -536,6 +597,21 @@ void VRMod::RunCommands(double now)
     }
 }
 
+namespace {
+constexpr int KEY_XBUTTON_A = 114, KEY_XBUTTON_B = 115, KEY_XBUTTON_UP = 242, KEY_XBUTTON_RIGHT = 243,
+              KEY_XBUTTON_DOWN = 244, KEY_XBUTTON_LEFT = 245;
+int PadDirection(WPARAM vk)
+{
+    switch (vk)
+    {
+    case VK_UP: return KEY_XBUTTON_UP;
+    case VK_DOWN: return KEY_XBUTTON_DOWN;
+    case VK_LEFT: return KEY_XBUTTON_LEFT;
+    default: return KEY_XBUTTON_RIGHT;
+    }
+}
+} // namespace
+
 void VRMod::ProcessGameInput(double now, double dt)
 {
     const InputState &in = g_VR.Input();
@@ -544,8 +620,22 @@ void VRMod::ProcessGameInput(double now, double dt)
     if (activeItem != previous)
         IVR_LOG("Active item: %d", (int)activeItem);
 
+    // Phone out: the right stick, A and B drive the phone's screen instead of turning, jumping and
+    // reloading. Everything else (moving, holsters, grabbing) works as usual.
+    bool phoneControls = activeItem == Item::Phone;
+    if (phoneControls)
+    {
+        NavigateWithStick(now, in.turn, true);
+        if (in.jump.pressed)
+            PhoneButton(KEY_XBUTTON_A, VK_RETURN);
+        if (in.reload.pressed)
+            PhoneButton(KEY_XBUTTON_B, VK_ESCAPE);
+    }
+    else
+        m_navDir = 0;
+
     // Turning
-    float tx = in.turn.x;
+    float tx = phoneControls ? 0.0f : in.turn.x;
     if (g_Config.snapTurn)
     {
         if (std::fabs(tx) > 0.7f && m_snapArmed)
@@ -573,7 +663,7 @@ void VRMod::ProcessGameInput(double now, double dt)
     else
         m_recenterHeldSince = -1.0;
 
-    if (in.jump.pressed)
+    if (in.jump.pressed && !phoneControls)
         m_jumpTicks = 2;
     if (m_crouchTap)
         m_crouchToggled = !m_crouchToggled;
@@ -582,7 +672,7 @@ void VRMod::ProcessGameInput(double now, double dt)
         m_sprintToggled = !m_sprintToggled;
     else if (std::sqrt(in.move.x * in.move.x + in.move.y * in.move.y) < g_Config.stickDeadzone)
         m_sprintToggled = false;
-    if (in.reload.pressed)
+    if (in.reload.pressed && !phoneControls)
         m_reloadTicks = 2;
     if (m_pauseTap)
         QueueCommand(g_Config.cmdPause);
@@ -596,64 +686,13 @@ void VRMod::ProcessGameInput(double now, double dt)
     if (in.phone.pressed)
     {
         itemHand = Dominant();
-        QueueCommand(activeItem == Item::Phone ? g_Config.cmdHands : g_Config.cmdPhone);
+        TogglePhone();
     }
 
     // Holsters first; a grip that starts in a holster zone does not grab.
     bool consumed[2] = {false, false};
+    ProcessHolsters(consumed);
     const DigitalAction *grips[2] = {&in.gripLeft, &in.gripRight};
-    if (g_Config.holsters && g_VR.Head().valid)
-    {
-        const TrackedPose &head = g_VR.Head();
-        float yaw = YawOf(head.rot);
-        Vector f = YawForward(yaw), l = {-f.y, f.x, 0.0f};
-        Vector hipBase(head.pos.x, head.pos.y, m_standingHeight * g_Config.hipHeight);
-        Vector centres[3] = {
-            hipBase + f * g_Config.hipForward + l * g_Config.hipSide, // 0: left hip  - flashlight
-            hipBase + f * g_Config.hipForward - l * g_Config.hipSide, // 1: right hip - phone
-            head.pos - f * 0.18f + Vector(0, 0, -0.08f),              // 2: behind the head / shoulder - camera
-        };
-        float radii[3] = {g_Config.hipRadius, g_Config.hipRadius, g_Config.backRadius};
-        for (int h = 0; h < 2; ++h)
-        {
-            const TrackedPose &c = g_VR.HandPose(h);
-            if (!c.valid)
-                continue;
-            for (int z = 0; z < 3; ++z)
-            {
-                bool inside = (c.pos - centres[z]).Length() < radii[z];
-                if (z == 2)
-                    inside = inside && Dot(c.pos - head.pos, f) < 0.03f;
-                if (inside && !m_inZone[h][z])
-                    g_VR.Haptic(h, 0.04f, 120, 0.35f);
-                m_inZone[h][z] = inside;
-                if (!inside || !grips[h]->pressed || consumed[h])
-                    continue;
-                consumed[h] = true;
-                g_VR.Haptic(h, 0.08f, 160, 0.8f);
-                if (z == 0)
-                {
-                    flashlightInHand = !flashlightInHand;
-                    flashlightHand = h;
-                    QueueCommand(g_Config.cmdFlashlightDown);
-                    QueueCommand(g_Config.cmdFlashlightUp, 0.1);
-                    IVR_LOG("Holster: flashlight %s (hand %d)", flashlightInHand ? "out" : "away", h);
-                }
-                else if (z == 1)
-                {
-                    itemHand = h;
-                    QueueCommand(activeItem == Item::Phone ? g_Config.cmdHands : g_Config.cmdPhone);
-                    IVR_LOG("Holster: phone (hand %d)", h);
-                }
-                else
-                {
-                    itemHand = h;
-                    QueueCommand(activeItem == Item::Camera ? g_Config.cmdHands : g_Config.cmdCamera);
-                    IVR_LOG("Holster: camera (hand %d)", h);
-                }
-            }
-        }
-    }
 
     // Grip = grab / hold: press "use" aimed from that hand; releasing drops (or throws).
     for (int h = 0; h < 2; ++h)
@@ -741,6 +780,13 @@ void VRMod::UpdateOverlays(bool showMenu, bool showHud, int menuWidth, int menuH
         else
             ov->HideOverlay(hudOverlay);
         if (atHand)
+            m_phoneAspect = aspect;
+        if (atHand && !g_Config.phoneMenuPointer)
+        {
+            if (m_pointerShown)
+                HidePointer();
+        }
+        else if (atHand)
             ProcessPointer(m_phoneXf, g_Config.phoneMenuInWorld ? g_Config.phoneMenuWorldWidth : g_Config.phoneMenuWidth,
                            aspect, g_Config.phoneMenuInWorld ? -1 : 1 - itemHand, false);
         else if (!showMenu && m_pointerShown)
@@ -865,23 +911,129 @@ void VRMod::PlaceHud(bool atHand, float aspect)
     }
 }
 
-// Phone menu: sticks = arrow keys (with repeat), A = select, B = back, pause = close.
+// Hip, back and shoulder holsters: a grip inside a zone takes the item out or puts it away.
+// Runs in the phone menu too, so the phone goes back in its holster from there.
+void VRMod::ProcessHolsters(bool consumed[2])
+{
+    const InputState &in = g_VR.Input();
+    const DigitalAction *grips[2] = {&in.gripLeft, &in.gripRight};
+    if (g_Config.holsters && g_VR.Head().valid)
+    {
+        const TrackedPose &head = g_VR.Head();
+        float yaw = YawOf(head.rot);
+        Vector f = YawForward(yaw), l = {-f.y, f.x, 0.0f};
+        Vector hipBase(head.pos.x, head.pos.y, m_standingHeight * g_Config.hipHeight);
+        Vector centres[3] = {
+            hipBase + f * g_Config.hipForward + l * g_Config.hipSide, // 0: left hip  - flashlight
+            hipBase + f * g_Config.hipForward - l * g_Config.hipSide, // 1: right hip - phone
+            head.pos - f * 0.18f + Vector(0, 0, -0.08f),              // 2: behind the head / shoulder - camera
+        };
+        float radii[3] = {g_Config.hipRadius, g_Config.hipRadius, g_Config.backRadius};
+        for (int h = 0; h < 2; ++h)
+        {
+            const TrackedPose &c = g_VR.HandPose(h);
+            if (!c.valid)
+                continue;
+            for (int z = 0; z < 3; ++z)
+            {
+                bool inside = (c.pos - centres[z]).Length() < radii[z];
+                if (z == 2)
+                    inside = inside && Dot(c.pos - head.pos, f) < 0.03f;
+                if (inside && !m_inZone[h][z])
+                    g_VR.Haptic(h, 0.04f, 120, 0.35f);
+                m_inZone[h][z] = inside;
+                if (!inside || !grips[h]->pressed || consumed[h])
+                    continue;
+                consumed[h] = true;
+                g_VR.Haptic(h, 0.08f, 160, 0.8f);
+                if (z == 0)
+                {
+                    flashlightInHand = !flashlightInHand;
+                    flashlightHand = h;
+                    QueueCommand(g_Config.cmdFlashlightDown);
+                    QueueCommand(g_Config.cmdFlashlightUp, 0.1);
+                    IVR_LOG("Holster: flashlight %s (hand %d)", flashlightInHand ? "out" : "away", h);
+                }
+                else if (z == 1)
+                {
+                    itemHand = h;
+                    TogglePhone();
+                    IVR_LOG("Holster: phone (hand %d)", h);
+                }
+                else
+                {
+                    itemHand = h;
+                    QueueCommand(activeItem == Item::Camera ? g_Config.cmdHands : g_Config.cmdCamera);
+                    IVR_LOG("Holster: camera (hand %d)", h);
+                }
+            }
+        }
+    }
+
+}
+
+// Phone out / away. With [holsters] phone_menu the phone comes out as INFRA's own phone menu (what
+// the phone is in INFRA: its screen is the pause menu), so the stick and buttons drive it until it
+// goes away again.
+void VRMod::TogglePhone()
+{
+    if (phoneMenu)
+        QueueCommand("gameui_hide");
+    else if (activeItem == Item::Phone)
+        QueueCommand(g_Config.cmdHands);
+    else if (g_Config.phoneOpensMenu)
+        QueueCommand("gameui_activate");
+    else
+        QueueCommand(g_Config.cmdPhone);
+}
+
+// Phone menu: right stick moves between items, A selects, B goes back, pause closes - sent to vgui as
+// INFRA's own controller buttons (its phone screen only handles "back" for the controller's B).
+
+// A controller button for INFRA's phone menu, straight into vgui like INFRA's own gamepad support;
+// the keyboard key if no vgui panel took it.
+void VRMod::PhoneButton(int padCode, WPARAM vk)
+{
+    int r = g_Game.VguiButton(padCode);
+    if (r != m_lastPhoneButtonResult)
+    {
+        m_lastPhoneButtonResult = r;
+        IVR_LOG("Phone menu: controller button %d %s", padCode,
+                r > 0 ? "taken by the menu" : r == 0 ? "not taken" : "(vgui input unavailable)");
+    }
+    if (r <= 0 && phoneMenu) // held phone: arrow keys / Enter / Escape are game binds, never send them
+        SendKey(vk);
+}
+
 void VRMod::ProcessPhoneMenuInput(double now)
 {
     const InputState &in = g_VR.Input();
-    NavigateWithStick(now, std::fabs(in.move.x) + std::fabs(in.move.y) >= std::fabs(in.turn.x) + std::fabs(in.turn.y)
-                               ? in.move
-                               : in.turn);
-    if (in.jump.pressed) // A
-        SendKey(VK_RETURN);
-    if (in.reload.pressed) // B
-        SendKey(VK_ESCAPE);
-    if (m_pauseTap)
+    // The phone takes over the controls while it is out: nothing here reaches the game as movement,
+    // turning, jumping or reloading (ProcessGameInput does not run). With [vr] phone_gamepad the
+    // sticks and buttons reach INFRA as an Xbox controller instead (gamepad.cpp), so its menu works
+    // as it does with a real controller; otherwise they are sent as menu keys.
+    if (!g_Config.phoneGamepad)
+    {
+        NavigateWithStick(now, in.turn, true);
+        if (in.jump.pressed)
+            PhoneButton(KEY_XBUTTON_A, VK_RETURN);
+        if (in.reload.pressed)
+            PhoneButton(KEY_XBUTTON_B, VK_ESCAPE);
+    }
+    if (m_pauseTap || in.phone.pressed)
         QueueCommand("gameui_hide");
+    bool consumed[2] = {false, false};
+    ProcessHolsters(consumed);
 }
 
-void VRMod::NavigateWithStick(double now, const AnalogAction &a)
+void VRMod::NavigateWithStick(double now, const AnalogAction &a, bool pad)
 {
+    auto press = [&](int vk) {
+        if (pad)
+            PhoneButton(PadDirection(vk), vk);
+        else
+            SendKey(vk);
+    };
     int dir = 0;
     if (std::fabs(a.y) > 0.6f && std::fabs(a.y) >= std::fabs(a.x))
         dir = a.y > 0 ? VK_UP : VK_DOWN;
@@ -895,12 +1047,12 @@ void VRMod::NavigateWithStick(double now, const AnalogAction &a)
     {
         m_navDir = dir;
         m_navNext = now + 0.4;
-        SendKey(dir);
+        press(dir);
     }
     else if (now >= m_navNext)
     {
         m_navNext = now + 0.15;
-        SendKey(dir);
+        press(dir);
     }
 }
 
@@ -1073,8 +1225,11 @@ void VRMod::ProcessPointer(const vr::HmdMatrix34_t &screen, float width, float a
         if (m_clickLogs < 10)
         {
             ++m_clickLogs;
-            IVR_LOG("click at %.2f %.2f (window %dx%d, game window %s)", u, v, cw, ch,
-                    GetForegroundWindow() == gameWindow ? "in front" : "NOT in front - Windows refused to focus it");
+            const uint8_t *clicker = g_Game.ScreenClickerPanel();
+            IVR_LOG("click at %.2f %.2f (window %dx%d, game window %s; cursor %s%s, screen clicker %s)", u, v, cw,
+                    ch, GetForegroundWindow() == gameWindow ? "in front" : "NOT in front - Windows refused to focus it",
+                    g_Game.IsCursorVisible() ? "visible" : "hidden", g_Game.IsCursorLocked() ? " and locked" : "",
+                    !clicker ? "none" : clicker[0x18B] ? "on, controller moves cursor" : "on");
         }
         SendMouseButton(true);
         g_VR.Haptic(m_pointerHand, 0.03f, 200, 0.5f);

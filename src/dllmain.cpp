@@ -8,6 +8,7 @@
 //      the Source engine (see hooks_game.cpp).
 #include "common.h"
 #include "config.h"
+#include "gamepad.h"
 #include "d3d_vr.h"
 #include "game.h"
 #include "hooks.h"
@@ -87,6 +88,8 @@ HRESULT STDMETHODCALLTYPE hkSetRenderTarget(IDirect3DDevice9 *self, DWORD index,
         sprintf(what, "SetRenderTarget[%lu]", (unsigned long)index);
         g_D3D.TraceSurface(what, surf);
     }
+    if (index == 0)
+        surf = g_D3D.MapRenderTarget(surf);
     return g_hkSetRenderTarget.original(self, index, surf);
 }
 
@@ -94,7 +97,7 @@ HRESULT STDMETHODCALLTYPE hkSetDepthStencil(IDirect3DDevice9 *self, IDirect3DSur
 {
     if (g_D3D.trace)
         g_D3D.TraceSurface("SetDepthStencil", surf);
-    return g_hkSetDepthStencil.original(self, surf);
+    return g_hkSetDepthStencil.original(self, g_D3D.MapDepth(surf));
 }
 
 HRESULT STDMETHODCALLTYPE hkSetViewport(IDirect3DDevice9 *self, const D3DVIEWPORT9 *vp)
@@ -129,7 +132,7 @@ HRESULT STDMETHODCALLTYPE hkStretchRect(IDirect3DDevice9 *self, IDirect3DSurface
     }
     else if (g_D3D.blockCameraCopy && dst && dst == g_D3D.cameraSurface)
         return D3D_OK; // keep the picture from the camera lens
-    return g_hkStretchRect.original(self, src, sr, dst, dr, f);
+    return g_hkStretchRect.original(self, g_D3D.MapCopySource(src), sr, g_D3D.MapCopyDest(dst), dr, f);
 }
 
 HRESULT STDMETHODCALLTYPE hkDrawIndexed(IDirect3DDevice9 *self, D3DPRIMITIVETYPE t, INT bv, UINT mi, UINT nv, UINT si,
@@ -272,6 +275,7 @@ void InitVROnce()
     if (g_vrInitDone)
         return;
     g_vrInitDone = true;
+    InstallGamepadHooks(); // before the engine's input system looks for controllers
 
     // DXVK options for VR (no vsync against the monitor, low latency) unless the user has their own.
     std::string conf = ModuleDir() + "infravr\\dxvk.conf";
@@ -294,6 +298,15 @@ HMODULE RealD3D9()
     if (g_realD3D9)
         return g_realD3D9;
     std::string dxvk = ModuleDir() + "dxvk_d3d9.dll";
+    if (g_Config.dxvk == "gplall")
+    {
+        // DXVK-GPLALL 2.6.1 (the build l4d2vr uses), optional since 0.8.1
+        std::string alt = ModuleDir() + "dxvk_d3d9_gplall.dll";
+        if (GetFileAttributesA(alt.c_str()) != INVALID_FILE_ATTRIBUTES)
+            dxvk = alt;
+        else
+            IVR_ERR("%s not found - using the stock DXVK", alt.c_str());
+    }
     g_realD3D9 = LoadLibraryExA(dxvk.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (g_realD3D9)
     {
@@ -357,7 +370,11 @@ void AfterPresent()
     if (!g_VR.Ok() || !g_Mod.Active())
         return;
     g_VR.m_compositor->PostPresentHandoff();
-    g_Mod.OnFrame();
+    // With multicore rendering Present runs on the engine's render thread; the VR logic (poses,
+    // input) then runs on the main thread at the start of each RenderView instead.
+    g_Game.presentThread = GetCurrentThreadId();
+    if (!g_Game.mainThread || g_Game.presentThread == g_Game.mainThread)
+        g_Mod.OnFrame();
 }
 
 void AdjustPresentParams(D3DPRESENT_PARAMETERS *pp)
@@ -446,10 +463,21 @@ void HookDevice(IDirect3DDevice9 *device, HWND window)
         g_Mod.Init();
 }
 
+// The mod touches the device from the engine's thread and from Present, which is the material
+// system's render thread whenever INFRA's own "multicore rendering" is on (even briefly at startup,
+// before mat_queue_mode 0 takes effect), so let DXVK lock every call.
+DWORD DeviceFlags(DWORD flags)
+{
+    IVR_LOG("D3D9 device flags 0x%lx%s", (unsigned long)flags,
+            (flags & D3DCREATE_MULTITHREADED) ? "" : " (+ D3DCREATE_MULTITHREADED)");
+    return flags | D3DCREATE_MULTITHREADED;
+}
+
 HRESULT STDMETHODCALLTYPE hkCreateDevice(IDirect3D9 *self, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD flags,
                                          D3DPRESENT_PARAMETERS *pp, IDirect3DDevice9 **out)
 {
     AdjustPresentParams(pp);
+    flags = DeviceFlags(flags);
     HRESULT hr = g_hkCreateDevice.original(self, adapter, type, focus, flags, pp, out);
     if (SUCCEEDED(hr) && out && *out)
     {
@@ -467,6 +495,7 @@ HRESULT STDMETHODCALLTYPE hkCreateDeviceEx(IDirect3D9Ex *self, UINT adapter, D3D
                                            IDirect3DDevice9Ex **out)
 {
     AdjustPresentParams(pp);
+    flags = DeviceFlags(flags);
     HRESULT hr = g_hkCreateDeviceEx.original(self, adapter, type, focus, flags, pp, mode, out);
     if (SUCCEEDED(hr) && out && *out)
     {
@@ -590,7 +619,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
     {
         DisableThreadLibraryCalls(instance);
         LogInit((GameDir() + "infravr.log").c_str());
-        IVR_LOG("INFRA VR 0.7 loaded from %s", ModuleDir().c_str());
+        IVR_LOG("INFRA VR 0.8.7 loaded from %s", ModuleDir().c_str());
         LoadConfig();
         HooksInit();
     }

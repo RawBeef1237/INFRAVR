@@ -97,6 +97,23 @@ public:
     // Set when the HUD panel turned out to be opaque (it would cover the view): HUD overlay off.
     bool hudBroken = false;
 
+    // Antialiasing: while the game draws into an eye texture it really draws into a multisampled
+    // stand-in (with a multisampled depth buffer); the stand-in is resolved into the eye texture
+    // before the frame goes to the headset, and copies the game makes from the eye read it too.
+    IDirect3DSurface9 *MapRenderTarget(IDirect3DSurface9 *s);
+    IDirect3DSurface9 *MapDepth(IDirect3DSurface9 *s);
+    IDirect3DSurface9 *MapCopySource(IDirect3DSurface9 *s);
+    IDirect3DSurface9 *MapCopyDest(IDirect3DSurface9 *s);
+    void ResolveEyes();
+    // Head pose the eyes about to be presented were drawn for (sent with them, so SteamVR
+    // reprojects correctly even when the frame is presented later, as with multicore rendering).
+    void SetRenderPose(const vr::HmdMatrix34_t &p)
+    {
+        m_renderPose = p;
+        m_haveRenderPose = true;
+    }
+    bool resolving = false; // our own resolve copies: no mapping
+
 private:
     struct ProbeStats
     {
@@ -117,6 +134,23 @@ private:
     void EndVulkanAccess(VrTexture *const *textures, int count);
     vr::VRVulkanTextureData_t VulkanData(const VrTexture &t) const;
     void CopyBackBufferToMenu();
+    IDirect3DSurface9 *EyeSurface(int e);
+    IDirect3DSurface9 *BoundRenderTarget(); // render target 0 (AddRef'd), stand-ins mapped back to the eye
+    void ReleaseMsaa();
+    struct MsaaEye
+    {
+        IDirect3DTexture9 *tex = nullptr;  // eye texture the cached surface belongs to
+        IDirect3DSurface9 *surf = nullptr; // its level 0 (not owned)
+        IDirect3DSurface9 *ms = nullptr;   // multisampled stand-in (owned)
+        bool dirty = false;                // drawn into since the last resolve
+    } m_msaa[2];
+    struct MsaaDepth
+    {
+        IDirect3DSurface9 *src = nullptr; // the game's depth buffer (not owned)
+        IDirect3DSurface9 *ms = nullptr;  // owned
+    } m_msaaDepth[4];
+    bool m_msaaFailed = false;
+    bool m_msaaLogged = false;
     void MirrorEyeToBackBuffer();
 
     ID3D9VkInteropDevice *m_interop = nullptr;
@@ -139,6 +173,10 @@ private:
     // Last stereo frame's head pose, so a frame can be shown again (with correct reprojection)
     // when the game skips the 3D view while its pause/phone menu is up.
     vr::HmdMatrix34_t m_lastEyePose{};
+    vr::HmdMatrix34_t m_renderPose{};
+    double m_firstPresent = -1;
+    bool m_submitReady = false;
+    bool m_haveRenderPose = false;
     bool m_haveLastEyes = false;
     int m_phoneFrames = 0, m_phoneReused = 0;
     uint32_t m_lastSubmits = 0, m_lastPresents = 0, m_lastDropped = 0, m_lastReprojected = 0, m_lastTimedOut = 0;

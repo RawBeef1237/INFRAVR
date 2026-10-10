@@ -10,6 +10,7 @@
 #include <cstring>
 #include <string>
 #include <algorithm>
+#include <functional>
 
 namespace ivr {
 
@@ -55,6 +56,77 @@ int g_grabOverride = 0;
 double g_lastLog = 0;
 double g_traceAgainAt = 0;
 
+// ---- multicore rendering ---------------------------------------------------------------------
+// With mat_queue_mode 2 the engine records its rendering on this thread and plays it back on a
+// render thread later, so anything we do at the D3D level (checking what the game drew into,
+// the camera copy, telling Present a stereo frame is ready) must be queued the same way. A
+// CFunctor laid out for MSVC: AddRef, Release, deleting destructor, operator().
+struct QueuedCall
+{
+    void **vtable;
+    unsigned userId = 0;
+    volatile LONG refs = 0;
+    std::function<void()> fn;
+};
+
+int IVR_FASTCALL QcAddRef(QueuedCall *self, void *) { return (int)InterlockedIncrement(&self->refs); }
+int IVR_FASTCALL QcRelease(QueuedCall *self, void *)
+{
+    LONG n = InterlockedDecrement(&self->refs);
+    if (n == 0)
+        delete self;
+    return (int)n;
+}
+void *IVR_FASTCALL QcDestroy(QueuedCall *self, void *, int flags)
+{
+    if (flags & 1)
+        delete self;
+    return self;
+}
+void IVR_FASTCALL QcCall(QueuedCall *self, void *)
+{
+    if (self->fn)
+        self->fn();
+}
+void *g_qcVtable[4] = {(void *)&QcAddRef, (void *)&QcRelease, (void *)&QcDestroy, (void *)&QcCall};
+
+void *RenderQueue()
+{
+    void *ctx = g_Game.RenderContext();
+    void *queue = ctx ? VCall<void *>(ctx, vidx::RC_GetCallQueue) : nullptr;
+    if (ctx)
+        Game::ReleaseContext(ctx);
+    return queue;
+}
+
+// Runs fn where the D3D work of what was rendered so far happens: now, or queued after it.
+void Defer(std::function<void()> fn)
+{
+    void *queue = RenderQueue();
+    if (!queue)
+    {
+        fn();
+        return;
+    }
+    QueuedCall *c = new QueuedCall;
+    c->vtable = g_qcVtable;
+    c->fn = std::move(fn);
+    c->refs = 1; // ICallQueue::QueueFunctor's AddRef; the queue releases it after the call
+    VCall<void, void *>(queue, 0, c); // QueueFunctorInternal
+}
+
+// mat_queue_mode 2 only while we are in a level with the eye images made (creating render
+// targets and the menus keep the engine single threaded).
+void UpdateQueueMode()
+{
+    int want = (g_Config.multicore && !g_Mod.menuMode && g_D3D.eye[0].Valid() && g_D3D.eye[1].Valid()) ? 2 : 0;
+    if (want == g_Game.queueMode)
+        return;
+    g_Game.queueMode = want;
+    g_Game.ExecuteCommand(want == 2 ? "mat_queue_mode 2" : "mat_queue_mode 0");
+    IVR_LOG("Multicore rendering %s", want == 2 ? "on" : "off");
+}
+
 bool g_rtLost = false; // the game stopped drawing into our eye images: make new ones
 int g_rtGeneration = 0;
 
@@ -77,6 +149,14 @@ bool EnsureTextures()
         return true;
     if (g_texturesFailed)
         return false;
+    if (RenderQueue())
+    {
+        // Render targets are made with the engine single threaded; UpdateQueueMode turns
+        // multicore off because the eye images are missing, so this works a frame later.
+        g_D3D.eye[0].Reset();
+        g_D3D.eye[1].Reset();
+        return false;
+    }
     int w = (int)g_VR.renderWidth, h = (int)g_VR.renderHeight;
     if (g_Config.renderFitWindow)
     {
@@ -147,10 +227,13 @@ void PaintHud(const CViewSetup *hudView, int paintMode)
     VCall<void, bool, bool>(ctx, vidx::RC_OverrideAlphaWriteEnable, true, true);
     VCall<void, unsigned char, unsigned char, unsigned char, unsigned char>(ctx, vidx::RC_ClearColor4ub, 0, 0, 0, 0);
     VCall<void, bool, bool, bool>(ctx, vidx::RC_ClearBuffers, true, false, false);
-    if (!g_D3D.hud.Valid())
-        g_D3D.CaptureBoundRenderTarget(g_D3D.hud, (UINT)g_hudW, (UINT)g_hudH);
-    else
-        g_D3D.CheckBoundRenderTarget(2);
+    int hw = g_hudW, hh = g_hudH;
+    Defer([hw, hh] {
+        if (!g_D3D.hud.Valid())
+            g_D3D.CaptureBoundRenderTarget(g_D3D.hud, (UINT)hw, (UINT)hh);
+        else
+            g_D3D.CheckBoundRenderTarget(2);
+    });
     VCall<void, int>(g_Game.renderView, vidx::VGui_Paint, paintMode);
     VCall<void, bool, bool>(ctx, vidx::RC_OverrideAlphaWriteEnable, false, true);
     VCall<void, void *, void *>(g_Game.renderView, 42, ctx, frustum); // PopView(ctx, frustum)
@@ -205,6 +288,14 @@ void RenderLensView(void *self, void *edx, CViewSetup *view, CViewSetup *hudView
 void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CViewSetup *hudView, int clearFlags,
                                    int whatToDraw)
 {
+    if (g_renderDepth == 0 && g_Mod.Active())
+    {
+        g_Game.mainThread = GetCurrentThreadId();
+        // Present runs on the render thread (multicore): poses and input are read here instead.
+        if (g_Game.presentThread && g_Game.presentThread != g_Game.mainThread)
+            g_Mod.OnFrame();
+        UpdateQueueMode();
+    }
     if (g_renderDepth > 0 || !g_Mod.Active() || g_Mod.menuMode || !IsMainView(view) || !EnsureTextures())
         return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);
 
@@ -226,7 +317,8 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
     static unsigned s_lensFrame = 0;
     if (lensScreen && (s_lensFrame++ % (unsigned)g_Config.cameraScreenEvery) == 0)
         RenderLensView(self, edx, view, hudView, clearFlags, whatToDraw);
-    g_D3D.blockCameraCopy = lensScreen && g_D3D.cameraSurface;
+    bool block = lensScreen && g_D3D.cameraSurface;
+    Defer([block] { g_D3D.blockCameraCopy = block; });
 
     for (int eye = 0; eye < 2; ++eye)
     {
@@ -254,28 +346,34 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
         {
             ++s_traced;
             g_traceAgainAt = NowSeconds() + 20.0;
-            IVR_LOG("trace: left eye render begins (view %dx%d, fov %.1f)", v.width, v.height, v.fov);
-            g_D3D.trace = true;
-            g_D3D.traceDraws = 0;
+            int tw = v.width, th = v.height;
+            float tf = v.fov;
+            Defer([tw, th, tf] {
+                IVR_LOG("trace: left eye render begins (view %dx%d, fov %.1f)", tw, th, tf);
+                g_D3D.trace = true;
+                g_D3D.traceDraws = 0;
+            });
         }
         hkRenderView.original(self, edx, &v, &hudEye, clearFlags,
                               flags | (eye == 1 ? RENDERVIEW_SUPPRESSMONITORRENDERING : 0));
-        if (trace)
-        {
-            if (g_D3D.traceDraws > 0)
-                IVR_LOG("  trace:   ... %d draws", g_D3D.traceDraws);
-            g_D3D.trace = false;
-            IVR_LOG("trace: left eye render ends");
-        }
-        if (g_D3D.BackBufferBound())
-            g_rtLost = true; // picked up by EnsureTextures on the next frame
-        else if (!g_D3D.eye[eye].Valid())
-            g_D3D.CaptureBoundRenderTarget(g_D3D.eye[eye], g_VR.renderWidth, g_VR.renderHeight);
-        else
-            g_D3D.CheckBoundRenderTarget(eye);
+        Defer([trace, eye] {
+            if (trace)
+            {
+                if (g_D3D.traceDraws > 0)
+                    IVR_LOG("  trace:   ... %d draws", g_D3D.traceDraws);
+                g_D3D.trace = false;
+                IVR_LOG("trace: left eye render ends");
+            }
+            if (g_D3D.BackBufferBound())
+                g_rtLost = true; // picked up by EnsureTextures on the next frame
+            else if (!g_D3D.eye[eye].Valid())
+                g_D3D.CaptureBoundRenderTarget(g_D3D.eye[eye], g_VR.renderWidth, g_VR.renderHeight);
+            else
+                g_D3D.CheckBoundRenderTarget(eye);
+        });
     }
     g_currentEye = -1;
-    g_D3D.blockCameraCopy = false;
+    Defer([] { g_D3D.blockCameraCopy = false; });
     SetRenderTarget(nullptr);
 
     bool hud = false;
@@ -289,8 +387,12 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
         PaintHud(hudView, PAINT_INGAMEPANELS);
         hud = true;
     }
-    g_Mod.eyesRendered = true;
-    g_Mod.hudPainted = hud;
+    vr::HmdMatrix34_t pose = g_VR.Head().raw; // what this frame was drawn for
+    Defer([hud, pose] {
+        g_D3D.SetRenderPose(pose);
+        g_Mod.eyesRendered = true;
+        g_Mod.hudPainted = hud;
+    });
     --g_renderDepth;
 
     double now = NowSeconds();
@@ -307,7 +409,7 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
 
 // CViewRender::DrawViewModels(const CViewSetup &view, bool drawViewModel): draws the first-person
 // models into the current render target, using view.width/height and view.fovViewmodel. Each eye
-// must get its own eye view (0.6.1 and earlier passed the flat 1920x1080 view once, which put the
+// must get its own eye view (3.10 and earlier passed the flat 1920x1080 view once, which put the
 // arms in the top-left corner of the left eye only).
 void IVR_FASTCALL RenderCameraWeaponDetour(void *self, void *edx, CViewSetup *view, bool drawViewModel)
 {
@@ -320,11 +422,14 @@ void IVR_FASTCALL RenderCameraWeaponDetour(void *self, void *edx, CViewSetup *vi
     }
     if (g_lensPass)
     {
-        g_D3D.learnCameraCopy = true; // its view-sized copy goes into the camera screen texture
-        g_D3D.learnW = view->width;
-        g_D3D.learnH = view->height;
+        LONG lw = view->width, lh = view->height;
+        Defer([lw, lh] {
+            g_D3D.learnCameraCopy = true; // its view-sized copy goes into the camera screen texture
+            g_D3D.learnW = lw;
+            g_D3D.learnH = lh;
+        });
         hkRenderCameraWeapon.original(self, edx, view, drawViewModel);
-        g_D3D.learnCameraCopy = false;
+        Defer([] { g_D3D.learnCameraCopy = false; });
         return;
     }
     hkRenderCameraWeapon.original(self, edx, view, drawViewModel);

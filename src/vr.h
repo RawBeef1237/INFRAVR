@@ -45,6 +45,7 @@ public:
     bool eyesRendered = false;   // stereo views rendered this frame
     bool hudPainted = false;
     bool phoneMenu = false;
+    double firstLevelAt = -1; // when the first map (normally INFRA's main menu) finished loading
     bool mainMenu = false;        // the level loaded is INFRA's main menu background
     std::string m_firstMap;
     int m_levelLoads = 0;
@@ -80,7 +81,12 @@ private:
                    float hit[3]) const;
     void ShowPointer(int hand, bool onScreen, const float hit[3], const vr::HmdMatrix34_t &screen);
     void ProcessPhoneMenuInput(double now);
-    void NavigateWithStick(double now, const AnalogAction &a); // stick = arrow keys, with repeat
+    void ProcessHolsters(bool consumed[2]);
+    void TogglePhone();
+    void PhoneButton(int padCode, WPARAM vk);
+    float m_phoneAspect = 9.0f / 16.0f;
+    int m_lastPhoneButtonResult = 2;
+    void NavigateWithStick(double now, const AnalogAction &a, bool pad = false); // stick = arrow keys, with repeat
     void FocusGameWindow();
     int m_clickLogs = 0;
     void PlaceHud(bool atHand, float aspect);
@@ -120,6 +126,12 @@ private:
     int m_aimTicks = 0;
     int m_aimSource = 0;             // 0 = hand interactHand, 1 = camera lens
     bool m_crouchToggled = false;
+    // Real-life crouching: the game lowers its eye when it ducks; the head already went down by
+    // itself, so the game's part is added back (m_crouchComp, world units) to avoid going down twice.
+    bool m_realCrouch = false;
+    float m_eyeAboveFeet = -1.0f, m_standEye = -1.0f, m_crouchComp = 0.0f;
+    double m_lastDuck = -10.0;
+    bool m_feetFailed = false;
     bool m_snapArmed = true;
     float m_turnThisFrame = 0.0f;
     double m_lastFrame = 0.0;

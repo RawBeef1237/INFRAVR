@@ -17,7 +17,7 @@ target_include_directories(minhook PUBLIC ${TP}/minhook/include)
 
 add_library(infravr SHARED
     src/dllmain.cpp src/log.cpp src/config.cpp src/mathlib.cpp src/hooks.cpp src/game.cpp
-    src/openvr_rt.cpp src/d3d_vr.cpp src/vr.cpp src/hooks_game.cpp src/d3d9.def)
+    src/openvr_rt.cpp src/d3d_vr.cpp src/vr.cpp src/hooks_game.cpp src/gamepad.cpp src/d3d9.def)
 set_target_properties(infravr PROPERTIES OUTPUT_NAME d3d9 PREFIX "")
 target_include_directories(infravr PRIVATE src ${TP}/openvr ${TP}/vulkan)
 target_compile_definitions(infravr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)

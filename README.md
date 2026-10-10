@@ -1,9 +1,106 @@
-# INFRA VR
+# INFRA VR 0.8.7
 
 A VR mod for **INFRA** (Loiste Interactive, 2016) with motion controls. It works like
-L4D2VR(https://github.com/keyou91/l4d2vr) and Portal 2 VR(https://github.com/Gistix/portal2vr): a `d3d9.dll`
+[L4D2VR](https://github.com/keyou91/l4d2vr) and [Portal 2 VR](https://github.com/Gistix/portal2vr): a `d3d9.dll`
 in INFRA's `bin` folder hooks the Source engine, the game is rendered through DXVK (Vulkan), and
 the frames go to SteamVR through OpenVR.
+
+## What changed in 0.8.7
+
+- **Main menu pointer after using the phone menu:** once INFRA has seen a controller, its main
+  menu screen lets the controller's sticks move the mouse cursor every frame, which fought the VR
+  pointer. That controller cursor is now switched off while the pointer drives the main menu (the
+  log says `Main menu: INFRA's controller cursor switched off ...`). The first clicks in a menu
+  now also log whether the cursor is visible and what INFRA's screen cursor is doing.
+
+## What changed in 0.8.6
+
+- **Phone menu controls fixed:** INFRA ships its own copy of the Xbox controller library
+  (`bin\xinput1_3.dll`) and reads the controller through that copy, while 0.8.5 only hooked the
+  Windows one, so INFRA never saw the VR controllers as a gamepad. Both copies are hooked now. The
+  log shows `XInput: hooked ...\bin\xinput1_3.dll` at startup and `XInput: INFRA reads
+  controller 1` once the game polls it.
+
+## What changed in 0.8.5
+
+- **Phone menu with real gamepad controls:** the cursor dot is gone. While the phone menu is open
+  the VR controllers act as an Xbox controller for INFRA: the right stick is the right stick, the
+  left stick the left stick, A is A, B is B, the triggers are the triggers and the stick clicks are
+  the stick clicks, so the menu behaves exactly as it does with a controller plugged in. Outside
+  the phone menu that virtual controller sits idle (a real controller still works). The holsters,
+  the phone button and pause still close the menu. `[vr] phone_gamepad = false` sends menu keys
+  instead.
+
+## What changed in 0.8.4
+
+- **Phone menu in your hand:** taking the phone out of its hip holster (or the phone button) opens
+  INFRA's phone (pause) menu again, but now as the screen of the phone in your hand: it moves with
+  the controller and the phone model stays visible. Putting the phone back, the phone button or
+  pause closes it. `[vr] phone_menu_in_world = true` brings back the standing panel.
+- **Phone menu controls that work:** INFRA's own controller support does not step through its
+  phone screens, it moves a cursor over them with the stick and clicks with A. 0.8.3 sent menu
+  buttons the menu never took. Now the right stick moves a cursor (a dot on the phone screen), A
+  clicks and B goes back; the other buttons do nothing while the menu is open, and the holsters
+  keep working. No pointer beam in the phone menu (`phone_menu_pointer = true` brings it back);
+  the main menu still has it. `phone_cursor_speed` sets the cursor speed.
+- 0.8.3's ini also switched the phone menu itself off by mistake (`[vr] phone_menu`); replace the
+  ini with this one.
+
+## What changed in 0.8.3
+
+- **The phone is a held item again:** taking it out of its holster no longer opens the pause
+  menu. While the phone is out, the right stick, A and B go to the phone's screen (move, select,
+  back) instead of turning, jumping and reloading; moving, grabbing and the holsters work as
+  usual, and putting the phone away brings the normal buttons back. `[holsters] phone_menu = true`
+  brings back 0.8.2's phone-opens-the-pause-menu behaviour. The log notes whether the phone's
+  screen took each button ("Phone menu: controller button ...").
+
+## What changed in 0.8.2
+
+- **Startup crash:** all four startup crashes so far (0.5 on 7 October, 0.8 and 0.8.1 today) are
+  the same one: NVIDIA's Vulkan driver fails inside SteamVR's first frame hand-off while INFRA is
+  still loading its main menu map. They happened whether or not multicore was on. The mod now sends
+  nothing to SteamVR until the main menu map has loaded (or 20 seconds have passed); SteamVR keeps
+  its own loading screen up for that second or two. The log says "Sending frames to SteamVR" when
+  it starts.
+- **The phone takes over the controls:** taking the phone out of its hip holster (or pressing the
+  phone button) now opens INFRA's phone menu, like the phone does in INFRA. While it is out the
+  right stick moves through the menu, A selects, B goes back, and moving, turning, jumping and
+  reloading are off. Putting the phone back in its holster, the phone button or pause closes it and
+  the normal controls come back. The holsters keep working while the phone is out.
+  `[holsters] phone_menu = false` brings back holding the phone without its menu.
+
+## What changed in 0.8.1
+
+- **Startup crash with 0.8:** the crash happened inside NVIDIA's Vulkan driver while DXVK-GPLALL
+  was allocating memory for a draw in the main menu, before the mod's multicore option could switch
+  anything on. The stock DXVK 2.7.1 that ran fine through 0.7 is the default again; DXVK-GPLALL is
+  still included as `bin\dxvk_d3d9_gplall.dll` and `[vr] dxvk = gplall` picks it. The D3D device
+  is now also created thread-safe, because INFRA's own "multicore rendering" video option starts
+  the game on its render thread before the mod switches it off. The log now shows the game's
+  starting `mat_queue_mode` and the device flags.
+- **Phone menu controls:** while the phone (pause) menu is open, the right stick moves between
+  items, A selects and B goes back. They are sent to the menu as INFRA's own controller buttons, so
+  B steps back a page instead of closing the whole menu.
+
+## What changed in 0.8
+
+- **DXVK from L4D2VR:** the included DXVK is now DXVK-GPLALL 2.6.1-6, the same build L4D2VR
+  uses (stock DXVK 2.6.1 plus background shader compiling). New effects no longer make the game
+  hitch while their shaders compile. `dxvk.enableAsync = False` in `bin\infravr\dxvk.conf`
+  turns that off if something shows up missing for a moment.
+- **Antialiasing:** the eye images are drawn with 4x MSAA, so edges are smooth instead of jagged.
+  `[vr] antialiasing` sets it to 0 (off), 2, 4 or 8. INFRA's own antialiasing option only ever
+  affected the desktop window. The log says "Antialiasing: eyes drawn with 4x MSAA" when it is on.
+- **Multicore rendering (experimental, off by default):** `[vr] multicore = true` lets INFRA
+  render on a second CPU core (`mat_queue_mode 2`), which can raise the frame rate when the game is
+  CPU bound. The mod hands its per-frame work to the engine's render thread and sends each frame
+  with the head pose it was drawn for. Menus and level loads switch back to one core; the log
+  says "Multicore rendering on/off".
+- **Crouch in real life:** when your head drops 0.30 m (`[movement] crouch_drop`) below your
+  standing height, you crouch in game too, so you can duck under things. The game's own lowering
+  of the view is cancelled out, so the view only goes as low as your head. `real_crouch = false`
+  turns it off. Recenter while standing straight so it knows your height.
 
 ## What changed in 0.7
 
@@ -140,7 +237,7 @@ the frames go to SteamVR through OpenVR.
 - **Menus:** the menu screen is now solid and flat. Before, it was copied from the game window with
   the engine's leftover alpha channel, so it showed up patchy and see-through in the headset.
 - **Pointing and clicking with the controllers:** a short beam comes out of your hand and a white
-  dot shows where it meets the screen; the trigger clicks. Version 0.0 relied on SteamVR's own
+  dot shows where it meets the screen; the trigger clicks. Version 0.0 (the original release) relied on SteamVR's own
   overlay laser, which takes the controllers away from the game. The INFRA window is also brought
   to the front so clicks register.
 - **Screen mode:** hold the pause button for a second to show the flat game on the virtual screen
@@ -156,11 +253,24 @@ the frames go to SteamVR through OpenVR.
 - No more `IVRCompositor::Submit failed ... 101` at startup (frames are only sent once SteamVR has
   handed out the first poses).
 
+## Why version 2 showed a black headset
+
+INFRA does not run on the Source SDK 2013 engine. Its binaries are the **Portal 2 / Alien Swarm
+branch** of Source (same interfaces as Portal 2: `VEngineClient015`, `VClient016`,
+`VEngineRenderView013`, `VMaterialSystem080`...). Version 2 used SDK 2013 interface versions and
+function numbers, so its engine hooks never installed and nothing was ever drawn into the headset
+textures. On top of that, INFRA's material system refuses to create render targets after the game
+has started, so the eye textures could not be created either.
+
+This version is rebuilt on layouts read directly out of INFRA's own `engine.dll`, `client.dll`,
+`server.dll` and `materialsystem.dll`, and every function it hooks is checked against INFRA's
+binaries (the mod finds them again by signature/RTTI if an address ever moves). It uses OpenVR.
+
 ## Version numbers
 
 Versions are `0.MINOR.PATCH`. Small updates (bug fixes, tweaks to defaults) raise the third digit,
-for example 0.7 to 0.7.1. Larger updates (new features or reworked systems) raise the second digit
-and reset the third, for example 0.7.2 to 0.8.
+for example 0.8 to 0.8.1. Larger updates (new features or reworked systems) raise the second digit
+and reset the third, for example 0.8.7 to 0.9.
 
 ## Requirements
 
@@ -168,7 +278,7 @@ and reset the third, for example 0.7.2 to 0.8.
 - SteamVR (any headset SteamVR supports: Index, Vive, Quest via Link/Air Link/Virtual Desktop/Steam Link, WMR, Pico...)
 - A GPU with Vulkan 1.3 drivers
 
-DXVK 2.7.1 (32-bit) and Valve's `openvr_api.dll` are included - nothing else to download.
+DXVK 2.7.1 (32-bit; DXVK-GPLALL 2.6.1-6, the build L4D2VR uses, is included as an option) and Valve's `openvr_api.dll` are included - nothing else to download.
 
 ## Install
 
@@ -209,8 +319,9 @@ DXVK 2.7.1 (32-bit) and Valve's `openvr_api.dll` are included - nothing else to 
 | Screen mode on/off | hold B (left) 1 s | hold Y 1 s | hold left menu 1 s |
 | Recenter & measure height | hold right stick click 1 s | hold right stick click 1 s | hold right menu 1 s |
 
-**Pause menu (phone):** it appears on a panel in front of you. Sticks move through it, A
-selects, B goes back, pause closes it; or point at it with either hand and pull the trigger.
+**Phone (pause) menu:** taking the phone out of its holster, the phone button or pause opens it on
+the phone in your hand. The VR controllers work it like an Xbox controller (sticks, A, B,
+triggers); putting the phone back or pause closes it.
 
 **Menus:** the left stick moves between items, A selects (like INFRA's gamepad support). Or point at the screen with either controller (a short beam comes out of the hand and a
 white dot shows where you point), pull the trigger to click, right stick up/down scrolls, B / the
@@ -304,6 +415,6 @@ through Vulkan.
 
 - Approach from [L4D2VR](https://github.com/keyou91/l4d2vr) and Gistix's
   [Portal 2 VR](https://github.com/Gistix/portal2vr).
-- [DXVK](https://github.com/doitsujin/dxvk) (zlib), [OpenVR](https://github.com/ValveSoftware/openvr) (BSD-3),
+- [DXVK](https://github.com/doitsujin/dxvk) (zlib; DXVK 2.7.1 and [DXVK-GPLALL](https://github.com/Digger1955/dxvk-gplall) 2.6.1-6, commit 7927e64, d3d9 only),  [OpenVR](https://github.com/ValveSoftware/openvr) (BSD-3),
   [MinHook](https://github.com/TsudaKageyu/minhook) (BSD-2), [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) (Apache-2.0/MIT).
 - INFRA is (c) Loiste Interactive. This is an unofficial fan mod.
