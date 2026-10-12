@@ -1,4 +1,4 @@
-# INFRA VR 0.8.8
+# INFRA VR
 
 A VR mod for **INFRA** (Loiste Interactive, 2016) with motion controls (still a work in progress). It works like
 [L4D2VR](https://github.com/keyou91/l4d2vr) and [Portal 2 VR](https://github.com/Gistix/portal2vr): a `d3d9.dll`
@@ -38,7 +38,8 @@ Release notes for every version are on the [Releases](https://github.com/RawBeef
 
 Versions are `0.MINOR.PATCH`. Small updates (bug fixes, tweaks to defaults) raise the third digit,
 for example 0.8 to 0.8.1. Larger updates (new features or reworked systems) raise the second digit
-and reset the third, for example 0.8.7 to 0.9.
+and reset the third, for example 0.8.7 to 0.9. Changes that only affect how the mod is presented here
+on GitHub (this README, release pages) do not change the version and are not in the changelog.
 
 ## Requirements
 

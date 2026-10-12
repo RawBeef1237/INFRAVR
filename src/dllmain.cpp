@@ -619,7 +619,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
     {
         DisableThreadLibraryCalls(instance);
         LogInit((GameDir() + "infravr.log").c_str());
-        IVR_LOG("INFRA VR 0.8.8 loaded from %s", ModuleDir().c_str());
+        IVR_LOG("INFRA VR 0.8.7 loaded from %s", ModuleDir().c_str());
         LoadConfig();
         HooksInit();
     }
