@@ -52,7 +52,6 @@ DXVK 2.7.1 (32-bit; DXVK-GPLALL 2.6.1-6, the build L4D2VR uses, is included as a
    - `bin\openvr_api.dll` - OpenVR
    - `bin\infravr\` - `infravr.ini`, `dxvk.conf`, SteamVR controller bindings
 
-   It also removes leftovers of versions 1 and 2.
 3. Steam -> INFRA -> Properties -> Launch options:
 
    `-windowed -novid +mat_queue_mode 0`
