@@ -34,13 +34,6 @@ the frames go to SteamVR through OpenVR.
 
 Release notes for every version are on the [Releases](https://github.com/RawBeef1237/infravr/releases) page.
 
-## Version numbers
-
-Versions are `0.MINOR.PATCH`. Small updates (bug fixes, tweaks to defaults) raise the third digit,
-for example 0.8 to 0.8.1. Larger updates (new features or reworked systems) raise the second digit
-and reset the third, for example 0.8.7 to 0.9. Changes that only affect how the mod is presented here
-on GitHub (this README, release pages) do not change the version and are not in the changelog.
-
 ## Requirements
 
 - INFRA on Steam (Windows, 32-bit `infra.exe`)
