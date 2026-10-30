@@ -1,6 +1,6 @@
 // Calls INFRA VR's queued render-thread functor the way the engine (MSVC, thiscall) does:
 // AddRef, operator(), Release (which must free it).
-#include "../src/hooks_game.cpp"
+#include "../src/engine/hooks_game.cpp"
 
 #include <cstdio>
 

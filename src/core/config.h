@@ -40,12 +40,22 @@ struct Config
     int antialiasing = 4;   // MSAA samples for the eye images: 0 (off), 2, 4 or 8
     bool multicore = false; // let the engine render on its own thread (mat_queue_mode 2)
     std::string dxvk = "stock"; // stock = dxvk_d3d9.dll (DXVK 2.7.1), gplall = dxvk_d3d9_gplall.dll
+    // VR runtime: "openvr" (SteamVR, in this process) or "openxr" (the 64-bit infravr_openxr.exe
+    // helper talks to the headset's own OpenXR runtime; falls back to OpenVR if it cannot start).
+    std::string backend = "openvr";
+    // Make the engine allocate its full-frame and post-processing buffers at the eye size (the
+    // Black Mesa VR fix), so post-processing works in the headset. Crash-sticky ("world_eye_size").
+    bool worldAtEyeSize = true;
     HudMode hudMode = HudMode::Overlay;
     float hudDistance = 1.2f, hudWidth = 1.0f, hudDown = 0.10f;
     float menuDistance = 2.2f, menuWidth = 2.4f;
-    // The engine's full-screen post effects (bloom, colour correction, vignette, depth of field)
-    // assume the picture is window-sized; on the larger eye images they smear into lines.
-    bool postProcessing = false;
+    // The engine's full-screen post effects (bloom, colour correction, vignette, depth of field).
+    // They need buffers at the eye size: on only when world_at_eye_size worked (or the eyes are
+    // window-sized), otherwise they smear into lines and are switched off whatever this says.
+    bool postProcessing = true;
+    // Call IVRCompositor::PostPresentHandoff after every Present. Only needed when the poses are
+    // not read right after Present (multicore rendering does that automatically).
+    bool explicitHandoff = false;
     // Render the eyes no larger than the game window (blurrier, but every effect lines up).
     bool renderFitWindow = false;
     // If the game only fills part of the eye images (the rest stretched lines), draw the view
@@ -102,6 +112,20 @@ struct Config
     // [hands]
     bool handsTracked = true;  // move the viewmodel's other arm to the other controller
     bool handsHideUpperArm = true; // collapse shoulders, upper arms and spine of the viewmodel
+    // "glb" = the mod draws its own hand models (bin\infravr\hands\*.glb) on both controllers and
+    // hides INFRA's arms; "infra" = INFRA's own viewmodel arms follow the controllers.
+    std::string handsModel = "glb";
+    std::string handsLeftFile = "hands\\vr_hand_left.glb", handsRightFile = "hands\\vr_hand_right.glb";
+    // Placement of the right hand model (the left one is mirrored). The bundled models have the
+    // fingers along +Z, palm down; these turn them to point forward with the palm inwards around
+    // the grip, measured from the controller's aim/tip pose.
+    Vector handsOffset{0.035f, -0.02f, -0.07f}; // metres in the controller's frame: right, up, back
+    Vector handsAngles{0.0f, 180.0f, -90.0f};   // pitch yaw roll, degrees, in the controller's frame
+    float handsScale = 1.0f;
+    float handsBrightness = 1.0f;
+    bool handsDepthTest = true; // hide the hands behind walls/props in front of them
+    bool handsFingers = true;   // bend the fingers from SteamVR's finger tracking
+    float handsCurlMax = 75.0f; // degrees each finger joint bends at full curl
 
     // [commands]
     std::string cmdFlashlightDown = "+flashlight";
@@ -114,6 +138,7 @@ struct Config
     // [debug]
     bool logInput = false;
     bool probe = true; // log what the headset images contain every few seconds
+    bool retrySkipped = false; // forget infravr_skip.txt and try every mechanism again
 };
 
 extern Config g_Config;

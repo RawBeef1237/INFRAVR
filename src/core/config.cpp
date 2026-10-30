@@ -115,6 +115,8 @@ void LoadConfig()
         c.antialiasing = 0;
     c.multicore = ini.GetBool("vr.multicore", c.multicore);
     c.dxvk = Lower(ini.GetString("vr.dxvk", c.dxvk));
+    c.backend = Lower(ini.GetString("vr.backend", c.backend));
+    c.worldAtEyeSize = ini.GetBool("vr.world_at_eye_size", c.worldAtEyeSize);
     std::string hud = Lower(ini.GetString("vr.hud_mode", "overlay"));
     c.hudMode = hud == "eyes" ? HudMode::Eyes : hud == "off" ? HudMode::Off : HudMode::Overlay;
     c.hudDistance = ini.GetFloat("vr.hud_distance", c.hudDistance);
@@ -123,6 +125,7 @@ void LoadConfig()
     c.menuDistance = ini.GetFloat("vr.menu_distance", c.menuDistance);
     c.menuWidth = ini.GetFloat("vr.menu_width", c.menuWidth);
     c.postProcessing = ini.GetBool("vr.post_processing", c.postProcessing);
+    c.explicitHandoff = ini.GetBool("vr.explicit_handoff", c.explicitHandoff);
     c.renderFitWindow = ini.GetBool("vr.render_fit_window", c.renderFitWindow);
     c.autoFit = ini.GetBool("vr.auto_fit", c.autoFit);
     c.phoneMenu = ini.GetBool("vr.phone_menu", c.phoneMenu);
@@ -166,6 +169,16 @@ void LoadConfig()
 
     c.handsTracked = ini.GetBool("hands.tracked", c.handsTracked);
     c.handsHideUpperArm = ini.GetBool("hands.hide_upper_arm", c.handsHideUpperArm);
+    c.handsModel = Lower(ini.GetString("hands.model", c.handsModel));
+    c.handsLeftFile = ini.GetString("hands.left_model", c.handsLeftFile);
+    c.handsRightFile = ini.GetString("hands.right_model", c.handsRightFile);
+    c.handsOffset = ini.GetVector("hands.offset", c.handsOffset);
+    c.handsAngles = ini.GetVector("hands.angles", c.handsAngles);
+    c.handsScale = ini.GetFloat("hands.scale", c.handsScale);
+    c.handsBrightness = ini.GetFloat("hands.brightness", c.handsBrightness);
+    c.handsDepthTest = ini.GetBool("hands.depth_test", c.handsDepthTest);
+    c.handsFingers = ini.GetBool("hands.fingers", c.handsFingers);
+    c.handsCurlMax = ini.GetFloat("hands.curl_max", c.handsCurlMax);
 
     c.cmdFlashlightDown = ini.GetString("commands.flashlight_press", c.cmdFlashlightDown);
     c.cmdFlashlightUp = ini.GetString("commands.flashlight_release", c.cmdFlashlightUp);
@@ -176,6 +189,7 @@ void LoadConfig()
 
     c.logInput = ini.GetBool("debug.log_input", c.logInput);
     c.probe = ini.GetBool("debug.probe", c.probe);
+    c.retrySkipped = ini.GetBool("debug.retry_skipped", c.retrySkipped);
 }
 
 } // namespace ivr

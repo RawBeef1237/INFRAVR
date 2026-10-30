@@ -3,7 +3,7 @@
 #include "common.h"
 #include "d3d_vr.h"
 #include "hooks.h"
-#include "vr.h"
+#include "mod.h"
 #include <cstdio>
 #include <algorithm>
 #include <d3d9.h>

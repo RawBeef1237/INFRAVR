@@ -2,6 +2,7 @@
 // interface the mod needs is found. Usage: resolve_test <INFRA folder>
 #include "game.h"
 #include "hooks.h"
+#include "world_size.h"
 #include <cstdio>
 using namespace ivr;
 namespace ivr { bool InstallClientHooks() { return true; } }
@@ -40,5 +41,10 @@ int main(int argc, char **argv)
     printf("renderview vt %x [41]=%x [42]=%x\n", rva("engine.dll", VTable(g_Game.renderView)), rva("engine.dll", VTable(g_Game.renderView)[41]), rva("engine.dll", VTable(g_Game.renderView)[42]));
     printf("mat vt %x [91]=%x [96]=%x [112]=%x [33]=%x\n", rva("materialsystem.dll", VTable(g_Game.materials)), rva("materialsystem.dll", VTable(g_Game.materials)[91]), rva("materialsystem.dll", VTable(g_Game.materials)[96]), rva("materialsystem.dll", VTable(g_Game.materials)[112]), rva("materialsystem.dll", VTable(g_Game.materials)[33]));
     printf("engineclient vt %x [12]=%x [19]=%x [25]=%x\n", rva("engine.dll", VTable(g_Game.engineClient)), rva("engine.dll", VTable(g_Game.engineClient)[12]), rva("engine.dll", VTable(g_Game.engineClient)[19]), rva("engine.dll", VTable(g_Game.engineClient)[25]));
+    // world_eye_size: the size-mode function must be found exactly once and the hook must go in.
+    HooksInit();
+    bool ws = world::Install(g_Game.materials, 2016, 2240);
+    // (GetBackBufferDimensions itself needs a shader device, which only the running game has.)
+    printf("world_eye_size install %d\n", ws);
     return 0;
 }

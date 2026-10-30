@@ -7,7 +7,7 @@
 #include "gamepad.h"
 #include "config.h"
 #include "hooks.h"
-#include "vr.h"
+#include "mod.h"
 
 #include <xinput.h>
 #include <algorithm>

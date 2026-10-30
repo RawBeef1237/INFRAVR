@@ -1,6 +1,9 @@
 #include "d3d_vr.h"
 #include "config.h"
-#include "vr.h"
+#include "mod.h"
+#include "overlay_api.h"
+#include "world_size.h"
+#include "hands_renderer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -89,7 +92,7 @@ void D3DVR::OnDeviceCreated(IDirect3DDevice9 *dev)
             IVR_LOG("DXVK renders on: %s", p.deviceName);
         }
     }
-    if (g_VR.Ok())
+    if (g_VR.Ok() && g_VR.UsesSteamVR())
     {
         uint64_t want = 0;
         g_VR.m_system->GetOutputDevice(&want, vr::TextureType_Vulkan, reinterpret_cast<VkInstance_T *>(m_instance));
@@ -116,6 +119,8 @@ void D3DVR::OnBeforeReset()
     IVR_LOG("D3D9 device reset");
     ReleaseHelpers();
     ReleaseMsaa();
+    XrRelease();
+    hands::OnDeviceReset();
     // Our own textures are D3DPOOL_DEFAULT and must go before a reset. Engine textures are
     // released by the engine itself (it recreates its render targets).
     blank.Reset();
@@ -802,6 +807,8 @@ void D3DVR::ProbeFrame(bool stereo, bool hudOn)
 // submitted (or keeps timing out), the headset is not getting the game's pictures.
 void D3DVR::LogCompositorStats()
 {
+    if (!g_VR.UsesSteamVR())
+        return;
     vr::Compositor_CumulativeStats st{};
     g_VR.m_compositor->GetCumulativeStats(&st, sizeof(st));
     if (m_haveStats)
@@ -902,6 +909,15 @@ void D3DVR::OnPresent()
         m_haveLastEyes = false;
     g_Mod.eyesRendered = false;
     g_Mod.hudPainted = false;
+    if (g_VR.IsOpenXR())
+        XrHandOver();
+    if (reuse && g_VR.IsOpenXR())
+    {
+        // The helper keeps showing the last eye pair with the pose it was drawn for.
+        XrShowEyes(true);
+        g_Mod.UpdateOverlays(false, hud.Valid(), (int)m_bbWidth, (int)m_bbHeight);
+        return;
+    }
     if (reuse)
     {
         VrTexture *eyes[2] = {&eye[0], &eye[1]};
@@ -942,6 +958,21 @@ void D3DVR::OnPresent()
     if (!stereo)
         MakeOpaque(menu);
 
+    if (g_VR.IsOpenXR())
+    {
+        XrShowEyes(stereo);
+        if (stereo)
+        {
+            XrPublishEyes(m_lastEyePose);
+            if (hudOn)
+                XrPublishPanel(g_Mod.hudOverlay, hud);
+        }
+        else
+            XrPublishPanel(g_Mod.menuOverlay, menu);
+        g_Mod.UpdateOverlays(!stereo, hudOn, (int)m_bbWidth, (int)m_bbHeight);
+        return;
+    }
+
     VrTexture *list[3];
     int n = 0;
     if (stereo)
@@ -974,11 +1005,11 @@ void D3DVR::OnPresent()
         e0 = g_VR.m_compositor->Submit(vr::Eye_Left, &tl, &bl, flags);
         e1 = g_VR.m_compositor->Submit(vr::Eye_Right, &tr, &br, flags);
         ++m_submits;
-        if (hudOn && g_VR.m_overlay)
+        if (hudOn)
         {
             vr::VRVulkanTextureData_t h = VulkanData(hud);
             vr::Texture_t th = {&h, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
-            g_VR.m_overlay->SetOverlayTexture(g_Mod.hudOverlay, &th);
+            g_VR.Overlays()->SetOverlayTexture(g_Mod.hudOverlay, th);
         }
     }
     else
@@ -988,8 +1019,7 @@ void D3DVR::OnPresent()
         vr::Texture_t tm = {&m, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
         e0 = g_VR.m_compositor->Submit(vr::Eye_Left, &tb, nullptr, vr::Submit_Default);
         e1 = g_VR.m_compositor->Submit(vr::Eye_Right, &tb, nullptr, vr::Submit_Default);
-        if (g_VR.m_overlay)
-            g_VR.m_overlay->SetOverlayTexture(g_Mod.menuOverlay, &tm);
+        g_VR.Overlays()->SetOverlayTexture(g_Mod.menuOverlay, tm);
     }
     EndVulkanAccess(list, n);
 

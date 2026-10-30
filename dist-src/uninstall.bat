@@ -13,5 +13,6 @@ if exist "%GAME%\bin\infravr" rmdir /s /q "%GAME%\bin\infravr" && echo   removed
 if exist "%GAME%\bin\d3d9.dll.before-infravr" (
     ren "%GAME%\bin\d3d9.dll.before-infravr" d3d9.dll && echo   restored your previous bin\d3d9.dll
 )
+for %%f in (infravr_skip.txt infravr_in_*.flag) do if exist "%GAME%\%%f" del /q "%GAME%\%%f"
 echo INFRA is back to normal (infravr.log is left in the INFRA folder).
 pause

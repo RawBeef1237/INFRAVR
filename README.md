@@ -3,7 +3,7 @@
 A VR mod for **INFRA** (Loiste Interactive, 2016) with motion controls (still a work in progress). It works like
 [L4D2VR](https://github.com/keyou91/l4d2vr) and [Portal 2 VR](https://github.com/Gistix/portal2vr): a `d3d9.dll`
 in INFRA's `bin` folder hooks the Source engine, the game is rendered through DXVK (Vulkan), and
-the frames go to SteamVR through OpenVR.
+the frames go to SteamVR through OpenVR (or, experimentally, to the headset's own OpenXR runtime).
 
 > **Work in progress:** the motion controls (hands, holsters, grabbing, the phone and camera in
 > your hands) are still being worked on and may feel rough in places.
@@ -15,7 +15,13 @@ the frames go to SteamVR through OpenVR.
   Desktop/Steam Link, Index, Vive, WMR, Pico...).
 - **Motion controls (work in progress):** stick movement, snap or smooth turning, room-scale
   movement and real crouching, and "use" aimed along your hand.
-- **Tracked hands:** INFRA's own arms follow both controllers.
+- **VR hands:** hand models on both controllers, always visible, with the fingers following
+  finger tracking (Index) or the grip and trigger. INFRA's own arms can be used instead
+  (`[hands] model = infra`).
+- **Post-processing in VR:** INFRA's bloom, colour correction and vignette work in the headset
+  (the engine's buffers are made at the eye size).
+- **Crash-safe:** anything risky that ever crashed INFRA switches itself off on the next start
+  (`infravr_skip.txt`), and the log names where a crash happened.
 - **Grab and throw** props with the grip; they follow your hand.
 - **Holsters:** flashlight on the left hip, phone on the right hip, camera over your shoulder.
 - **Camera in your hand:** the viewfinder shows the view from the lens, and photos are aimed along
@@ -51,6 +57,8 @@ DXVK 2.7.1 (32-bit; DXVK-GPLALL 2.6.1-6, the build L4D2VR uses, is included as a
    - `bin\dxvk_d3d9.dll` - DXVK
    - `bin\openvr_api.dll` - OpenVR
    - `bin\infravr\` - `infravr.ini`, `dxvk.conf`, SteamVR controller bindings
+   - `bin\infravr\hands\` - the VR hand models
+   - `bin\infravr\openxr\` - the OpenXR helper (only used with `backend = openxr`)
 
 3. Steam -> INFRA -> Properties -> Launch options:
 
@@ -116,8 +124,8 @@ your controller, adjust `offset_camera`, `angles` and `lens_offset` in `bin\infr
 ## Settings
 
 `INFRA\bin\infravr\infravr.ini` - render scale, snap/smooth turning, HUD placement (`hud_mode =
-overlay | eyes | off`), holster sizes, viewmodel offsets, and the console commands the
-holsters run. `bin\infravr\dxvk.conf` - DXVK options (set `dxvk.deviceFilter` on multi-GPU PCs).
+overlay | eyes | off`), holster sizes, viewmodel offsets, hand model placement (`[hands]`), the VR
+runtime (`backend = openvr | openxr`), and the console commands the holsters run. `bin\infravr\dxvk.conf` - DXVK options (set `dxvk.deviceFilter` on multi-GPU PCs).
 
 ## Troubleshooting
 
@@ -129,6 +137,8 @@ Everything is logged to **`INFRA\infravr.log`** (DXVK writes `infra_d3d9.log` ne
 | Headset shows only a grey/black void in menus | the menu screen is placed where you were looking when it opened - look around; `D3D9 device is not DXVK` = `bin\dxvk_d3d9.dll` missing |
 | In-game view black | look at the `probe:` lines - `eye brightness avg 0 max 0` means the game drew nothing into the headset images; `HUD panel ... opaque` means the subtitle panel was covering the view (it switches itself off). The desktop window mirrors the left eye. Send the log |
 | Stutters | lower `render_scale`; make sure `mat_queue_mode 0` is in the launch options; turn off MSAA in video options |
+| Something stopped working after a crash | `Flags: ... stays off` - that mechanism crashed INFRA once and is listed in `infravr_skip.txt`; delete its line (or set `retry_skipped = true`) to try again |
+| Hands float or point the wrong way | adjust `offset` / `angles` under `[hands]` (right hand; the left is mirrored) |
 | Menu doesn't react to clicks | the mod brings the INFRA window to the front when you click; if Windows refuses, click the INFRA window once on the desktop |
 
 ## How it works
@@ -155,6 +165,10 @@ infra.exe -> shaderapidx9.dll -> bin\d3d9.dll (INFRA VR) -> bin\dxvk_d3d9.dll (D
 - **Viewmodel / flashlight / camera** - `C_BasePlayer::CalcViewModelView`,
   `CFlashlightEffect::UpdateLight` and INFRA's camera viewfinder pass are moved to your hands.
 
+More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (modules, frame flow, backends),
+[docs/OFFSETS.md](docs/OFFSETS.md) (every hooked function and how it was found) and
+[docs/RUNTIME.md](docs/RUNTIME.md) (what has been tested where).
+
 ## Building
 
 MinGW-w64 (i686) or Visual Studio (Win32):
@@ -165,17 +179,33 @@ cmake --build build
 python3 tools/gen_bindings.py build/infravr/actions
 ```
 
-`config/actions/` holds the generated SteamVR action manifest and default bindings.
+The OpenXR helper is a separate 64-bit build (MinGW-w64 x86_64 or Visual Studio x64), plus
+Khronos' loader next to it:
 
-`tests/` contains the checks used during development: `resolve_test.cpp` loads INFRA's real DLLs
-and verifies every hook target and interface index; `d3d_test.cpp` + `fake_openvr.cpp` run the
-D3D9 -> DXVK -> OpenVR submission path (under Wine + lavapipe) and read the submitted pixels back
-through Vulkan.
+```
+cmake -S helper/openxr -B build-xr -DCMAKE_TOOLCHAIN_FILE=toolchain-x86_64-mingw.cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build build-xr
+tools/fetch_openxr_loader.sh build-xr
+```
+
+Package layout: `bin\infravr\hands\` gets `assets/hands/*.glb`, `bin\infravr\openxr\` gets
+`infravr_openxr.exe` and `openxr_loader.dll`. `config/actions/` holds the generated SteamVR action
+manifest and default bindings. The log's version string comes from `-DINFRAVR_VERSION=...`.
+
+`tests/` contains the checks used during development (`-DINFRAVR_TESTS=ON`): `resolve_test.cpp`
+loads INFRA's real DLLs and verifies every hook target, interface index and the eye-size
+signature; `glb_test.cpp` loads the hand models and checks the fingers bend; `d3d_test.cpp` +
+`fake_openvr.cpp` run the D3D9 -> DXVK -> OpenVR submission path (under Wine + lavapipe) and read
+the submitted pixels back through Vulkan.
 
 ## Credits & licences
 
 - Approach from [L4D2VR](https://github.com/keyou91/l4d2vr) and Gistix's
-  [Portal 2 VR](https://github.com/Gistix/portal2vr).
+  [Portal 2 VR](https://github.com/Gistix/portal2vr); crash-sticky mechanisms, eye-size engine
+  buffers, the OpenXR helper process and stereo-once-per-Present from
+  [Black Mesa VR](https://github.com/Hochgeschwindigkeitsrennfahrer/black-mesa-vr).
 - [DXVK](https://github.com/doitsujin/dxvk) (zlib; DXVK 2.7.1 and [DXVK-GPLALL](https://github.com/Digger1955/dxvk-gplall) 2.6.1-6, commit 7927e64, d3d9 only),  [OpenVR](https://github.com/ValveSoftware/openvr) (BSD-3),
-  [MinHook](https://github.com/TsudaKageyu/minhook) (BSD-2), [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) (Apache-2.0/MIT).
+  [MinHook](https://github.com/TsudaKageyu/minhook) (BSD-2), [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) (Apache-2.0/MIT),
+  [OpenXR SDK](https://github.com/KhronosGroup/OpenXR-SDK-Source) headers and loader (Apache-2.0),
+  [cgltf](https://github.com/jkuhlmann/cgltf) (MIT), [stb_image](https://github.com/nothings/stb) (MIT / public domain).
 - INFRA is (c) Loiste Interactive. This is an unofficial fan mod.

@@ -1,10 +1,12 @@
 // INFRA VR - Source engine detours: stereo rendering, input, viewmodel, camera lens,
 // flashlight and the server-side grab controller.
 #include "config.h"
+#include "hands_renderer.h"
+#include "world_size.h"
 #include "d3d_vr.h"
 #include "game.h"
 #include "hooks.h"
-#include "vr.h"
+#include "mod.h"
 
 #include <cstdio>
 #include <cstring>
@@ -99,6 +101,8 @@ void *RenderQueue()
     return queue;
 }
 
+} // namespace
+
 // Runs fn where the D3D work of what was rendered so far happens: now, or queued after it.
 void Defer(std::function<void()> fn)
 {
@@ -115,6 +119,8 @@ void Defer(std::function<void()> fn)
     VCall<void, void *>(queue, 0, c); // QueueFunctorInternal
 }
 
+namespace {
+
 // mat_queue_mode 2 only while we are in a level with the eye images made (creating render
 // targets and the menus keep the engine single threaded).
 void UpdateQueueMode()
@@ -126,6 +132,18 @@ void UpdateQueueMode()
     g_Game.ExecuteCommand(want == 2 ? "mat_queue_mode 2" : "mat_queue_mode 0");
     IVR_LOG("Multicore rendering %s", want == 2 ? "on" : "off");
 }
+
+// Stereo once per Present (Black Mesa VR's rule): with mat_queue_mode 0 a second main view before
+// the next Present (some map scripts and the engine's "screen" views do that) would draw both eyes
+// again and the first pair would never be seen. Later views in the same frame are drawn flat.
+volatile LONG g_stereoSincePresent = 0;
+int g_stereoSkipped = 0;
+
+} // namespace
+
+void ResetStereoGuard() { InterlockedExchange(&g_stereoSincePresent, 0); }
+
+namespace {
 
 bool g_rtLost = false; // the game stopped drawing into our eye images: make new ones
 int g_rtGeneration = 0;
@@ -294,10 +312,18 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
         // Present runs on the render thread (multicore): poses and input are read here instead.
         if (g_Game.presentThread && g_Game.presentThread != g_Game.mainThread)
             g_Mod.OnFrame();
+        g_Mod.OnSafePoint(); // queued console commands
         UpdateQueueMode();
     }
     if (g_renderDepth > 0 || !g_Mod.Active() || g_Mod.menuMode || !IsMainView(view) || !EnsureTextures())
         return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);
+    if (g_Game.queueMode == 0 && g_stereoSincePresent > 0)
+    {
+        if (g_stereoSkipped++ < 5)
+            IVR_LOG("A second main view before Present - drawn flat (stereo once per Present)");
+        return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);
+    }
+    InterlockedIncrement(&g_stereoSincePresent);
 
     ++g_renderDepth;
     g_engineView = *view;
@@ -354,8 +380,11 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
                 g_D3D.traceDraws = 0;
             });
         }
+        world::BeginEye(); // post-processing works out its rectangles for the eye, not the window
         hkRenderView.original(self, edx, &v, &hudEye, clearFlags,
                               flags | (eye == 1 ? RENDERVIEW_SUPPRESSMONITORRENDERING : 0));
+        world::EndEye();
+        hands::DrawEye(eye, v);
         Defer([trace, eye] {
             if (trace)
             {
@@ -390,6 +419,7 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
     vr::HmdMatrix34_t pose = g_VR.Head().raw; // what this frame was drawn for
     Defer([hud, pose] {
         g_D3D.SetRenderPose(pose);
+        world::OnStereoFrame();
         g_Mod.eyesRendered = true;
         g_Mod.hudPainted = hud;
     });
@@ -605,12 +635,51 @@ void MoveOtherArm(void *self, void *studioHdr)
     }
 }
 
+// [hands] model = glb: the mod draws its own hands, so INFRA's arms go - every bone outside the held
+// item (camera, phone, flashlight) collapses to a point, which hides the vertices skinned to it.
+void HideArms(void *self, void *studioHdr)
+{
+    if (!studioHdr || !IsReadable(studioHdr, 4))
+        return;
+    const uint8_t *studio = *static_cast<const uint8_t *const *>(studioHdr);
+    if (!studio || !IsReadable(studio, 0xA4))
+        return;
+    const char *name = reinterpret_cast<const char *>(studio + 12);
+    if (!std::strstr(name, "weapons/v_") && !std::strstr(name, "weapons\\v_"))
+        return;
+    int count = *reinterpret_cast<const int *>(studio + 156);
+    matrix3x4_t *bones = *reinterpret_cast<matrix3x4_t **>(static_cast<uint8_t *>(self) + g_Game.boneArrayOffset);
+    if (count <= 0 || count > 256 || !bones || !IsReadable(bones, count * sizeof(matrix3x4_t)))
+        return;
+    int items[3] = {FindBone(studio, "Camera"), FindBone(studio, "cellular_phone"), FindBone(studio, "flashlight")};
+    int hidden = 0;
+    for (int b = 0; b < count; ++b)
+    {
+        bool keep = false;
+        for (int it : items)
+            keep = keep || (it >= 0 && InSubtree(studio, b, it));
+        if (keep)
+            continue;
+        for (int r = 0; r < 3; ++r)
+            bones[b].m[r][0] = bones[b].m[r][1] = bones[b].m[r][2] = 0.0f;
+        ++hidden;
+    }
+    static const void *s_logged = nullptr;
+    if (s_logged != studio)
+    {
+        s_logged = studio;
+        IVR_LOG("GLB hands: %s - %d of %d bones hidden (INFRA's arms), item bones kept", name, hidden, count);
+    }
+}
+
 void IVR_FASTCALL BuildTransformationsDetour(void *self, void *edx, void *studioHdr, void *pos, void *q,
                                              const void *cameraTransform, int boneMask, void *computed)
 {
     hkBuildTransformations.original(self, edx, studioHdr, pos, q, cameraTransform, boneMask, computed);
-    if (g_Config.handsTracked)
-        MoveOtherArm(self, studioHdr);
+    if (g_Config.handsTracked || hands::Enabled())
+        MoveOtherArm(self, studioHdr); // also finds which hand holds the item
+    if (hands::Enabled())
+        HideArms(self, studioHdr);
 }
 
 void IVR_FASTCALL CalcViewModelViewDetour(void *self, void *edx, const Vector *eyeOrigin, const QAngle *eyeAngles)

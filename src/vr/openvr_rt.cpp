@@ -1,12 +1,14 @@
-#include "openvr_rt.h"
+#include "runtime.h"
 #include "config.h"
+#include "openxr_rt.h"
+#include "overlay_api.h"
 
 #include <algorithm>
 #include <cmath>
 
 namespace ivr {
 
-OpenVR g_VR;
+VrRuntime g_VR;
 
 static Mat3 ConvertRotation(const float r[3][3])
 {
@@ -26,7 +28,7 @@ static Mat3 ConvertRotation(const float r[3][3])
     return out;
 }
 
-static Vector ConvertVector(float x, float y, float z) { return {-z, -x, y}; }
+Vector ConvertVector(float x, float y, float z) { return {-z, -x, y}; }
 
 TrackedPose ConvertPose(const vr::HmdMatrix34_t &m)
 {
@@ -42,7 +44,7 @@ TrackedPose ConvertPose(const vr::HmdMatrix34_t &m)
     return p;
 }
 
-void *OpenVR::Interface(const char *version)
+void *VrRuntime::Interface(const char *version)
 {
     vr::EVRInitError err = vr::VRInitError_None;
     void *p = m_getGenericInterface ? m_getGenericInterface(version, &err) : nullptr;
@@ -54,7 +56,90 @@ void *OpenVR::Interface(const char *version)
     return p;
 }
 
-bool OpenVR::Init()
+bool VrRuntime::Init()
+{
+    if (g_Config.backend == "openxr")
+    {
+        if (InitOpenXR())
+            return true;
+        IVR_ERR("OpenXR is not available - trying OpenVR (SteamVR / OpenOpenVR) instead");
+    }
+    else if (g_Config.backend != "openvr")
+        IVR_ERR("Unknown vr.backend \"%s\" - using openvr", g_Config.backend.c_str());
+    return InitOpenVR();
+}
+
+bool VrRuntime::Ok() const
+{
+    switch (m_backend)
+    {
+    case Backend::OpenVR:
+        return m_system && m_compositor;
+    case Backend::OpenXR:
+        return m_xr && m_xr->Alive();
+    default:
+        return false;
+    }
+}
+
+const char *VrRuntime::BackendName() const
+{
+    switch (m_backend)
+    {
+    case Backend::OpenVR:
+        return "OpenVR";
+    case Backend::OpenXR:
+        return "OpenXR (helper process)";
+    default:
+        return "none";
+    }
+}
+
+bool VrRuntime::AdapterLuid(LUID &out) const
+{
+    if (m_backend != Backend::OpenXR || !m_xr || !m_xr->shm)
+        return false;
+    out.LowPart = m_xr->shm->adapterLuidLow;
+    out.HighPart = m_xr->shm->adapterLuidHigh;
+    return out.LowPart || out.HighPart;
+}
+
+void VrRuntime::SetProjection(const float l[2], const float r[2], const float t[2], const float b[2], uint32_t recW,
+                              uint32_t recH)
+{
+    float tanX = std::max({-l[0], r[0], -l[1], r[1]});
+    float tanY = std::max({-t[0], b[0], -t[1], b[1]});
+    for (int e = 0; e < 2; ++e)
+    {
+        bounds[e].uMin = 0.5f + 0.5f * l[e] / tanX;
+        bounds[e].uMax = 0.5f + 0.5f * r[e] / tanX;
+        // OpenVR's raw "top" is the downward half-angle and "bottom" the upward one (SteamVR builds
+        // GetProjectionMatrix from them that way; Valve's Unity plugin maps them the same). Our
+        // texture's first row is up, so it starts at "bottom". On headsets that see as far up as
+        // down (PSVR2, Index) this changes nothing; on Quest it put the picture off vertically.
+        bounds[e].vMin = 0.5f - 0.5f * b[e] / tanY;
+        bounds[e].vMax = 0.5f - 0.5f * t[e] / tanY;
+    }
+    fovX = Rad2Deg(2.0f * std::atan(tanX));
+    aspect = tanX / tanY;
+    // Keep the headset's pixel density across the (larger) symmetric frustum.
+    float growX = (2.0f * tanX) / std::max(0.1f, (r[0] - l[0]));
+    float growY = (2.0f * tanY) / std::max(0.1f, (b[0] - t[0]));
+    renderWidth = (uint32_t)std::lround(recW * growX * g_Config.renderScale) & ~1u;
+    renderHeight = (uint32_t)std::lround(recH * growY * g_Config.renderScale) & ~1u;
+    renderWidth = std::min<uint32_t>(std::max<uint32_t>(renderWidth, 256), 8192);
+    renderHeight = std::min<uint32_t>(std::max<uint32_t>(renderHeight, 256), 8192);
+
+    IVR_LOG("Projection: recommended %ux%u, rendering %ux%u, fov %.1f, aspect %.3f, IPD %.1f mm", recW, recH,
+            renderWidth, renderHeight, fovX, aspect, (eyeOffset[1] - eyeOffset[0]).Length() * 1000.0f);
+    IVR_LOG("Projection: raw L %.3f %.3f %.3f %.3f  R %.3f %.3f %.3f %.3f", l[0], r[0], t[0], b[0], l[1],
+            r[1], t[1], b[1]);
+    IVR_LOG("Projection: bounds L u[%.3f %.3f] v[%.3f %.3f]  R u[%.3f %.3f] v[%.3f %.3f]", bounds[0].uMin,
+            bounds[0].uMax, bounds[0].vMin, bounds[0].vMax, bounds[1].uMin, bounds[1].uMax, bounds[1].vMin,
+            bounds[1].vMax);
+}
+
+bool VrRuntime::InitOpenVR()
 {
     std::string path = ModuleDir() + "openvr_api.dll";
     m_dll = LoadLibraryExA(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
@@ -98,29 +183,6 @@ bool OpenVR::Init()
     float l[2], r[2], t[2], b[2];
     for (int e = 0; e < 2; ++e)
         m_system->GetProjectionRaw(static_cast<vr::EVREye>(e), &l[e], &r[e], &t[e], &b[e]);
-    float tanX = std::max({-l[0], r[0], -l[1], r[1]});
-    float tanY = std::max({-t[0], b[0], -t[1], b[1]});
-    for (int e = 0; e < 2; ++e)
-    {
-        bounds[e].uMin = 0.5f + 0.5f * l[e] / tanX;
-        bounds[e].uMax = 0.5f + 0.5f * r[e] / tanX;
-        // OpenVR's raw "top" is the downward half-angle and "bottom" the upward one (SteamVR builds
-        // GetProjectionMatrix from them that way; Valve's Unity plugin maps them the same). Our
-        // texture's first row is up, so it starts at "bottom". On headsets that see as far up as
-        // down (PSVR2, Index) this changes nothing; on Quest it put the picture off vertically.
-        bounds[e].vMin = 0.5f - 0.5f * b[e] / tanY;
-        bounds[e].vMax = 0.5f - 0.5f * t[e] / tanY;
-    }
-    fovX = Rad2Deg(2.0f * std::atan(tanX));
-    aspect = tanX / tanY;
-    // Keep the headset's pixel density across the (larger) symmetric frustum.
-    float growX = (2.0f * tanX) / std::max(0.1f, (r[0] - l[0]));
-    float growY = (2.0f * tanY) / std::max(0.1f, (b[0] - t[0]));
-    renderWidth = (uint32_t)std::lround(recW * growX * g_Config.renderScale) & ~1u;
-    renderHeight = (uint32_t)std::lround(recH * growY * g_Config.renderScale) & ~1u;
-    renderWidth = std::min<uint32_t>(std::max<uint32_t>(renderWidth, 256), 8192);
-    renderHeight = std::min<uint32_t>(std::max<uint32_t>(renderHeight, 256), 8192);
-
     // GetEyeToHeadTransform returns a struct by value; call it with MSVC's hidden-pointer
     // convention explicitly instead of relying on the compiler's struct-return ABI.
     using EyeToHeadFn = vr::HmdMatrix34_t *(__thiscall *)(void *, vr::HmdMatrix34_t *, vr::EVREye);
@@ -131,13 +193,9 @@ bool OpenVR::Init()
         eyeToHead(m_system, &m, static_cast<vr::EVREye>(e));
         eyeOffset[e] = ConvertVector(m.m[0][3], m.m[1][3], m.m[2][3]);
     }
-    IVR_LOG("OpenVR: recommended %ux%u, rendering %ux%u, fov %.1f, aspect %.3f, IPD %.1f mm", recW, recH,
-            renderWidth, renderHeight, fovX, aspect, (eyeOffset[1] - eyeOffset[0]).Length() * 1000.0f);
-    IVR_LOG("OpenVR: raw projection L %.3f %.3f %.3f %.3f  R %.3f %.3f %.3f %.3f", l[0], r[0], t[0], b[0], l[1],
-            r[1], t[1], b[1]);
-    IVR_LOG("OpenVR: bounds L u[%.3f %.3f] v[%.3f %.3f]  R u[%.3f %.3f] v[%.3f %.3f]", bounds[0].uMin,
-            bounds[0].uMax, bounds[0].vMin, bounds[0].vMax, bounds[1].uMin, bounds[1].uMax, bounds[1].vMin,
-            bounds[1].vMax);
+    SetProjection(l, r, t, b, recW, recH);
+    m_backend = Backend::OpenVR;
+    m_overlays = MakeOpenVROverlays(m_overlay);
 
     // --- input ------------------------------------------------------------------------
     if (m_vrInput)
@@ -180,8 +238,10 @@ bool OpenVR::Init()
     return true;
 }
 
-void OpenVR::WaitPoses()
+void VrRuntime::WaitPoses()
 {
+    if (m_backend == Backend::OpenXR)
+        return WaitPosesOpenXR();
     if (!Ok())
         return;
     m_compositor->WaitGetPoses(m_poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
@@ -191,7 +251,7 @@ void OpenVR::WaitPoses()
         m_head = ConvertPose(hmd.mDeviceToAbsoluteTracking);
 }
 
-void OpenVR::ReadAction(DigitalAction &a)
+void VrRuntime::ReadAction(DigitalAction &a)
 {
     vr::InputDigitalActionData_t d{};
     bool prev = a.state;
@@ -206,7 +266,7 @@ void OpenVR::ReadAction(DigitalAction &a)
     a.released = !a.state && prev;
 }
 
-void OpenVR::ReadAction(AnalogAction &a)
+void VrRuntime::ReadAction(AnalogAction &a)
 {
     vr::InputAnalogActionData_t d{};
     if (a.handle != vr::k_ulInvalidActionHandle &&
@@ -221,7 +281,7 @@ void OpenVR::ReadAction(AnalogAction &a)
         a.x = a.y = 0;
 }
 
-void OpenVR::ReadHandPose(int hand)
+void VrRuntime::ReadHandPose(int hand)
 {
     TrackedPose &out = m_hands[hand];
     vr::InputPoseActionData_t pd{};
@@ -247,7 +307,7 @@ void OpenVR::ReadHandPose(int hand)
         out.valid = false;
 }
 
-void OpenVR::ReadSkeleton(int hand)
+void VrRuntime::ReadSkeleton(int hand)
 {
     vr::InputSkeletalActionData_t sd{};
     vr::VRSkeletalSummaryData_t sum{};
@@ -261,8 +321,10 @@ void OpenVR::ReadSkeleton(int hand)
         fingerCurl[hand][f] = skeletonValid[hand] ? sum.flFingerCurl[f] : 0.0f;
 }
 
-void OpenVR::UpdateInput()
+void VrRuntime::UpdateInput()
 {
+    if (m_backend == Backend::OpenXR)
+        return UpdateInputOpenXR();
     if (!Ok())
         return;
     if (m_inputOk)
@@ -295,8 +357,10 @@ void OpenVR::UpdateInput()
     ReadHandPose(HAND_RIGHT);
 }
 
-void OpenVR::Haptic(int hand, float seconds, float frequency, float amplitude)
+void VrRuntime::Haptic(int hand, float seconds, float frequency, float amplitude)
 {
+    if (m_backend == Backend::OpenXR)
+        return HapticOpenXR(hand, seconds, frequency, amplitude);
     if (!m_inputOk || !g_Config.haptics || m_hapticAction[hand] == vr::k_ulInvalidActionHandle)
         return;
     m_vrInput->TriggerHapticVibrationAction(m_hapticAction[hand], 0.0f, seconds, frequency, amplitude,
