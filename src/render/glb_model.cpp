@@ -224,15 +224,15 @@ bool GlbModel::Load(const std::string &path, std::string *error)
     float none[5] = {0, 0, 0, 0, 0};
     Skin(none, 0.0f, p, n);
     for (int k = 0; k < 3; ++k)
-    {
-        boundsMin[k] = 1e9f;
-        boundsMax[k] = -1e9f;
-    }
-    for (size_t v = 0; v < vertices.size(); ++v)
+        boundsMin[k] = boundsMax[k] = p[k];
+    for (size_t v = 1; v < vertices.size(); ++v)
         for (int k = 0; k < 3; ++k)
         {
-            boundsMin[k] = std::min(boundsMin[k], p[v * 3 + k]);
-            boundsMax[k] = std::max(boundsMax[k], p[v * 3 + k]);
+            float c = p[v * 3 + k];
+            if (c < boundsMin[k])
+                boundsMin[k] = c;
+            if (c > boundsMax[k])
+                boundsMax[k] = c;
         }
     return true;
 }

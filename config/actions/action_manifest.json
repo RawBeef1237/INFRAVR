@@ -115,6 +115,16 @@
       "type": "pose"
     },
     {
+      "name": "/actions/main/in/SkeletonLeft",
+      "type": "skeleton",
+      "skeleton": "/skeleton/hand/left"
+    },
+    {
+      "name": "/actions/main/in/SkeletonRight",
+      "type": "skeleton",
+      "skeleton": "/skeleton/hand/right"
+    },
+    {
       "name": "/actions/main/out/HapticLeft",
       "type": "vibration"
     },
@@ -137,6 +147,8 @@
       "/actions/main/in/Turn": "Turn",
       "/actions/main/in/PoseLeft": "Left hand pose",
       "/actions/main/in/PoseRight": "Right hand pose",
+      "/actions/main/in/SkeletonLeft": "Left hand fingers",
+      "/actions/main/in/SkeletonRight": "Right hand fingers",
       "/actions/main/out/HapticLeft": "Left haptics",
       "/actions/main/out/HapticRight": "Right haptics",
       "/actions/main/in/Jump": "Jump",

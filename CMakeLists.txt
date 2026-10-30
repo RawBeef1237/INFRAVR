@@ -30,7 +30,14 @@ set(INFRAVR_SOURCES
     src/gameplay/mod.cpp
     src/ui/gamepad.cpp)
 
-add_library(infravr SHARED ${INFRAVR_SOURCES} src/render/d3d9.def)
+# MinGW's .def maps the plain export names to the decorated stdcall symbols; MSVC needs the plain
+# names only (it resolves the decoration itself).
+if(MSVC)
+    set(INFRAVR_DEF src/render/d3d9_msvc.def)
+else()
+    set(INFRAVR_DEF src/render/d3d9.def)
+endif()
+add_library(infravr SHARED ${INFRAVR_SOURCES} ${INFRAVR_DEF})
 set_target_properties(infravr PROPERTIES OUTPUT_NAME d3d9 PREFIX "")
 target_include_directories(infravr PRIVATE ${INFRAVR_MODULE_DIRS} ${TP}/openvr ${TP}/vulkan ${TP}/cgltf ${TP}/stb)
 target_compile_definitions(infravr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
