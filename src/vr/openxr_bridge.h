@@ -3,7 +3,7 @@
 // only, INFRA is 32-bit, so a small helper process owns the OpenXR session.
 //
 //   helper -> game : runtime info, view FOV, head/hand poses, controller input
-//   game -> helper : eye images and overlay panels as shared D3D textures (from DXVK), their
+//   game -> helper : eye images and overlay panels as shared D3D11 textures (KMT handles), their
 //                    poses, haptic pulses
 //
 // Both sides are plain C structs with fixed sizes so the 32- and 64-bit builds agree.

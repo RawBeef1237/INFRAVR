@@ -62,6 +62,8 @@ void VrTexture::Reset()
 // --- device -------------------------------------------------------------------------------------
 void D3DVR::OnDeviceCreated(IDirect3DDevice9 *dev)
 {
+    if (device && device != dev)
+        XrForgetDevice();
     device = dev;
     interopOk = false;
     if (m_interop)
@@ -876,7 +878,7 @@ void D3DVR::OnPresent()
         if (!levelIn && now - m_firstPresent < 20.0)
             return;
         m_submitReady = true;
-        IVR_LOG("Sending frames to SteamVR (%s, %.1f s after the first frame)",
+        IVR_LOG("Sending frames to the headset (%s, %.1f s after the first frame)",
                 levelIn ? "main menu loaded" : "no map loaded yet", now - m_firstPresent);
     }
     if (!EnsureOwnTextures())
