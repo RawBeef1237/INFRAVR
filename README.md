@@ -171,7 +171,13 @@ More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (modules, frame flow, 
 
 ## Building
 
-MinGW-w64 (i686) or Visual Studio (Win32):
+**Windows, one step:** install Visual Studio 2022 with "Desktop development with C++", then run
+`build.bat` in the repository folder. It builds the mod (32-bit) and the OpenXR helper (64-bit),
+downloads DXVK 2.7.1, OpenVR and Khronos' OpenXR loader once into `build-downloads\`, and puts
+everything into `dist\INFRA-VR\` with `install.bat` and `uninstall.bat`. `build.bat install`
+also runs the installer right away. Set `INFRAVR_VERSION` to put a version in the log.
+
+**By hand**, MinGW-w64 (i686) or Visual Studio (Win32):
 
 ```
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=toolchain-i686-mingw.cmake -DCMAKE_BUILD_TYPE=Release
