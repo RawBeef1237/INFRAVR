@@ -68,6 +68,7 @@ public:
     void OnDeviceCreated(IDirect3DDevice9 *device);
     void OnBeforeReset();
     void OnPresent(); // called right before the real Present
+    void OnAfterPresent(); // called right after it
 
     IDirect3DDevice9 *device = nullptr;
     bool interopOk = false;
@@ -193,6 +194,8 @@ private:
         UINT w = 0, h = 0;
     } m_xrPanels[2];
     bool m_xrFailed = false;
+    uint32_t m_xrBusy = 0, m_xrNoSlot = 0, m_xrLastSubmits = 0; // eye pairs not sent (pacing log)
+    double m_xrStatsAt = 0;
     bool m_xrTrusted = false;               // the crash-sticky flag has been cleared
     int m_xrInit = 0;                       // 0 not tried, 1 ready, -1 failed
     ID3D11Device *m_xrD3D11 = nullptr;

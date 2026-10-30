@@ -757,6 +757,15 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
     bool running = false, haveFov = false;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     uint32_t submitted = 0;
+    // Pacing statistics, logged every 5 s: headset frames, frames with the game's eye images, new
+    // eye images, and how old (in headset frames) the shown eye images were.
+    struct
+    {
+        uint32_t frames = 0, withEyes = 0, newEyes = 0, ageSum = 0, ageMax = 0, lastSeq = 0, lastNewFrame = 0;
+        uint32_t frame = 0;
+        int64_t period = 0;
+        DWORD start = 0;
+    } st;
 
     for (;;)
     {
@@ -806,6 +815,26 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
             continue;
         XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
         xrBeginFrame_(session, &fbi);
+        ++st.frame;
+        ++st.frames;
+        st.period = fs.predictedDisplayPeriod;
+        if (!st.start)
+            st.start = GetTickCount();
+        if (GetTickCount() - st.start >= 5000)
+        {
+            double secs = (GetTickCount() - st.start) / 1000.0;
+            if (st.withEyes)
+                Log("pacing: headset %.0f Hz, %.1f frames/s, game eye images on %.0f%% of them, %.1f new eye "
+                    "images/s, each shown for %.1f extra frames on average (max %u)",
+                    st.period ? 1e9 / (double)st.period : 0.0, st.frames / secs, 100.0 * st.withEyes / st.frames,
+                    st.newEyes / secs, (double)st.ageSum / st.withEyes, st.ageMax);
+            uint32_t frame = st.frame, lastSeq = st.lastSeq, lastNew = st.lastNewFrame;
+            st = {};
+            st.frame = frame;
+            st.lastSeq = lastSeq;
+            st.lastNewFrame = lastNew;
+            st.start = GetTickCount();
+        }
 
         // ---- poses and input for the game ----------------------------------------------------
         XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
@@ -899,6 +928,17 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
                     layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader *>(&proj));
                     if (++submitted == 1)
                         Log("First frame from the game: %ux%u", g_shm->eyeWidth, g_shm->eyeHeight);
+                    ++st.withEyes;
+                    if (seq != st.lastSeq)
+                    {
+                        ++st.newEyes;
+                        st.lastSeq = seq;
+                        st.lastNewFrame = st.frame;
+                    }
+                    uint32_t age = st.frame - st.lastNewFrame;
+                    st.ageSum += age;
+                    if (age > st.ageMax)
+                        st.ageMax = age;
                 }
             }
             g_shm->helperUsingSlot = 0xFFFFFFFFu;

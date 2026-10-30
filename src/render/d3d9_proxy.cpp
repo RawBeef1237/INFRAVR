@@ -390,6 +390,7 @@ void AfterPresent()
     if (!g_VR.Ok() || !g_Mod.Active())
         return;
     ResetStereoGuard();
+    g_D3D.OnAfterPresent();
     // With multicore rendering Present runs on the engine's render thread; the VR logic (poses,
     // input) then runs on the main thread at the start of each RenderView instead.
     g_Game.presentThread = GetCurrentThreadId();

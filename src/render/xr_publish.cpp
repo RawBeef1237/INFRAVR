@@ -583,6 +583,18 @@ void D3DVR::XrHandOver()
     }
 }
 
+// Right after Present: wait briefly for the eye copy and publish it now, so the helper gets it for
+// its very next headset frame instead of a whole game frame later (at the next Present).
+void D3DVR::OnAfterPresent()
+{
+    if (!g_VR.IsOpenXR() || m_xrPending < 0)
+        return;
+    XrCopier &c = m_xrSlots[m_xrPending].copier;
+    if (c.submitted)
+        g_vk.waitForFences(m_vkDevice, 1, &c.fence, VK_TRUE, 8000000ull); // at most 8 ms
+    XrHandOver();
+}
+
 void D3DVR::XrPublishEyes(const vr::HmdMatrix34_t &pose)
 {
     ivrxr::Shared *s = Shm();
@@ -591,7 +603,10 @@ void D3DVR::XrPublishEyes(const vr::HmdMatrix34_t &pose)
         return;
     XrHandOver();
     if (m_xrPending >= 0)
-        return; // the GPU has not finished the last copy yet: skip this one
+    {
+        ++m_xrBusy; // the GPU has not finished the last copy yet: skip this one
+        return;
+    }
     // A slot the helper is not reading and that is not the published one.
     uint32_t published = s->eyeSeq ? s->eyeSeq % ivrxr::kEyeSlots : 0xFFFFFFFFu;
     int slot = -1;
@@ -599,7 +614,10 @@ void D3DVR::XrPublishEyes(const vr::HmdMatrix34_t &pose)
         if ((uint32_t)i != published && (uint32_t)i != s->helperUsingSlot)
             slot = i;
     if (slot < 0)
+    {
+        ++m_xrNoSlot;
         return;
+    }
     const VrTexture *src[2] = {&eye[0], &eye[1]};
     XrImage *dst[2] = {&m_xrSlots[slot].img[0], &m_xrSlots[slot].img[1]};
     if (!XrCopy(m_xrSlots[slot].copier, src, dst, 2, w, h))

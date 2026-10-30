@@ -809,6 +809,17 @@ void D3DVR::ProbeFrame(bool stereo, bool hudOn)
 // submitted (or keeps timing out), the headset is not getting the game's pictures.
 void D3DVR::LogCompositorStats()
 {
+    if (g_VR.IsOpenXR())
+    {
+        double now = NowSeconds();
+        if (m_xrStatsAt > 0)
+            IVR_LOG("OpenXR: %.1f eye pairs/s sent to the helper; skipped %u (copy still running), %u (no free slot)",
+                    (m_submits - m_xrLastSubmits) / (now - m_xrStatsAt), m_xrBusy, m_xrNoSlot);
+        m_xrStatsAt = now;
+        m_xrLastSubmits = m_submits;
+        m_xrBusy = m_xrNoSlot = 0;
+        return;
+    }
     if (!g_VR.UsesSteamVR())
         return;
     vr::Compositor_CumulativeStats st{};
