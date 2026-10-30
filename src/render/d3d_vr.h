@@ -2,7 +2,8 @@
 // D3D9 <-> Vulkan interop interfaces (works with the stock DXVK release).
 #pragma once
 #include "common.h"
-#include "openvr_rt.h"
+#include "runtime.h"
+#include "openxr_bridge.h"
 
 #include <d3d9.h>
 
@@ -152,6 +153,35 @@ private:
     bool m_msaaFailed = false;
     bool m_msaaLogged = false;
     void MirrorEyeToBackBuffer();
+
+    // OpenXR backend: the eye images and panels go to the helper process as shared D3D textures
+    // (xr_publish.cpp). An eye pair is copied into a free slot, and handed over one frame later,
+    // once an event query says the GPU has finished the copy (the helper's D3D11 device does not
+    // wait for DXVK's work by itself).
+    struct XrSlot
+    {
+        IDirect3DTexture9 *tex[2] = {nullptr, nullptr};
+        HANDLE handle[2] = {nullptr, nullptr};
+    } m_xrSlots[ivrxr::kEyeSlots];
+    UINT m_xrW = 0, m_xrH = 0;
+    IDirect3DQuery9 *m_xrQuery = nullptr;
+    int m_xrPending = -1; // slot copied, waiting for the GPU
+    vr::HmdMatrix34_t m_xrPendingPose{};
+    uint32_t m_xrSeq = 0;
+    struct XrPanel
+    {
+        vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid;
+        IDirect3DTexture9 *tex = nullptr;
+        HANDLE handle = nullptr;
+        UINT w = 0, h = 0;
+    } m_xrPanels[2];
+    bool m_xrFailed = false;
+    bool XrEnsureSlots(UINT w, UINT h);
+    void XrHandOver();
+    void XrPublishEyes(const vr::HmdMatrix34_t &pose);
+    void XrPublishPanel(vr::VROverlayHandle_t overlay, const VrTexture &src);
+    void XrShowEyes(bool on);
+    void XrRelease();
 
     ID3D9VkInteropDevice *m_interop = nullptr;
     VkInstance m_instance = VK_NULL_HANDLE;

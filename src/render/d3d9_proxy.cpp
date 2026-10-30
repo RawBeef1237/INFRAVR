@@ -8,12 +8,15 @@
 //      the Source engine (see hooks_game.cpp).
 #include "common.h"
 #include "config.h"
+#include "flags.h"
+#include "world_size.h"
+#include "hands_renderer.h"
 #include "gamepad.h"
 #include "d3d_vr.h"
 #include "game.h"
 #include "hooks.h"
-#include "openvr_rt.h"
-#include "vr.h"
+#include "runtime.h"
+#include "mod.h"
 
 #include <d3d9.h>
 #include <dxgi.h>
@@ -26,6 +29,7 @@ using namespace ivr;
 
 namespace ivr {
 bool InstallClientHooks();
+void ResetStereoGuard();
 bool InstallServerHooks();
 } // namespace ivr
 
@@ -33,6 +37,10 @@ namespace {
 
 HMODULE g_realD3D9 = nullptr;
 bool g_vrInitDone = false;
+// False in a second copy of this DLL loaded into the same process: that copy only forwards to
+// DXVK (two VR sessions in one game wedge SteamVR - Black Mesa VR saw the same).
+bool g_active = true;
+HANDLE g_instanceMutex = nullptr;
 
 using Direct3DCreate9Fn = IDirect3D9 *(WINAPI *)(UINT);
 using Direct3DCreate9ExFn = HRESULT(WINAPI *)(UINT, IDirect3D9Ex **);
@@ -182,7 +190,10 @@ void PickHeadsetGpu(const std::string &conf)
         }
     }
     int32_t adapter = -1;
-    g_VR.m_system->GetDXGIOutputInfo(&adapter);
+    LUID want{};
+    bool byLuid = g_VR.IsOpenXR() && g_VR.AdapterLuid(want);
+    if (g_VR.UsesSteamVR())
+        g_VR.m_system->GetDXGIOutputInfo(&adapter);
     HMODULE dxgi = LoadLibraryA("dxgi.dll");
     using CreateFactoryFn = HRESULT(WINAPI *)(REFIID, void **);
     auto create = dxgi ? reinterpret_cast<CreateFactoryFn>(GetProcAddress(dxgi, "CreateDXGIFactory1")) : nullptr;
@@ -202,8 +213,9 @@ void PickHeadsetGpu(const std::string &conf)
         a->Release();
         char name[128] = {};
         WideCharToMultiByte(CP_UTF8, 0, d.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
-        IVR_LOG("GPU %u: %s%s", i, name, (int32_t)i == adapter ? "  <-- SteamVR's GPU" : "");
-        if ((int32_t)i == adapter)
+        bool match = byLuid ? memcmp(&d.AdapterLuid, &want, sizeof(want)) == 0 : (int32_t)i == adapter;
+        IVR_LOG("GPU %u: %s%s", i, name, match ? "  <-- the headset runtime's GPU" : "");
+        if (match)
         {
             luid = d.AdapterLuid;
             haveLuid = true;
@@ -272,7 +284,7 @@ void PickHeadsetGpu(const std::string &conf)
 
 void InitVROnce()
 {
-    if (g_vrInitDone)
+    if (g_vrInitDone || !g_active)
         return;
     g_vrInitDone = true;
     InstallGamepadHooks(); // before the engine's input system looks for controllers
@@ -284,13 +296,19 @@ void InitVROnce()
         GetFileAttributesA(conf.c_str()) != INVALID_FILE_ATTRIBUTES)
         SetEnvironmentVariableA("DXVK_CONFIG_FILE", conf.c_str());
 
+    flags::SetStage("VR runtime start");
     if (g_VR.Init())
     {
-        IVR_LOG("SteamVR initialised");
+        IVR_LOG("VR runtime initialised (%s)", g_VR.BackendName());
         PickHeadsetGpu(conf);
+        // Before the engine creates its render targets (that happens after the device exists).
+        if (g_Config.worldAtEyeSize && !g_Config.renderFitWindow)
+            world::Install(GetInterface("materialsystem.dll", "VMaterialSystem080"), g_VR.renderWidth,
+                           g_VR.renderHeight);
     }
     else
-        IVR_ERR("SteamVR is not available - INFRA will run flat. Start SteamVR and your headset first.");
+        IVR_ERR("No VR runtime is available - INFRA will run flat. Start SteamVR and your headset first.");
+    flags::SetStage("engine start");
 }
 
 HMODULE RealD3D9()
@@ -345,8 +363,10 @@ void TryInitEngine()
         if (g_Game.Init() && InstallClientHooks())
         {
             IVR_LOG("Engine hooks installed");
-            g_Game.ApplyVRSettings();
-            g_Game.ExecuteCommand("r_drawviewmodel 1");
+            g_Game.ApplyVRSettings(); // convars only; console commands go through the queue
+            g_Mod.QueueCommand("mat_queue_mode 0");
+            g_Mod.QueueCommand("r_drawviewmodel 1");
+            hands::Enabled(); // load the hand models now rather than in the middle of a frame
         }
         else
             IVR_ERR("Engine hooks could not be installed - see above");
@@ -369,10 +389,15 @@ void AfterPresent()
 {
     if (!g_VR.Ok() || !g_Mod.Active())
         return;
-    g_VR.m_compositor->PostPresentHandoff();
+    ResetStereoGuard();
     // With multicore rendering Present runs on the engine's render thread; the VR logic (poses,
     // input) then runs on the main thread at the start of each RenderView instead.
     g_Game.presentThread = GetCurrentThreadId();
+    // WaitGetPoses right after Present hands the frame over by itself; only when the poses are read
+    // somewhere else (multicore) does SteamVR need the explicit handoff.
+    bool posesLater = g_Game.mainThread && g_Game.presentThread != g_Game.mainThread;
+    if (g_VR.UsesSteamVR() && (posesLater || g_Config.explicitHandoff))
+        g_VR.m_compositor->PostPresentHandoff();
     if (!g_Game.mainThread || g_Game.presentThread == g_Game.mainThread)
         g_Mod.OnFrame();
 }
@@ -387,6 +412,8 @@ void AdjustPresentParams(D3DPRESENT_PARAMETERS *pp)
 HRESULT STDMETHODCALLTYPE hkPresent(IDirect3DDevice9 *self, const RECT *src, const RECT *dst, HWND wnd,
                                     const RGNDATA *dirty)
 {
+    if (!g_active)
+        return g_hkPresent.original(self, src, dst, wnd, dirty);
     OnPresent();
     HRESULT hr = g_hkPresent.original(self, src, dst, wnd, dirty);
     AfterPresent();
@@ -396,6 +423,8 @@ HRESULT STDMETHODCALLTYPE hkPresent(IDirect3DDevice9 *self, const RECT *src, con
 HRESULT STDMETHODCALLTYPE hkPresentEx(IDirect3DDevice9Ex *self, const RECT *src, const RECT *dst, HWND wnd,
                                       const RGNDATA *dirty, DWORD flags)
 {
+    if (!g_active)
+        return g_hkPresentEx.original(self, src, dst, wnd, dirty, flags);
     OnPresent();
     HRESULT hr = g_hkPresentEx.original(self, src, dst, wnd, dirty, flags);
     AfterPresent();
@@ -536,7 +565,8 @@ IDirect3D9 *WINAPI Direct3DCreate9(UINT sdk)
     InitVROnce(); // must happen before DXVK creates its Vulkan instance
     auto fn = RealProc<Direct3DCreate9Fn>("Direct3DCreate9");
     IDirect3D9 *d3d = fn ? fn(sdk) : nullptr;
-    HookInterface(d3d);
+    if (g_active)
+        HookInterface(d3d);
     return d3d;
 }
 
@@ -547,7 +577,7 @@ HRESULT WINAPI Direct3DCreate9Ex(UINT sdk, IDirect3D9Ex **out)
     if (!fn)
         return D3DERR_NOTAVAILABLE;
     HRESULT hr = fn(sdk, out);
-    if (SUCCEEDED(hr) && out && *out)
+    if (g_active && SUCCEEDED(hr) && out && *out)
         HookInterface(*out);
     return hr;
 }
@@ -618,9 +648,19 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
     if (reason == DLL_PROCESS_ATTACH)
     {
         DisableThreadLibraryCalls(instance);
+        char name[64];
+        snprintf(name, sizeof(name), "Local\\INFRAVR-%lu", (unsigned long)GetCurrentProcessId());
+        g_instanceMutex = CreateMutexA(nullptr, FALSE, name);
+        if (g_instanceMutex && GetLastError() == ERROR_ALREADY_EXISTS)
+        {
+            g_active = false; // another copy runs VR; this one only forwards to DXVK
+            return TRUE;
+        }
         LogInit((GameDir() + "infravr.log").c_str());
-        IVR_LOG("INFRA VR 0.8.7 loaded from %s", ModuleDir().c_str());
+        IVR_LOG("INFRA VR %s loaded from %s", INFRAVR_VERSION, ModuleDir().c_str());
         LoadConfig();
+        flags::Init();
+        flags::InstallCrashLogger();
         HooksInit();
     }
     return TRUE;

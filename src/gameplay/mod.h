@@ -2,7 +2,7 @@
 #pragma once
 #include "common.h"
 #include "mathlib.h"
-#include "openvr_rt.h"
+#include "runtime.h"
 
 #include <deque>
 
@@ -39,6 +39,13 @@ public:
     Pose AimWorld(int hand) const;    // pointing ray (grip pose + aim pitch)
     Pose LensWorld() const;           // camera lens, in the hand holding the camera
     bool HandValid(int hand) const { return g_VR.HandPose(hand).valid; }
+    float UnitsPerMetre() const { return m_scale; }
+
+    // Console commands run at a safe point: the start of each frame's RenderView on the main thread
+    // (never from Present, which Black Mesa VR found crashes). While the game draws no 3D view
+    // (paused, loading) they run from the frame update instead, after a short wait.
+    void QueueCommand(const std::string &cmd, double delay = 0.0);
+    void OnSafePoint();
 
     // State queried by hooks
     bool menuMode = true;        // flat menu on a virtual screen, eyes blank
@@ -96,8 +103,9 @@ private:
     void SendKey(WPARAM vk);
     void Holsters();
     void Recenter();
-    void QueueCommand(const std::string &cmd, double delay = 0.0);
     void RunCommands(double now);
+    void RunCommandsFallback(double now);
+    double m_lastSafePoint = -1;
     Item DetectItem();
     int Dominant() const;
     int Offhand() const { return 1 - Dominant(); }

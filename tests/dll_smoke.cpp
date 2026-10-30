@@ -2,9 +2,13 @@
 #include <windows.h>
 #include <d3d9.h>
 #include <cstdio>
+#include <cstring>
 int main()
 {
-    HMODULE m = LoadLibraryExA("Z:\\home\\claude\\infravr3\\build\\d3d9.dll", nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    char path[MAX_PATH];
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    strcpy(strrchr(path, '\\') + 1, "d3d9.dll"); // next to this exe
+    HMODULE m = LoadLibraryExA(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     auto create = (IDirect3D9 * (WINAPI *)(UINT)) GetProcAddress(m, "Direct3DCreate9");
     printf("module %p Direct3DCreate9 %p\n", (void *)m, (void *)create);
     WNDCLASSA wc{};

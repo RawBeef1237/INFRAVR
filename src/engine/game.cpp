@@ -1,4 +1,5 @@
 #include "game.h"
+#include "world_size.h"
 #include "hooks.h"
 #include "config.h"
 
@@ -329,9 +330,15 @@ void Game::ForceConVar(const char *name, const char *value) const
 void Game::ApplyVRSettings() const
 {
     IVR_LOG("ConVar mat_queue_mode was \"%s\"", ConVarString("mat_queue_mode").c_str());
-    ExecuteCommand("mat_queue_mode 0"); // [vr] multicore switches to 2 once the eye images exist
+    // mat_queue_mode 0 is queued by the caller (console commands only run at a safe point);
+    // [vr] multicore switches to 2 once the eye images exist.
     queueMode = 0;
-    if (!g_Config.postProcessing)
+    bool postOk = world::Active() || g_Config.renderFitWindow;
+    if (g_Config.postProcessing && !postOk)
+        IVR_LOG("Post-processing stays off: the engine's buffers are not at the eye size (world_at_eye_size)");
+    else if (g_Config.postProcessing)
+        IVR_LOG("Post-processing on (%d engine buffers at the eye size)", world::ResizedTargets());
+    if (!g_Config.postProcessing || !postOk)
     {
         for (const char *cv : {"mat_postprocess_enable", "mat_dof_enabled", "mat_vignette_enable",
                                "mat_local_contrast_enable", "mat_motion_blur_enabled"})

@@ -7,6 +7,8 @@ rem   bin\d3d9.dll          the mod (Source loads d3d9.dll from the bin folder)
 rem   bin\dxvk_d3d9.dll     DXVK 2.7.1, 32-bit (renders D3D9 through Vulkan)
 rem   bin\openvr_api.dll    Valve's OpenVR runtime client, 32-bit
 rem   bin\infravr\          settings + SteamVR controller bindings
+rem   bin\infravr\hands\    the VR hand models (glTF .glb)
+rem   bin\infravr\openxr\   the 64-bit OpenXR helper (only used with backend = openxr)
 rem Usage: double-click, or  install.bat "D:\SteamLibrary\steamapps\common\infra"
 
 set "HERE=%~dp0"
@@ -64,6 +66,14 @@ if not exist "%BIN%\infravr" mkdir "%BIN%\infravr"
 if not exist "%BIN%\infravr\actions" mkdir "%BIN%\infravr\actions"
 copy /y "%HERE%bin\infravr\actions\*.json" "%BIN%\infravr\actions\" >nul && echo   copied bin\infravr\actions (SteamVR bindings)
 copy /y "%HERE%bin\infravr\dxvk.conf" "%BIN%\infravr\" >nul && echo   copied bin\infravr\dxvk.conf
+if not exist "%BIN%\infravr\hands" mkdir "%BIN%\infravr\hands"
+copy /y "%HERE%bin\infravr\hands\*.glb" "%BIN%\infravr\hands\" >nul && echo   copied bin\infravr\hands (VR hand models)
+if exist "%HERE%bin\infravr\openxr\infravr_openxr.exe" (
+    if not exist "%BIN%\infravr\openxr" mkdir "%BIN%\infravr\openxr"
+    copy /y "%HERE%bin\infravr\openxr\*.*" "%BIN%\infravr\openxr\" >nul && echo   copied bin\infravr\openxr (OpenXR helper)
+)
+rem Mechanisms that crashed an earlier build are not held against this one.
+if exist "%GAME%\infravr_skip.txt" (del /q "%GAME%\infravr_skip.txt" & echo   cleared infravr_skip.txt)
 if exist "%BIN%\infravr\infravr.ini" (
     copy /y "%HERE%bin\infravr\infravr.ini" "%BIN%\infravr\infravr.ini.new" >nul
     echo   kept your bin\infravr\infravr.ini ^(new defaults in infravr.ini.new^)

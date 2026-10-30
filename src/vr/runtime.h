@@ -1,9 +1,15 @@
-// INFRA VR - OpenVR runtime (SteamVR) access.
+// INFRA VR - VR runtime layer.
 //
-// openvr_api.dll (32-bit, next to d3d9.dll in INFRA\bin) is loaded dynamically and
-// initialised BEFORE DXVK creates its Vulkan instance: DXVK's built-in OpenVR support
-// then finds the loaded openvr_api.dll and enables the Vulkan instance/device
-// extensions the SteamVR compositor needs (same approach as L4D2VR/Portal2VR).
+// One class, two backends, picked by vr.backend in infravr.ini:
+//   openvr (default) - openvr_api.dll (32-bit, next to d3d9.dll in INFRA\bin) is loaded
+//     dynamically and initialised BEFORE DXVK creates its Vulkan instance: DXVK's built-in OpenVR
+//     support then finds the loaded openvr_api.dll and enables the Vulkan extensions the SteamVR
+//     compositor needs (same approach as L4D2VR/Portal2VR). This also covers OpenXR-only headsets
+//     through OpenOpenVR / OpenComposite, which is the recommended route for them.
+//   openxr - OpenXR runtimes are 64-bit only, so the session lives in a helper process
+//     (bin\infravr\openxr\infravr_openxr.exe) and the game talks to it through shared memory
+//     (openxr_bridge.h). Falls back to openvr when the helper does not come up.
+// The rest of the mod sees the same poses, input, finger curls and overlay calls either way.
 #pragma once
 #include "common.h"
 #include "mathlib.h"
@@ -53,11 +59,30 @@ struct InputState
         recenter, phone;
 };
 
-class OpenVR
+class OverlayApi;
+namespace xr { struct Link; }
+
+enum class Backend
+{
+    None,
+    OpenVR,
+    OpenXR
+};
+
+class VrRuntime
 {
 public:
-    bool Init();          // loads openvr_api.dll and calls VR_Init(Scene)
-    bool Ok() const { return m_system && m_compositor; }
+    bool Init();          // picks the backend (vr.backend), falls back to OpenVR
+    bool Ok() const;
+    Backend GetBackend() const { return m_backend; }
+    const char *BackendName() const;
+    bool UsesSteamVR() const { return m_backend == Backend::OpenVR; } // IVRCompositor etc. are there
+    bool IsOpenXR() const { return m_backend == Backend::OpenXR; }
+    // Overlay panels (menu, HUD, pointer) for whichever backend runs; never null after Init.
+    OverlayApi *Overlays() const { return m_overlays; }
+    // GPU the headset runtime wants the game to render on.
+    bool AdapterLuid(LUID &out) const;
+    xr::Link *XrLink() const { return m_xr; }
     // True once WaitGetPoses has run: the compositor rejects frames (error 101) before that.
     bool HavePoses() const { return m_havePoses; }
 
@@ -98,7 +123,23 @@ public:
     vr::IVROverlay *m_overlay = nullptr;
     vr::IVRInput *m_vrInput = nullptr;
 
+    // Backend internals, shared with openxr_rt.cpp.
+    TrackedPose m_head, m_hands[2];
+    InputState m_input;
+    bool m_havePoses = false;
+
 private:
+    bool InitOpenVR();
+    bool InitOpenXR();
+    void WaitPosesOpenXR();
+    void UpdateInputOpenXR();
+    void HapticOpenXR(int hand, float seconds, float frequency, float amplitude);
+    void SetProjection(const float l[2], const float r[2], const float t[2], const float b[2], uint32_t recW,
+                       uint32_t recH);
+    Backend m_backend = Backend::None;
+    OverlayApi *m_overlays = nullptr;
+    xr::Link *m_xr = nullptr;
+
     void ReadAction(DigitalAction &a);
     void ReadAction(AnalogAction &a);
     void ReadHandPose(int hand);
@@ -108,8 +149,6 @@ private:
     void *(__cdecl *m_getGenericInterface)(const char *, vr::EVRInitError *) = nullptr;
 
     vr::TrackedDevicePose_t m_poses[vr::k_unMaxTrackedDeviceCount]{};
-    TrackedPose m_head, m_hands[2];
-    InputState m_input;
     vr::VRActionSetHandle_t m_actionSet = vr::k_ulInvalidActionSetHandle;
     vr::VRActionHandle_t m_poseAction[2]{vr::k_ulInvalidActionHandle, vr::k_ulInvalidActionHandle};
     vr::VRActionHandle_t m_hapticAction[2]{vr::k_ulInvalidActionHandle, vr::k_ulInvalidActionHandle};
@@ -118,12 +157,12 @@ private:
     int m_skeletonLogs = 0;
     void ReadSkeleton(int hand);
     bool m_inputOk = false;
-    bool m_havePoses = false;
 };
 
-extern OpenVR g_VR;
+extern VrRuntime g_VR;
 
 // OpenVR (x right, y up, z back; metres) -> Source axes (x forward, y left, z up).
 TrackedPose ConvertPose(const vr::HmdMatrix34_t &m);
+Vector ConvertVector(float x, float y, float z);
 
 } // namespace ivr

@@ -18,3 +18,4 @@ dist/
 .vscode/
 CMakeUserPresets.json
 __pycache__/
+build-xr/

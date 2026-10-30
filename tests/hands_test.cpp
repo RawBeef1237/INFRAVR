@@ -1,6 +1,6 @@
 // Offline check of the tracked-hands bone override against INFRA's real viewmodel files.
 // Usage: hands_test.exe v_phone.mdl
-#include "../src/hooks_game.cpp"
+#include "../src/engine/hooks_game.cpp"
 
 #include <cmath>
 #include <vector>

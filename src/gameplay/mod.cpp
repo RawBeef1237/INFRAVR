@@ -1,4 +1,5 @@
-#include "vr.h"
+#include "mod.h"
+#include "overlay_api.h"
 #include "config.h"
 #include "game.h"
 #include "hooks.h"
@@ -36,7 +37,7 @@ bool VRMod::Init()
     m_scale = kUnitsPerMetre * g_Config.worldScale;
     if (!g_VR.Ok())
         return false;
-    if (vr::IVROverlay *ov = g_VR.m_overlay)
+    if (OverlayApi *ov = g_VR.Overlays())
     {
         if (ov->CreateOverlay("infravr.menu", "INFRA", &menuOverlay) != vr::VROverlayError_None)
             IVR_ERR("CreateOverlay(menu) failed");
@@ -84,7 +85,7 @@ bool VRMod::Init()
         {
             ov->SetOverlayWidthInMeters(hudOverlay, g_Config.hudWidth);
             vr::HmdMatrix34_t m = {{{1, 0, 0, 0}, {0, 1, 0, -g_Config.hudDown}, {0, 0, 1, -g_Config.hudDistance}}};
-            ov->SetOverlayTransformTrackedDeviceRelative(hudOverlay, vr::k_unTrackedDeviceIndex_Hmd, &m);
+            ov->SetOverlayTransformHeadRelative(hudOverlay, m);
             ov->SetOverlaySortOrder(hudOverlay, 1);
         }
     }
@@ -455,7 +456,7 @@ void VRMod::OnFrame()
         if (g_Config.phoneMenuInWorld)
         {
             // The menu stands in the world; the phone model would only get in the way.
-            g_Game.ExecuteCommand(phoneMenu ? "r_drawviewmodel 0" : "r_drawviewmodel 1");
+            QueueCommand(phoneMenu ? "r_drawviewmodel 0" : "r_drawviewmodel 1");
             m_phoneWorldPlaced = false;
         }
         else if (phoneMenu && g_Config.phoneMenuPointer)
@@ -497,7 +498,7 @@ void VRMod::OnFrame()
 
     if (phoneMenu)
     {
-        RunCommands(now); // the game is paused: CreateMove does not run
+        RunCommandsFallback(now); // the game is paused: CreateMove does not run
         ProcessPhoneMenuInput(now);
     }
     else if (menuMode)
@@ -507,7 +508,7 @@ void VRMod::OnFrame()
         // cursor every frame, which pins it and swallows the pointer: the pointer drives it instead.
         if (mainMenu && g_Game.StopControllerCursor())
             IVR_LOG("Main menu: INFRA's controller cursor switched off, the pointer drives the menu");
-        RunCommands(now); // CreateMove does not run while paused / in menus
+        RunCommandsFallback(now); // CreateMove does not run while paused / in menus
         if (m_pauseTap)
         {
             if (inGame && !m_forceScreen)
@@ -585,6 +586,19 @@ void VRMod::Recenter()
 void VRMod::QueueCommand(const std::string &cmd, double delay)
 {
     m_commands.push_back({NowSeconds() + delay, cmd});
+}
+
+void VRMod::OnSafePoint()
+{
+    double now = NowSeconds();
+    m_lastSafePoint = now;
+    RunCommands(now);
+}
+
+void VRMod::RunCommandsFallback(double now)
+{
+    if (m_lastSafePoint < 0 || now - m_lastSafePoint > 0.1)
+        RunCommands(now);
 }
 
 void VRMod::RunCommands(double now)
@@ -761,7 +775,7 @@ void VRMod::ProcessGameInput(double now, double dt)
 // --- overlays / menus ----------------------------------------------------------------------
 void VRMod::UpdateOverlays(bool showMenu, bool showHud, int menuWidth, int menuHeight)
 {
-    vr::IVROverlay *ov = g_VR.m_overlay;
+    OverlayApi *ov = g_VR.Overlays();
     if (!ov)
         return;
     if (hudOverlay != vr::k_ulOverlayHandleInvalid)
@@ -818,7 +832,7 @@ void VRMod::UpdateOverlays(bool showMenu, bool showHud, int menuWidth, int menuH
                      {0, 1, 0, hm.m[1][3] - 0.05f},
                      {fx, 0, -fz, hm.m[2][3] + fz * d}}};
         m_menuAspect = menuWidth > 0 ? (float)menuHeight / (float)menuWidth : 9.0f / 16.0f;
-        ov->SetOverlayTransformAbsolute(menuOverlay, vr::TrackingUniverseStanding, &m_menuXf);
+        ov->SetOverlayTransformAbsolute(menuOverlay, m_menuXf);
         ov->ShowOverlay(menuOverlay);
         m_menuVisible = true;
         m_replaceMenu = false;
@@ -839,7 +853,7 @@ void VRMod::UpdateOverlays(bool showMenu, bool showHud, int menuWidth, int menuH
 // player a little below eye level and tilted toward them, like a lectern.
 void VRMod::PlacePhoneMenuInWorld(float aspect)
 {
-    vr::IVROverlay *ov = g_VR.m_overlay;
+    OverlayApi *ov = g_VR.Overlays();
     if (!g_VR.Head().valid)
         return;
     const vr::HmdMatrix34_t &hm = g_VR.Head().raw;
@@ -864,7 +878,7 @@ void VRMod::PlacePhoneMenuInWorld(float aspect)
     m_phoneXf = {{{X[0], Y[0], Z[0], P[0]}, {X[1], Y[1], Z[1], P[1]}, {X[2], Y[2], Z[2], P[2]}}};
     ov->SetOverlayWidthInMeters(hudOverlay, g_Config.phoneMenuWorldWidth);
     ov->SetOverlaySortOrder(hudOverlay, 1);
-    ov->SetOverlayTransformAbsolute(hudOverlay, vr::TrackingUniverseStanding, &m_phoneXf);
+    ov->SetOverlayTransformAbsolute(hudOverlay, m_phoneXf);
     m_hudAtHand = true; // restore the head-locked HUD when the menu closes
     m_phoneWorldPlaced = true;
     (void)aspect;
@@ -874,7 +888,7 @@ void VRMod::PlacePhoneMenuInWorld(float aspect)
 // held above the phone hand and tilted toward your eyes.
 void VRMod::PlaceHud(bool atHand, float aspect)
 {
-    vr::IVROverlay *ov = g_VR.m_overlay;
+    OverlayApi *ov = g_VR.Overlays();
     if (atHand)
     {
         const TrackedPose &c = g_VR.HandPose(itemHand);
@@ -899,14 +913,14 @@ void VRMod::PlaceHud(bool atHand, float aspect)
             ov->SetOverlayWidthInMeters(hudOverlay, w);
             ov->SetOverlaySortOrder(hudOverlay, 1);
         }
-        ov->SetOverlayTransformAbsolute(hudOverlay, vr::TrackingUniverseStanding, &m_phoneXf);
+        ov->SetOverlayTransformAbsolute(hudOverlay, m_phoneXf);
         m_hudAtHand = true;
     }
     else
     {
         ov->SetOverlayWidthInMeters(hudOverlay, g_Config.hudWidth);
         vr::HmdMatrix34_t m = {{{1, 0, 0, 0}, {0, 1, 0, -g_Config.hudDown}, {0, 0, 1, -g_Config.hudDistance}}};
-        ov->SetOverlayTransformTrackedDeviceRelative(hudOverlay, vr::k_unTrackedDeviceIndex_Hmd, &m);
+        ov->SetOverlayTransformHeadRelative(hudOverlay, m);
         m_hudAtHand = false;
     }
 }
@@ -1088,7 +1102,7 @@ bool VRMod::ScreenHit(int hand, const vr::HmdMatrix34_t &m, float w, float aspec
 
 void VRMod::ShowPointer(int hand, bool onScreen, const float hit[3], const vr::HmdMatrix34_t &screen)
 {
-    vr::IVROverlay *ov = g_VR.m_overlay;
+    OverlayApi *ov = g_VR.Overlays();
     const TrackedPose &c = g_VR.HandPose(hand);
     if (beamOverlay != vr::k_ulOverlayHandleInvalid && c.valid)
     {
@@ -1098,7 +1112,7 @@ void VRMod::ShowPointer(int hand, bool onScreen, const float hit[3], const vr::H
         vr::HmdMatrix34_t b = {{{r[0][0], -r[0][2], r[0][1], r[0][3] - r[0][2] * half},
                                 {r[1][0], -r[1][2], r[1][1], r[1][3] - r[1][2] * half},
                                 {r[2][0], -r[2][2], r[2][1], r[2][3] - r[2][2] * half}}};
-        ov->SetOverlayTransformAbsolute(beamOverlay, vr::TrackingUniverseStanding, &b);
+        ov->SetOverlayTransformAbsolute(beamOverlay, b);
         ov->ShowOverlay(beamOverlay);
         m_pointerShown = true;
     }
@@ -1112,13 +1126,13 @@ void VRMod::ShowPointer(int hand, bool onScreen, const float hit[3], const vr::H
     vr::HmdMatrix34_t m = screen;
     for (int i = 0; i < 3; ++i)
         m.m[i][3] = hit[i] + screen.m[i][2] * 0.005f; // just in front of the screen
-    ov->SetOverlayTransformAbsolute(cursorOverlay, vr::TrackingUniverseStanding, &m);
+    ov->SetOverlayTransformAbsolute(cursorOverlay, m);
     ov->ShowOverlay(cursorOverlay);
 }
 
 void VRMod::HidePointer()
 {
-    vr::IVROverlay *ov = g_VR.m_overlay;
+    OverlayApi *ov = g_VR.Overlays();
     if (!ov)
         return;
     if (cursorOverlay != vr::k_ulOverlayHandleInvalid)
