@@ -22,6 +22,14 @@
 #define IVR_THISCALL __thiscall
 #define IVR_FASTCALL __fastcall
 
+// Return address of the current function (MSVC and GCC/MinGW spell it differently).
+#ifdef _MSC_VER
+#include <intrin.h>
+#define IVR_RETURN_ADDRESS() _ReturnAddress()
+#else
+#define IVR_RETURN_ADDRESS() __builtin_return_address(0)
+#endif
+
 namespace ivr {
 
 void LogInit(const char *path);

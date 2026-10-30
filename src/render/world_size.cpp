@@ -31,7 +31,7 @@ bool g_installed = false;
 
 void IVR_FASTCALL GetBackBufferDimensionsDetour(void *self, void *edx, int *w, int *h)
 {
-    uint8_t *caller = static_cast<uint8_t *>(__builtin_return_address(0));
+    uint8_t *caller = static_cast<uint8_t *>(IVR_RETURN_ADDRESS());
     g_hook.original(self, edx, w, h);
     if (!w || !h)
         return;

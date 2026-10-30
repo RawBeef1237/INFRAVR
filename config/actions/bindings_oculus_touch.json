@@ -114,6 +114,16 @@
           "path": "/user/hand/right/pose/tip"
         }
       ],
+      "skeleton": [
+        {
+          "output": "/actions/main/in/SkeletonLeft",
+          "path": "/user/hand/left/input/skeleton/left"
+        },
+        {
+          "output": "/actions/main/in/SkeletonRight",
+          "path": "/user/hand/right/input/skeleton/right"
+        }
+      ],
       "haptics": [
         {
           "output": "/actions/main/out/HapticLeft",

@@ -41,6 +41,14 @@ int main(int argc, char **argv)
                m.vertices.size(), m.indices.size() / 3, m.joints.size(), m.fingerJoints, m.texWidth, m.texHeight);
         printf("  rest bounds x [%.3f %.3f] y [%.3f %.3f] z [%.3f %.3f]\n", m.boundsMin[0], m.boundsMax[0],
                m.boundsMin[1], m.boundsMax[1], m.boundsMin[2], m.boundsMax[2]);
+        bool boundsOk = true;
+        for (int k = 0; k < 3; ++k)
+            boundsOk = boundsOk && m.boundsMin[k] < m.boundsMax[k];
+        if (!boundsOk || m.boundsMax[0] - m.boundsMin[0] < 0.1f)
+        {
+            printf("  FAIL: rest bounds are wrong (a hand is wider than 10 cm)\n");
+            ++failures;
+        }
         if (m.fingerJoints < 15)
         {
             printf("  FAIL: expected the biped finger joints\n");
