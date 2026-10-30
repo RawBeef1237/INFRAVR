@@ -70,7 +70,7 @@ if not exist "%BIN%\infravr\hands" mkdir "%BIN%\infravr\hands"
 copy /y "%HERE%bin\infravr\hands\*.glb" "%BIN%\infravr\hands\" >nul && echo   copied bin\infravr\hands (VR hand models)
 if exist "%HERE%bin\infravr\openxr\infravr_openxr.exe" (
     if not exist "%BIN%\infravr\openxr" mkdir "%BIN%\infravr\openxr"
-    copy /y "%HERE%bin\infravr\openxr\*.*" "%BIN%\infravr\openxr\" >nul && echo   copied bin\infravr\openxr (OpenXR helper)
+    copy /y "%HERE%bin\infravr\openxr\*.*" "%BIN%\infravr\openxr\" >nul && echo   copied bin\infravr\openxr ^(OpenXR helper^)
 )
 rem Mechanisms that crashed an earlier build are not held against this one.
 if exist "%GAME%\infravr_skip.txt" (del /q "%GAME%\infravr_skip.txt" & echo   cleared infravr_skip.txt)
