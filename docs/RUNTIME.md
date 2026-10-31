@@ -18,7 +18,7 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 | Feature | Grade | Notes |
 |---|---|---|
 | Stereo rendering, OpenVR submit, overlays, MSAA | headset | unchanged from the previous build |
-| 4GB patch in install.bat / uninstall.bat | unverified | the PowerShell step was not run here (no PowerShell or Wine). Static: the Steam `infra.exe` header already has Large Address Aware set (characteristics 0x122), so on a stock install the installer only reports it |
+| 4GB patch in install.bat / uninstall.bat | unverified | the PowerShell step was not run here (no PowerShell or Wine). The Steam `infra.exe` does not have Large Address Aware set; a patched one has characteristics 0x122 |
 | Module layout, crash-sticky flags, skip file, crash logger, init mutex | unverified | builds; flag handling exercised by resolve_test |
 | world_eye_size hook | wine | signature found once, hook installs; buffers at the eye size in game is unverified |
 | Post-processing in VR | unverified | only on when world_eye_size reports resized buffers |
