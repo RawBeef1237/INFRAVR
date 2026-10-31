@@ -230,6 +230,16 @@ void ViewProjection(const CViewSetup &v, D3DMATRIX &view, D3DMATRIX &proj)
     proj = {};
     proj._11 = 1.0f / tanX;
     proj._22 = 1.0f / tanY;
+    if (IsOffCenter(v)) // only part of the frustum: top, bottom, left, right as 0..1 across it
+    {
+        const float *o = OffCenterTBLR(v);
+        float l = -tanX + 2.0f * tanX * o[2], r = -tanX + 2.0f * tanX * o[3];
+        float b = -tanY + 2.0f * tanY * o[1], t = -tanY + 2.0f * tanY * o[0];
+        proj._11 = 2.0f / (r - l);
+        proj._22 = 2.0f / (t - b);
+        proj._31 = -(r + l) / (r - l);
+        proj._32 = -(t + b) / (t - b);
+    }
     proj._33 = q;
     proj._34 = 1.0f;
     proj._43 = -q * zn;

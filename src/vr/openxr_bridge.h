@@ -103,6 +103,8 @@ struct alignas(8) Shared
     float hapticSeconds[2], hapticFrequency[2], hapticAmplitude[2];
     volatile uint32_t gameQuit;
     volatile uint32_t eyesVisible; // 0 while the game shows a flat menu: no projection layer
+    uint32_t perEyeFov;            // 1: each eye was drawn with renderFovEye[eye], not renderFov
+    float renderFovEye[2][4];      // per eye: tan left, right, up, down
 };
 
 } // namespace ivrxr

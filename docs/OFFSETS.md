@@ -54,6 +54,7 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 | C_BaseAnimating bone array | +0xB10 | wine, headset |
 | mstudiobone_t size (MDL v49) | 216 | headset |
 | CViewSetup size / fov / origin / aspect | 0xF4 / 0x58 / 0x60 / 0x88 | static asserts, headset |
+| CViewSetup off-center top / bottom / left / right, m_bOffCenter = bit 0 of the flag byte | 0xE0 / 0xE4 / 0xE8 / 0xEC, flags 0xF0 | unverified (Alien Swarm SDK layout, counted from the aspect at 0x88; `vr.offcenter_eyes = false` turns its use off) |
 | g_INFRAScreenClicker | found by RTTI | wine |
 
 ## server.dll

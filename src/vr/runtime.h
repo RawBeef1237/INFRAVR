@@ -107,14 +107,50 @@ public:
     // Size the 3D view is actually drawn at inside the eye texture (auto_fit can shrink it when the
     // game only fills part of the texture); 0 = the whole texture.
     uint32_t viewWidth = 0, viewHeight = 0;
-    uint32_t ViewW() const { return viewWidth ? viewWidth : renderWidth; }
-    uint32_t ViewH() const { return viewHeight ? viewHeight : renderHeight; }
+    // Off-center eyes (OpenXR, vr.offcenter_eyes): each eye is drawn with only its own part of the
+    // shared frustum (bounds[e]) as an off-center projection, at that part's size, instead of the
+    // whole symmetric frustum. Same picture, about a third fewer pixels.
+    bool offCenter = false;
+    float eyeFracW = 1.0f, eyeFracH = 1.0f; // the largest eye's share of the shared frustum
+    uint32_t ViewW() const
+    {
+        uint32_t w = viewWidth ? viewWidth : renderWidth;
+        uint32_t e = (uint32_t)std::lround(renderWidth * eyeFracW) & ~1u;
+        return offCenter && e && e < w ? e : w;
+    }
+    uint32_t ViewH() const
+    {
+        uint32_t h = viewHeight ? viewHeight : renderHeight;
+        uint32_t e = (uint32_t)std::lround(renderHeight * eyeFracH) & ~1u;
+        return offCenter && e && e < h ? e : h;
+    }
     // bounds[e] mapped onto the part of the texture the view occupies
     vr::VRTextureBounds_t ViewBounds(int e) const
     {
         float su = renderWidth ? ViewW() / (float)renderWidth : 1.0f;
         float sv = renderHeight ? ViewH() / (float)renderHeight : 1.0f;
+        if (offCenter) // the eye fills its whole view
+            return {0.0f, 0.0f, su, sv};
         return {bounds[e].uMin * su, bounds[e].vMin * sv, bounds[e].uMax * su, bounds[e].vMax * sv};
+    }
+    // Eye e's part of the shared frustum in Source's off-center terms (0..1 across it, left to
+    // right and bottom to top), and as tangents: left, right, up, down (left and down negative).
+    void EyeOffCenter(int e, float &left, float &right, float &bottom, float &top) const
+    {
+        left = bounds[e].uMin;
+        right = bounds[e].uMax;
+        top = 1.0f - bounds[e].vMin; // texture rows run top to bottom
+        bottom = 1.0f - bounds[e].vMax;
+    }
+    void EyeTangents(int e, float out[4]) const
+    {
+        float tanX = std::tan(fovX * 0.00872664626f), tanY = tanX / aspect; // fovX/2 in radians
+        float l, r, b, t;
+        EyeOffCenter(e, l, r, b, t);
+        out[0] = -tanX + 2.0f * tanX * l;
+        out[1] = -tanX + 2.0f * tanX * r;
+        out[2] = -tanY + 2.0f * tanY * t;
+        out[3] = -tanY + 2.0f * tanY * b;
     }
     Vector eyeOffset[2];                // metres, Source axes, relative to the head
 

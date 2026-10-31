@@ -30,6 +30,7 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 | INFRA's arms hidden in glb mode | unverified | log line "GLB hands: ... bones hidden" |
 | OpenXR helper | unverified | 64-bit build compiles; not run (no 64-bit Wine here, no headset) |
 | DXVK D3D9 shared textures for OpenXR | verified-fail | headset (Virtual Desktop OpenXR, RTX 4070 SUPER): DXVK warns "Failed to write shared resource info", the helper's `OpenSharedResource` fails with 0x80070057, the headset stays black |
+| OpenXR off-center eyes (each eye drawn with its own field of view, `vr.offcenter_eyes`) | unverified | builds; log line "Off-center eyes: each eye drawn at ..."; if the picture looks stretched or shifted, the engine ignores the off-center fields: set `offcenter_eyes = false` |
 | OpenXR handoff through D3D11 shared textures imported into Vulkan | unverified | builds; replaces the line above. Crash-sticky flag `openxr_interop`; log lines "OpenXR: shared textures are made on ..." and, in `infravr_openxr.log`, "Opened shared texture" |
 
 ## Logs

@@ -359,7 +359,12 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
         v.zNearViewmodel = 1.0f;
         v.m_bOrtho = false;
         v.m_bCustomViewMatrix = false;
-        v.rest[0xF0 - 0x8C] &= ~1u; // m_bOffCenter
+        SetOffCenter(v, g_VR.offCenter);
+        if (g_VR.offCenter)
+        {
+            float *tblr = OffCenterTBLR(v);
+            g_VR.EyeOffCenter(eye, tblr[2], tblr[3], tblr[1], tblr[0]);
+        }
         Pose p = g_Mod.EyeWorld(eye);
         v.origin = p.pos;
         v.angles = p.Angles();

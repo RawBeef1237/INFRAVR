@@ -956,9 +956,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
             }
             if (ok)
             {
-                const float *f = g_shm->renderFov;
                 for (int e = 0; e < 2; ++e)
                 {
+                    const float *f = g_shm->perEyeFov ? g_shm->renderFovEye[e] : g_shm->renderFov;
                     pv[e].pose = EyeFromHead(copiedHead, g_shm->eyeToHead[e]);
                     pv[e].fov.angleLeft = std::atan(f[0]);
                     pv[e].fov.angleRight = std::atan(f[1]);
