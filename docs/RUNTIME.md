@@ -31,7 +31,8 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 | Hands lit by the world (`[hands] lighting = world`): engine ambient cube + 4 local lights per hand, times the HDR exposure | unverified | log lines "Hand lighting at (...)" every 30 s and "Hand lighting: ... frames lit by the engine"; falls back to simple lighting when the engine call is missing |
 | Hand shaders (per-pixel light, normal maps) | wine | `tests/shader_test` compiles both with INFRA's `bin\d3dcompiler_41.dll` under Wine; Wine's own d3dcompiler_47 cannot (vkd3d), so the mod tries 47, 43, then INFRA's 41. In game: log "Hand shaders compiled with ..." and "GLB hands: drawn with world lighting and normal maps" |
 | Normal map green channel | unverified | `hands.normal_map_green = up/down`; if bumps look inverted, flip it |
-| Camera model (`[camera] model`) skinned from v_camera's animated bones | wine | `tests/glb_test` skins it with game-style bones (hand around the camera, scale consistent); in game: "Camera model: v_camera has N of the model's 22 bones" |
+| Camera model (`[camera] model`) on the VR hand, moved in the hand by v_camera's animated bones relative to INFRA's hand (the arm motion and the take-out animation are not used), all of v_camera hidden | unverified (first headset run had it at INFRA's viewmodel position instead; moved to the VR hand since) |
+| Camera model skinned from v_camera's bones | wine | `tests/glb_test` skins it with game-style bones (hand around the camera, scale consistent); in game: "Camera model: v_camera has N of the model's 22 bones" |
 | Camera model screen showing the lens view, lens view taken from the model's lens | unverified | screen cropped to the screen's aspect; lens pose is one frame behind the bones |
 | Camera model held in the left hand (mirrored) | unverified | text on the camera body appears mirrored |
 | OpenXR helper | unverified | 64-bit build compiles; not run (no 64-bit Wine here, no headset) |

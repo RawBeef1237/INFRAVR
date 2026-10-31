@@ -676,7 +676,7 @@ bool CaptureCameraBones(const uint8_t *studio, const matrix3x4_t *bones, int cou
 
 // [hands] model = glb: the mod draws its own hands, so INFRA's arms go - every bone outside the held
 // item (camera, phone, flashlight) collapses to a point, which hides the vertices skinned to it.
-// With the mod's camera model, v_camera's camera goes too (only its flashlight stays).
+// With the mod's camera model, all of v_camera goes: the mod draws the camera and the hand.
 void HideArms(void *self, void *studioHdr)
 {
     if (!studioHdr || !IsReadable(studioHdr, 4))
@@ -692,8 +692,9 @@ void HideArms(void *self, void *studioHdr)
     if (count <= 0 || count > 256 || !bones || !IsReadable(bones, count * sizeof(matrix3x4_t)))
         return;
     bool cameraModel = hands::CameraModelEnabled() && CaptureCameraBones(studio, bones, count);
-    int items[3] = {cameraModel ? -1 : FindBone(studio, "Camera"), FindBone(studio, "cellular_phone"),
-                    FindBone(studio, "flashlight")};
+    // With the camera model nothing of v_camera is left to draw (its left-hand flashlight too).
+    int items[3] = {cameraModel ? -1 : FindBone(studio, "Camera"), cameraModel ? -1 : FindBone(studio, "cellular_phone"),
+                    cameraModel ? -1 : FindBone(studio, "flashlight")};
     int hidden = 0;
     for (int b = 0; b < count; ++b)
     {

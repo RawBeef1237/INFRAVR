@@ -575,14 +575,16 @@ void UpdateCurls()
     }
 }
 
-// The model in the controller's frame (glTF/OpenVR axes, metres) -> game world.
-Pose ModelToWorld(int hand)
+// The model in the controller's frame (glTF/OpenVR axes, metres) -> game world. `side` is the hand
+// the model is made for (the offset and angles are mirrored for a left hand); by default the
+// controller's own.
+Pose ModelToWorld(int hand, int side = -1)
 {
     Pose c = g_Mod.HandWorld(hand);
     float s = g_Mod.UnitsPerMetre();
     Vector off = g_Config.handsOffset; // right, up, back in the controller frame
     QAngle ang(g_Config.handsAngles.x, g_Config.handsAngles.y, g_Config.handsAngles.z);
-    if (hand == HAND_LEFT)
+    if ((side < 0 ? hand : side) == HAND_LEFT)
     {
         off.x = -off.x;
         ang.y = -ang.y;
@@ -636,12 +638,122 @@ Vector MirrorDir(const CameraPlacement &c, const Vector &d)
     return c.anchor.rot * l;
 }
 
+// A rotation, a uniform scale and a position: x -> rot * (scale * x) + pos.
+struct Sim
+{
+    Pose p;
+    float scale = 1.0f;
+    Sim operator*(const Sim &b) const { return {{p.rot * (b.p.pos * scale) + p.pos, p.rot * b.p.rot}, scale * b.scale}; }
+    Sim Inverse() const
+    {
+        Mat3 rt = p.rot.Transposed();
+        return {{rt * p.pos * (-1.0f / scale), rt}, 1.0f / scale};
+    }
+    static Sim From(const GlbMat34 &m)
+    {
+        Sim r;
+        r.scale = Vector(m.m[0][0], m.m[1][0], m.m[2][0]).Length();
+        float k = r.scale > 1e-9f ? 1.0f / r.scale : 1.0f;
+        for (int a = 0; a < 3; ++a)
+            for (int b = 0; b < 3; ++b)
+                r.p.rot.m[a][b] = m.m[a][b] * k;
+        r.p.pos = Vector(m.m[0][3], m.m[1][3], m.m[2][3]);
+        return r;
+    }
+    static Sim From(const Pose &scaled)
+    {
+        GlbMat34 m{};
+        for (int a = 0; a < 3; ++a)
+        {
+            for (int b = 0; b < 3; ++b)
+                m.m[a][b] = scaled.rot.m[a][b];
+        }
+        m.m[0][3] = scaled.pos.x, m.m[1][3] = scaled.pos.y, m.m[2][3] = scaled.pos.z;
+        return From(m);
+    }
+    GlbMat34 ToMat() const
+    {
+        GlbMat34 m{};
+        for (int a = 0; a < 3; ++a)
+        {
+            for (int b = 0; b < 3; ++b)
+                m.m[a][b] = p.rot.m[a][b] * scale;
+        }
+        m.m[0][3] = p.pos.x, m.m[1][3] = p.pos.y, m.m[2][3] = p.pos.z;
+        return m;
+    }
+};
+
+// Rest pose of a joint in its model (the inverse of its inverse bind matrix).
+Sim RestJoint(const GlbModel &m, int joint) { return Sim::From(m.InverseBind(joint)).Inverse(); }
+
+Mat3 Orthonormal(const Mat3 &r)
+{
+    Vector f = r.Col(0).Normalized();
+    Vector u = r.Col(2);
+    Vector l = Cross(u, f).Normalized();
+    Mat3 o;
+    o.SetCol(0, f);
+    o.SetCol(1, l);
+    o.SetCol(2, Cross(f, l));
+    return o;
+}
+
+// The camera is put away for longer than this: the next take-out starts with the draw animation.
+constexpr int kCameraGapFrames = 2;
+// INFRA's v_camera "draw" sequence (16 frames at 30 fps): while it plays the model is held in its
+// rest pose, then eases into INFRA's animation.
+constexpr double kDrawSkipSeconds = 0.55;
+constexpr double kDrawBlendSeconds = 0.12;
+double g_cameraShownAt = 0;
+
+// The camera model's joints in the world. Its hand goes where the VR hand would be; the rest follow INFRA's animated
+// bones relative to INFRA's hand, so the camera moves in the hand (photo, battery) but the arm
+// motion of INFRA's viewmodel is not used. Not mirrored here (see CameraPlace).
 bool CameraBones(std::vector<GlbMat34> &out)
 {
-    std::lock_guard<std::mutex> lock(g_boneLock);
-    if (g_cameraBones.empty() || g_eyeFrame.load() - g_cameraBonesFrame > 2)
+    std::vector<GlbMat34> raw;
+    double shownAt;
+    {
+        std::lock_guard<std::mutex> lock(g_boneLock);
+        if (g_cameraBones.empty() || g_eyeFrame.load() - g_cameraBonesFrame > kCameraGapFrames)
+            return false;
+        raw = g_cameraBones;
+        shownAt = g_cameraShownAt;
+    }
+    const GlbModel &cam = g_model[MODEL_CAMERA].glb;
+    int hj = cam.JointByName("Bip001 R Hand");
+    int hand = g_Mod.itemHand;
+    if (hj < 0 || hj >= (int)raw.size() || raw.size() != cam.joints.size() || !g_Mod.HandValid(hand))
         return false;
-    out = g_cameraBones;
+
+    // Where the hand joint goes: the camera model is made in the same space as the right-hand
+    // model (its hand at the same place, metres), so its own rest hand joint, placed on the
+    // controller like the right hand, puts it where the VR hand would be.
+    Sim camHandRest = RestJoint(cam, hj);
+    Sim anchor = Sim::From(ModelToWorld(hand, HAND_RIGHT)) * camHandRest;
+
+    double t = NowSeconds() - shownAt;
+    float anim = (float)std::min(1.0, std::max(0.0, (t - kDrawSkipSeconds) / kDrawBlendSeconds));
+    Sim infraHandInv = Sim::From(raw[hj]).Inverse();
+    Sim restHandInv = camHandRest.Inverse();
+    out.resize(raw.size());
+    for (size_t j = 0; j < raw.size(); ++j)
+    {
+        Sim rel = infraHandInv * Sim::From(raw[j]); // game units, rigid
+        if (anim < 1.0f)
+        {
+            Sim rest = restHandInv * RestJoint(cam, (int)j);
+            rel.p.pos = rest.p.pos + (rel.p.pos - rest.p.pos) * anim;
+            Mat3 r;
+            for (int a = 0; a < 3; ++a)
+                for (int b = 0; b < 3; ++b)
+                    r.m[a][b] = rest.p.rot.m[a][b] + (rel.p.rot.m[a][b] - rest.p.rot.m[a][b]) * anim;
+            rel.p.rot = Orthonormal(r);
+        }
+        rel.scale = 1.0f;
+        out[j] = (anchor * rel).ToMat();
+    }
     return true;
 }
 
@@ -1114,6 +1226,8 @@ const std::vector<std::string> &CameraJointNames() { return g_cameraJointNames; 
 void SetCameraBones(const std::vector<GlbMat34> &world)
 {
     std::lock_guard<std::mutex> lock(g_boneLock);
+    if (g_cameraBones.empty() || g_eyeFrame.load() - g_cameraBonesFrame > kCameraGapFrames)
+        g_cameraShownAt = NowSeconds(); // taken out: the draw animation starts now
     g_cameraBones = world;
     g_cameraBonesFrame = g_eyeFrame.load();
 }
@@ -1123,7 +1237,7 @@ bool CameraModelShown()
     if (g_cameraState <= 0)
         return false;
     std::lock_guard<std::mutex> lock(g_boneLock);
-    return !g_cameraBones.empty() && g_eyeFrame.load() - g_cameraBonesFrame <= 2;
+    return !g_cameraBones.empty() && g_eyeFrame.load() - g_cameraBonesFrame <= kCameraGapFrames;
 }
 
 bool CameraLens(Pose &out)
@@ -1136,13 +1250,9 @@ bool CameraLens(Pose &out)
     std::vector<GlbMat34> bones;
     if (!CameraBones(bones) || md.cameraJoint >= (int)bones.size())
         return false;
-    const GlbMat34 &b = bones[md.cameraJoint];
-    Pose joint;
-    for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 3; ++c)
-            joint.rot.m[r][c] = b.m[r][c];
-    joint.pos = Vector(b.m[0][3], b.m[1][3], b.m[2][3]);
-    Pose lens = joint * md.lensLocal;
+    Sim joint = Sim::From(bones[md.cameraJoint]); // carries the model's scale
+    Sim lensLocal{md.lensLocal, 1.0f};
+    Pose lens = (joint * lensLocal).p;
     CameraPlacement place = CameraPlace();
     if (place.mirrored)
     {
