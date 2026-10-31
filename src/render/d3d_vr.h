@@ -127,7 +127,6 @@ private:
     ProbeStats Probe(const VrTexture &t, const vr::VRTextureBounds_t *bounds);
     void ProbeFrame(bool stereo, bool hudOn);
     bool MeasureSmear(const VrTexture &t, const char *what, UINT &picW, UINT &picH);
-    void AutoFit(UINT picW, UINT picH);
     void MakeOpaque(const VrTexture &t);
     void ReleaseHelpers();
     bool EnsureOwnTextures();
@@ -211,8 +210,6 @@ private:
     int m_phoneFrames = 0, m_phoneReused = 0;
     uint32_t m_lastSubmits = 0, m_lastPresents = 0, m_lastDropped = 0, m_lastReprojected = 0, m_lastTimedOut = 0;
     bool m_haveStats = false;
-    UINT m_lastPicW = 0, m_lastPicH = 0; // previous smear measurement (auto_fit wants two that agree)
-    bool m_autoFitDone = false;
 };
 
 extern D3DVR g_D3D;
