@@ -15,6 +15,7 @@ std::set<std::string> g_skipped;
 std::set<std::string> g_active;
 const char *volatile g_stage = "loading";
 LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter = nullptr;
+volatile LONG g_crashed = 0;
 
 std::string SkipFile() { return GameDir() + "infravr_skip.txt"; }
 std::string FlagFile(const std::string &name) { return GameDir() + "infravr_in_" + name + ".flag"; }
@@ -118,12 +119,26 @@ void Skip(const char *name, const char *reason)
     }
 }
 
+void OnCleanExit()
+{
+    if (g_crashed) // a crash handler that ends with ExitProcess: keep the flags
+        return;
+    // Other threads are already gone at process exit and may have died holding the lock.
+    if (!g_lock.try_lock())
+        return;
+    for (const std::string &name : g_active)
+        DeleteFileA(FlagFile(name).c_str());
+    g_active.clear();
+    g_lock.unlock();
+}
+
 void SetStage(const char *stage) { g_stage = stage; }
 const char *Stage() { return g_stage; }
 
 static LONG WINAPI CrashFilter(EXCEPTION_POINTERS *ep)
 {
     static volatile LONG s_once = 0;
+    InterlockedExchange(&g_crashed, 1);
     if (InterlockedExchange(&s_once, 1) == 0 && ep && ep->ExceptionRecord)
     {
         HMODULE mod = nullptr;

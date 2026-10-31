@@ -78,7 +78,7 @@ DXVK 2.7.1 (32-bit; DXVK-GPLALL 2.6.1-6, the build L4D2VR uses, is included as a
 | Turn (snap 45 deg) | right stick | right stick | right pad |
 | Jump | A (right) | A | right pad click |
 | Crouch (toggle, like INFRA's gamepad) | tap right stick click | tap right stick click | tap right menu |
-| Use / press buttons | trigger | trigger | trigger |
+| Use / press buttons / next slide | trigger | trigger | trigger |
 | Grab & hold objects | grip (hold) | grip (hold) | grip (hold) |
 | Take photo (holding camera) | trigger of the camera hand | same | same |
 | Flashlight | A (left) or left-hip holster | X or left-hip holster | left-hip holster |

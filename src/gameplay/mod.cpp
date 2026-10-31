@@ -768,6 +768,11 @@ void VRMod::ProcessGameInput(double now, double dt)
             interactHand = h;
             m_aimTicks = 2;
             m_aimSource = 0;
+            // Scripted screens (game_ui, e.g. the office slides at the start) only listen for
+            // attack, which "use" never sends. With nothing in hand attack has nothing else to do.
+            if (g_Config.triggerAttacks && (activeItem == Item::Hands || activeItem == Item::Unknown) &&
+                !IsHoldingObject())
+                m_attackTicks = 2;
         }
     }
 }

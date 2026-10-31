@@ -643,8 +643,11 @@ void WINAPI Direct3D9EnableMaximizedWindowedModeShim(BOOL enable)
 
 } // extern "C"
 
-BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
 {
+    // reserved != null: the whole process is exiting normally (ExitProcess), not crashing.
+    if (reason == DLL_PROCESS_DETACH && reserved && g_active)
+        flags::OnCleanExit();
     if (reason == DLL_PROCESS_ATTACH)
     {
         DisableThreadLibraryCalls(instance);

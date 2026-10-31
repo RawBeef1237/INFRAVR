@@ -23,6 +23,10 @@ void End(const char *name);
 // Turns `name` off for future launches without a crash (e.g. a check failed), with a reason.
 void Skip(const char *name, const char *reason);
 
+// INFRA is quitting normally (DLL_PROCESS_DETACH at process exit): mechanisms still in their
+// trial run did not crash, so their in-progress flags are removed instead of becoming skips.
+void OnCleanExit();
+
 // What the mod is doing right now, written to the log if INFRA crashes.
 void SetStage(const char *stage);
 const char *Stage();

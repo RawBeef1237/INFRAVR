@@ -155,6 +155,7 @@ void LoadConfig()
     c.backRadius = ini.GetFloat("holsters.back_radius", c.backRadius);
     c.haptics = ini.GetBool("holsters.haptics", c.haptics);
     c.gripToCarry = ini.GetBool("holsters.grip_to_carry", c.gripToCarry);
+    c.triggerAttacks = ini.GetBool("aim.trigger_attacks", c.triggerAttacks);
     c.phoneOpensMenu = ini.GetBool("holsters.phone_opens_menu", c.phoneOpensMenu);
     c.cameraScreenView = ini.GetBool("camera.screen_view", c.cameraScreenView);
     c.cameraScreenEvery = std::max(1, ini.GetInt("camera.screen_every", c.cameraScreenEvery));
