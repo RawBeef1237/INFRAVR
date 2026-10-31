@@ -757,6 +757,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
     bool running = false, haveFov = false;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     uint32_t submitted = 0;
+    // The eye images last copied into the swapchains: while the game has no new pair, the same
+    // images are submitted again with the pose they were drawn for, without copying (the GPU is
+    // busy with the game, and a copy every headset frame made this loop miss frames).
+    uint32_t copiedSeq = 0;
+    float copiedHead[3][4] = {};
     // Pacing statistics, logged every 5 s: headset frames, frames with the game's eye images, new
     // eye images, and how old (in headset frames) the shown eye images were.
     struct
@@ -888,60 +893,71 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
         uint32_t seq = g_shm->eyeSeq;
         if (fs.shouldRender && seq && g_shm->eyesVisible)
         {
-            uint32_t slot = seq % ivrxr::kEyeSlots;
-            g_shm->helperUsingSlot = slot;
-            MemoryBarrier();
-            if (g_shm->eyeSeq == seq) // not overwritten meanwhile
+            bool ok = seq == copiedSeq && eyeSc[0].handle && eyeSc[1].handle;
+            if (!ok)
             {
-                bool ok = true;
-                for (int e = 0; e < 2 && ok; ++e)
+                uint32_t slot = seq % ivrxr::kEyeSlots;
+                g_shm->helperUsingSlot = slot;
+                MemoryBarrier();
+                if (g_shm->eyeSeq == seq) // not overwritten meanwhile
                 {
-                    ID3D11Texture2D *src = OpenShared(g_shm->eyeHandle[slot][e]);
-                    if (!src)
+                    ok = true;
+                    for (int e = 0; e < 2 && ok; ++e)
                     {
-                        ok = false;
-                        break;
+                        ID3D11Texture2D *src = OpenShared(g_shm->eyeHandle[slot][e]);
+                        if (!src)
+                        {
+                            ok = false;
+                            break;
+                        }
+                        if (eyeSc[e].width != g_shm->eyeWidth || eyeSc[e].height != g_shm->eyeHeight)
+                        {
+                            DestroySwapchain(eyeSc[e]);
+                            ok = CreateSwapchain(session, g_shm->eyeWidth, g_shm->eyeHeight, eyeSc[e]);
+                        }
+                        ok = ok && CopyToSwapchain(eyeSc[e], src);
                     }
-                    if (eyeSc[e].width != g_shm->eyeWidth || eyeSc[e].height != g_shm->eyeHeight)
+                    if (ok)
                     {
-                        DestroySwapchain(eyeSc[e]);
-                        ok = CreateSwapchain(session, g_shm->eyeWidth, g_shm->eyeHeight, eyeSc[e]);
+                        copiedSeq = seq;
+                        std::memcpy(copiedHead, g_shm->renderHead[slot].m, sizeof(copiedHead));
                     }
-                    ok = ok && CopyToSwapchain(eyeSc[e], src);
+                    else
+                        copiedSeq = 0;
                 }
-                if (ok)
-                {
-                    const float *f = g_shm->renderFov;
-                    for (int e = 0; e < 2; ++e)
-                    {
-                        pv[e].pose = EyeFromHead(g_shm->renderHead[slot].m, g_shm->eyeToHead[e]);
-                        pv[e].fov.angleLeft = std::atan(f[0]);
-                        pv[e].fov.angleRight = std::atan(f[1]);
-                        pv[e].fov.angleUp = std::atan(f[2]);
-                        pv[e].fov.angleDown = std::atan(f[3]);
-                        pv[e].subImage.swapchain = eyeSc[e].handle;
-                        pv[e].subImage.imageRect = {{0, 0}, {(int32_t)eyeSc[e].width, (int32_t)eyeSc[e].height}};
-                    }
-                    proj.space = stage;
-                    proj.viewCount = 2;
-                    proj.views = pv;
-                    layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader *>(&proj));
-                    if (++submitted == 1)
-                        Log("First frame from the game: %ux%u", g_shm->eyeWidth, g_shm->eyeHeight);
-                    ++st.withEyes;
-                    if (seq != st.lastSeq)
-                    {
-                        ++st.newEyes;
-                        st.lastSeq = seq;
-                        st.lastNewFrame = st.frame;
-                    }
-                    uint32_t age = st.frame - st.lastNewFrame;
-                    st.ageSum += age;
-                    if (age > st.ageMax)
-                        st.ageMax = age;
-                }
+                g_shm->helperUsingSlot = 0xFFFFFFFFu;
             }
-            g_shm->helperUsingSlot = 0xFFFFFFFFu;
+            if (ok)
+            {
+                const float *f = g_shm->renderFov;
+                for (int e = 0; e < 2; ++e)
+                {
+                    pv[e].pose = EyeFromHead(copiedHead, g_shm->eyeToHead[e]);
+                    pv[e].fov.angleLeft = std::atan(f[0]);
+                    pv[e].fov.angleRight = std::atan(f[1]);
+                    pv[e].fov.angleUp = std::atan(f[2]);
+                    pv[e].fov.angleDown = std::atan(f[3]);
+                    pv[e].subImage.swapchain = eyeSc[e].handle;
+                    pv[e].subImage.imageRect = {{0, 0}, {(int32_t)eyeSc[e].width, (int32_t)eyeSc[e].height}};
+                }
+                proj.space = stage;
+                proj.viewCount = 2;
+                proj.views = pv;
+                layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader *>(&proj));
+                if (++submitted == 1)
+                    Log("First frame from the game: %ux%u", g_shm->eyeWidth, g_shm->eyeHeight);
+                ++st.withEyes;
+                if (seq != st.lastSeq)
+                {
+                    ++st.newEyes;
+                    st.lastSeq = seq;
+                    st.lastNewFrame = st.frame;
+                }
+                uint32_t age = st.frame - st.lastNewFrame;
+                st.ageSum += age;
+                if (age > st.ageMax)
+                    st.ageMax = age;
+            }
         }
         // Quad layers, lowest sort order first.
         int order[ivrxr::kLayers] = {0, 1, 2, 3};
