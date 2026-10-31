@@ -28,6 +28,12 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 | GLB hands placement on the controllers | unverified | orientation derived offline from the models, tune with `[hands] offset/angles` |
 | GLB hands drawing in the eyes, depth test | unverified | log line "GLB hands: eye target ... depth test on/off" |
 | INFRA's arms hidden in glb mode | unverified | log line "GLB hands: ... bones hidden" |
+| Hands lit by the world (`[hands] lighting = world`): engine ambient cube + 4 local lights per hand, times the HDR exposure | unverified | log lines "Hand lighting at (...)" every 30 s and "Hand lighting: ... frames lit by the engine"; falls back to simple lighting when the engine call is missing |
+| Hand shaders (per-pixel light, normal maps) | wine | `tests/shader_test` compiles both with INFRA's `bin\d3dcompiler_41.dll` under Wine; Wine's own d3dcompiler_47 cannot (vkd3d), so the mod tries 47, 43, then INFRA's 41. In game: log "Hand shaders compiled with ..." and "GLB hands: drawn with world lighting and normal maps" |
+| Normal map green channel | unverified | `hands.normal_map_green = up/down`; if bumps look inverted, flip it |
+| Camera model (`[camera] model`) skinned from v_camera's animated bones | wine | `tests/glb_test` skins it with game-style bones (hand around the camera, scale consistent); in game: "Camera model: v_camera has N of the model's 22 bones" |
+| Camera model screen showing the lens view, lens view taken from the model's lens | unverified | screen cropped to the screen's aspect; lens pose is one frame behind the bones |
+| Camera model held in the left hand (mirrored) | unverified | text on the camera body appears mirrored |
 | OpenXR helper | unverified | 64-bit build compiles; not run (no 64-bit Wine here, no headset) |
 | DXVK D3D9 shared textures for OpenXR | verified-fail | headset (Virtual Desktop OpenXR, RTX 4070 SUPER): DXVK warns "Failed to write shared resource info", the helper's `OpenSharedResource` fails with 0x80070057, the headset stays black |
 | OpenXR off-center eyes (each eye drawn with its own field of view, `vr.offcenter_eyes`) | unverified | builds; log line "Off-center eyes: each eye drawn at ..."; if the picture looks stretched or shifted, the engine ignores the off-center fields: set `offcenter_eyes = false` |

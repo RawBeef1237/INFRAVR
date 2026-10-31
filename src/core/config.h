@@ -101,6 +101,15 @@ struct Config
     // [camera]
     bool cameraScreenView = true; // draw the camera screen from the lens in your hand
     int cameraScreenEvery = 2;    // ... every Nth frame (the extra view costs GPU time)
+    // The mod's own camera model (glTF, with the hand holding it), drawn instead of INFRA's camera
+    // and moved by INFRA's camera animations. Empty = INFRA's camera model.
+    std::string cameraModel = "hands\\camera_hand.glb";
+    // Where the screen and the lens are in the model's base colour texture (0..1): the screen
+    // rectangle (left top right bottom) shows the lens view; the lens circle (u v radius) is where
+    // that view is taken from.
+    float cameraScreenUV[4] = {0.113f, 0.134f, 0.486f, 0.404f};
+    float cameraLensUV[3] = {0.891f, 0.716f, 0.044f};
+    float cameraScreenBrightness = 1.0f;
 
     // [viewmodel]  offsets in game units: forward, left, up (in the hand's frame)
     Vector vmOffsetCamera{-14.0f, 2.0f, 5.0f};
@@ -124,6 +133,11 @@ struct Config
     Vector handsAngles{0.0f, 180.0f, -90.0f};   // pitch yaw roll, degrees, in the controller's frame
     float handsScale = 1.0f;
     float handsBrightness = 1.0f;
+    // world = lit like the game lights its models there (ambient light and nearby lights, with
+    // the models' normal maps); simple = a fixed light from the viewer (the old look).
+    std::string handsLighting = "world";
+    bool handsNormalMaps = true;
+    float handsNormalMapGreen = 1.0f; // +1: the normal maps' green channel points up (glTF), -1: down
     bool handsDepthTest = true; // hide the hands behind walls/props in front of them
     bool handsFingers = true;   // bend the fingers from SteamVR's finger tracking
     float handsCurlMax = 75.0f; // degrees each finger joint bends at full curl

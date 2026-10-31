@@ -3,6 +3,7 @@
 #include "config.h"
 #include "game.h"
 #include "hooks.h"
+#include "hands_renderer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -140,6 +141,9 @@ Pose VRMod::AimWorld(int hand) const
 
 Pose VRMod::LensWorld() const
 {
+    Pose lens;
+    if (hands::CameraLens(lens)) // the lens of the mod's camera model, as INFRA animates it
+        return lens;
     Pose p = AimWorld(itemHand);
     p.pos += p.rot * g_Config.lensOffset;
     return p;

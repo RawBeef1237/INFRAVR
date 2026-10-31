@@ -4,12 +4,16 @@
 #include "flags.h"
 #include "game.h"
 #include "glb_model.h"
+#include "hand_shaders.h"
 #include "mod.h"
 
 #include <algorithm>
-#include <functional>
+#include <atomic>
 #include <cmath>
+#include <cstring>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace ivr {
@@ -21,9 +25,22 @@ namespace hands {
 namespace {
 
 const char *kFlag = "glb_hands";
+const char *kLightFlag = "world_light";
+const char *kCameraFlag = "camera_model";
 constexpr int kTrustFrames = 600;
+constexpr float kGamma = 1.0f / 2.2f;
 
-struct Vertex
+// --- vertex formats ----------------------------------------------------------------------------
+// Shader path: world-space position, normal, tangent (w = handedness), texture coordinates.
+struct SVertex
+{
+    float pos[3];
+    float nrm[3];
+    float tan[4];
+    float uv[2];
+};
+// Fixed-function path (and the camera screen): lit colour per vertex.
+struct FVertex
 {
     float x, y, z;
     D3DCOLOR color;
@@ -31,23 +48,450 @@ struct Vertex
 };
 constexpr DWORD kFvf = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1;
 
-struct Frame
+// --- pixel shader constants (see kPixelShader) ---------------------------------------------------
+enum : int
 {
-    std::vector<Vertex> verts[2];
-    bool visible[2] = {false, false};
+    PS_AMBIENT = 0,   // 6: +x -x +y -y +z -z
+    PS_LCOLOR = 6,    // 4: rgb (exposure applied)
+    PS_LPOS = 10,     // 4: xyz, w = range (0 = none)
+    PS_LDIR = 14,     // 4: direction the light travels, w = spot falloff exponent
+    PS_LATT = 18,     // 4: constant, linear, quadratic attenuation, w = 1 for a directional light
+    PS_LSPOT = 22,    // 4: cos outer, 1 / (cos inner - cos outer), unused, w = 1 for a spot
+    PS_EYE = 26,      // eye position, w = use the normal map
+    PS_PARAMS = 27,   // x = tangent handedness factor (-1 mirrored), y = output gamma, z = normal map green sign
+    PS_COUNT = 28
 };
 
-GlbModel g_model[2];
-int g_state = 0; // 0 not tried, 1 loaded, -1 failed / off
+// --- shader compiler (d3dcompiler, loaded at run time) -----------------------------------------
+struct IBlob : public IUnknown
+{
+    virtual LPVOID STDMETHODCALLTYPE GetBufferPointer() = 0;
+    virtual SIZE_T STDMETHODCALLTYPE GetBufferSize() = 0;
+};
+using D3DCompileFn = HRESULT(WINAPI *)(LPCVOID, SIZE_T, LPCSTR, const void *, void *, LPCSTR, LPCSTR, UINT, UINT,
+                                       IBlob **, IBlob **);
+
+std::vector<DWORD> g_vsCode, g_psCode; // compiled at load time, empty = fixed-function lighting
+
+bool Compile(D3DCompileFn compile, const char *src, const char *target, std::vector<DWORD> &out)
+{
+    IBlob *code = nullptr, *errors = nullptr;
+    HRESULT hr = compile(src, std::strlen(src), "infravr_hands", nullptr, nullptr, "main", target,
+                         1u << 15 /* D3DCOMPILE_OPTIMIZATION_LEVEL3 */, 0, &code, &errors);
+    if (errors)
+    {
+        std::string msg(static_cast<const char *>(errors->GetBufferPointer()), errors->GetBufferSize());
+        if (FAILED(hr))
+            IVR_ERR("Hand shader (%s) did not compile: %s", target, msg.c_str());
+        errors->Release();
+    }
+    if (FAILED(hr) || !code)
+        return false;
+    out.resize((code->GetBufferSize() + 3) / 4);
+    std::memcpy(out.data(), code->GetBufferPointer(), code->GetBufferSize());
+    code->Release();
+    return true;
+}
+
+void CompileShaders()
+{
+    if (g_Config.handsLighting != "world")
+        return;
+    // Windows' own compiler first, then the one INFRA ships in its bin folder.
+    const std::string names[] = {"d3dcompiler_47.dll", "d3dcompiler_43.dll", ModuleDir() + "d3dcompiler_41.dll"};
+    for (const std::string &n : names)
+    {
+        HMODULE m = LoadLibraryA(n.c_str());
+        if (!m)
+            continue;
+        auto compile = reinterpret_cast<D3DCompileFn>(reinterpret_cast<void *>(GetProcAddress(m, "D3DCompile")));
+        if (compile && Compile(compile, kVertexShader, "vs_3_0", g_vsCode) &&
+            Compile(compile, kPixelShader, "ps_3_0", g_psCode))
+        {
+            IVR_LOG("Hand shaders compiled with %s (%u + %u bytes)", n.c_str(), (unsigned)g_vsCode.size() * 4,
+                    (unsigned)g_psCode.size() * 4);
+            return;
+        }
+        g_vsCode.clear();
+        g_psCode.clear();
+    }
+    IVR_ERR("No shader compiler for the hands - they are lit per vertex instead (no normal maps)");
+}
+
+// --- world lighting ------------------------------------------------------------------------------
+struct Lighting
+{
+    Vector ambient[6];
+    int count = 0;
+    LightDesc_t lights[4];
+    float scale = 1.0f; // exposure x brightness
+};
+
+int g_lightState = 0; // 0 not tried, 1 on, -1 off
+int g_lightFrames = 0;
+
+// The engine's light at `origin` (main thread). Falls back to a light from the viewer.
+Lighting LightAt(const Vector &origin, const Mat3 &eye)
+{
+    Lighting l;
+    if (g_Config.handsLighting == "world" && g_lightState == 0)
+    {
+        g_lightState = (g_Game.modelRender && flags::Begin(kLightFlag)) ? 1 : -1;
+        if (g_lightState < 0)
+            IVR_LOG("Hand lighting: the engine's model lighting is not available - simple lighting is used");
+    }
+    MaterialLightingState_t s;
+    if (g_lightState > 0 && g_Game.LightingAt(origin, s))
+    {
+        Vector tone = g_Game.ToneMapScale();
+        l.scale = tone.x * g_Config.handsBrightness;
+        for (int i = 0; i < 6; ++i)
+            l.ambient[i] = s.ambientCube[i];
+        l.count = s.localLightCount;
+        for (int i = 0; i < l.count; ++i)
+            l.lights[i] = s.localLights[i];
+        if (++g_lightFrames == kTrustFrames)
+        {
+            flags::End(kLightFlag);
+            IVR_LOG("Hand lighting: %d frames lit by the engine without trouble", g_lightFrames);
+        }
+        static double s_logAt = 0;
+        if (NowSeconds() >= s_logAt)
+        {
+            s_logAt = NowSeconds() + 30.0;
+            IVR_LOG("Hand lighting at (%.0f %.0f %.0f): ambient up (%.2f %.2f %.2f) down (%.2f %.2f %.2f), %d local "
+                    "light(s), exposure %.2f",
+                    origin.x, origin.y, origin.z, s.ambientCube[4].x, s.ambientCube[4].y, s.ambientCube[4].z,
+                    s.ambientCube[5].x, s.ambientCube[5].y, s.ambientCube[5].z, l.count, tone.x);
+        }
+        return l;
+    }
+    // Simple: an even grey light from the viewer, a little from above (as before world lighting).
+    Vector L = (eye.Up() * 0.6f - eye.Forward()).Normalized();
+    for (Vector &a : l.ambient)
+        a = Vector(0.18f, 0.18f, 0.18f);
+    l.count = 1;
+    LightDesc_t &d = l.lights[0];
+    d = LightDesc_t{};
+    d.type = 2;
+    d.color = Vector(0.32f, 0.32f, 0.32f);
+    d.direction = -L;
+    d.attenuation0 = 1.0f;
+    l.scale = g_Config.handsBrightness;
+    return l;
+}
+
+// Same light as the pixel shader, for one point and normal (fixed-function path).
+Vector Shade(const Lighting &l, const Vector &p, const Vector &n)
+{
+    float x2 = n.x * n.x, y2 = n.y * n.y, z2 = n.z * n.z;
+    Vector c = l.ambient[n.x >= 0 ? 0 : 1] * x2 + l.ambient[n.y >= 0 ? 2 : 3] * y2 + l.ambient[n.z >= 0 ? 4 : 5] * z2;
+    for (int i = 0; i < l.count; ++i)
+    {
+        const LightDesc_t &d = l.lights[i];
+        Vector L;
+        float att = 1.0f;
+        if (d.type == 2)
+            L = -d.direction;
+        else
+        {
+            Vector v = d.position - p;
+            float dist = std::max(v.Length(), 0.001f);
+            L = v * (1.0f / dist);
+            att = 1.0f / std::max(d.attenuation0 + d.attenuation1 * dist + d.attenuation2 * dist * dist, 0.0001f);
+            if (d.range > 0.0f && dist > d.range)
+                att = 0.0f;
+            if (d.type == 3)
+            {
+                float k = d.thetaDot > d.phiDot ? 1.0f / (d.thetaDot - d.phiDot) : 0.0f;
+                float s = std::min(1.0f, std::max(0.0f, (Dot(d.direction, -L) - d.phiDot) * k));
+                att *= std::pow(s, std::max(d.falloff, 0.001f));
+            }
+        }
+        c = c + d.color * (att * std::max(0.0f, Dot(n, L)));
+    }
+    return c * l.scale;
+}
+
+void PackLighting(const Lighting &l, float out[PS_COUNT][4])
+{
+    std::memset(out, 0, sizeof(float) * PS_COUNT * 4);
+    for (int i = 0; i < 6; ++i)
+    {
+        Vector a = l.ambient[i] * l.scale;
+        out[PS_AMBIENT + i][0] = a.x, out[PS_AMBIENT + i][1] = a.y, out[PS_AMBIENT + i][2] = a.z;
+    }
+    for (int i = 0; i < 4; ++i)
+    {
+        out[PS_LATT + i][0] = 1.0f; // unused lights: black, attenuation 1
+        if (i >= l.count || l.lights[i].type <= 0 || l.lights[i].type > 3)
+            continue;
+        const LightDesc_t &d = l.lights[i];
+        Vector c = d.color * l.scale;
+        out[PS_LCOLOR + i][0] = c.x, out[PS_LCOLOR + i][1] = c.y, out[PS_LCOLOR + i][2] = c.z;
+        out[PS_LPOS + i][0] = d.position.x, out[PS_LPOS + i][1] = d.position.y, out[PS_LPOS + i][2] = d.position.z;
+        out[PS_LPOS + i][3] = d.range;
+        out[PS_LDIR + i][0] = d.direction.x, out[PS_LDIR + i][1] = d.direction.y, out[PS_LDIR + i][2] = d.direction.z;
+        out[PS_LDIR + i][3] = d.falloff;
+        if (d.type == 2)
+            out[PS_LATT + i][3] = 1.0f;
+        else
+        {
+            out[PS_LATT + i][0] = d.attenuation0, out[PS_LATT + i][1] = d.attenuation1;
+            out[PS_LATT + i][2] = d.attenuation2;
+            if (d.attenuation0 + d.attenuation1 + d.attenuation2 <= 0.0f)
+                out[PS_LATT + i][0] = 1.0f;
+        }
+        if (d.type == 3)
+        {
+            out[PS_LSPOT + i][0] = d.phiDot;
+            out[PS_LSPOT + i][1] = d.thetaDot > d.phiDot ? 1.0f / (d.thetaDot - d.phiDot) : 1000.0f;
+            out[PS_LSPOT + i][3] = 1.0f;
+        }
+    }
+    out[PS_PARAMS][0] = 1.0f;
+    out[PS_PARAMS][1] = kGamma;
+    out[PS_PARAMS][2] = 1.0f;
+}
+
+// --- models --------------------------------------------------------------------------------------
+enum : int
+{
+    MODEL_LEFT = 0,
+    MODEL_RIGHT = 1,
+    MODEL_CAMERA = 2,
+    MODEL_COUNT = 3
+};
+
+struct Batch
+{
+    int material = -1;
+    std::vector<uint16_t> indices;
+};
+
+struct ModelData
+{
+    GlbModel glb;
+    std::vector<Batch> batches; // per material, without the camera screen
+    // Camera only: the screen triangles (their own vertices) with texture coordinates across the
+    // screen (0..1, top left to bottom right), and the lens in the joint carrying the camera.
+    std::vector<uint16_t> screenIndices;
+    std::vector<float> screenST; // 2 per vertex of the model (only screen vertices are used)
+    float screenAspect = 4.0f / 3.0f;
+    int cameraJoint = -1;
+    Pose lensLocal; // in cameraJoint's space (game units)
+    bool haveLens = false;
+};
+
+ModelData g_model[MODEL_COUNT];
+int g_state = 0;       // 0 not tried, 1 loaded, -1 failed / off
+int g_cameraState = 0; // 0 not tried, 1 loaded, -1 off
+std::vector<std::string> g_cameraJointNames;
 float g_curl[2][5]{};
 double g_lastCurlAt = 0;
 int g_framesDrawn = 0;
+int g_cameraFrames = 0;
 bool g_loggedDepth = false;
+std::atomic<int> g_eyeFrame{0};
 
-// Render thread only.
-IDirect3DTexture9 *g_tex[2] = {nullptr, nullptr};
-IDirect3DStateBlock9 *g_state9 = nullptr;
-bool g_texFailed = false;
+// Camera bones (written by the bone setup, read by the renderer and the lens).
+std::mutex g_boneLock;
+std::vector<GlbMat34> g_cameraBones;
+int g_cameraBonesFrame = -100;
+
+void BuildBatches(ModelData &md, bool camera)
+{
+    const GlbModel &m = md.glb;
+    md.batches.clear();
+    md.screenIndices.clear();
+    // The camera's own material: named "camera", else the last one.
+    int camMat = -1;
+    if (camera)
+    {
+        for (size_t i = 0; i < m.materials.size(); ++i)
+        {
+            std::string n = m.materials[i].name;
+            std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+            if (n.find("camera") != std::string::npos)
+                camMat = (int)i;
+        }
+        if (camMat < 0 && !m.primitives.empty())
+            camMat = m.primitives.back().material;
+    }
+    const float *r = g_Config.cameraScreenUV;
+    auto wrap = [](float x) { return x - std::floor(x); };
+    for (const GlbPrimitive &p : m.primitives)
+    {
+        Batch b;
+        b.material = p.material;
+        for (uint32_t i = p.firstIndex; i + 2 < p.firstIndex + p.indexCount; i += 3)
+        {
+            const uint16_t *t = &m.indices[i];
+            bool screen = false;
+            if (camera && p.material == camMat)
+            {
+                float u = 0, v = 0;
+                for (int k = 0; k < 3; ++k)
+                {
+                    u += wrap(m.vertices[t[k]].uv[0]) / 3.0f;
+                    v += wrap(m.vertices[t[k]].uv[1]) / 3.0f;
+                }
+                screen = u >= r[0] && u <= r[2] && v >= r[1] && v <= r[3];
+            }
+            std::vector<uint16_t> &dst = screen ? md.screenIndices : b.indices;
+            dst.insert(dst.end(), t, t + 3);
+        }
+        if (!b.indices.empty())
+            md.batches.push_back(std::move(b));
+    }
+    if (!camera)
+        return;
+
+    // Screen: texture coordinates across it, and its shape (least squares P = A + s U + t V).
+    md.screenST.assign(m.vertices.size() * 2, 0.0f);
+    std::vector<float> pos, nrm;
+    float none[5] = {0, 0, 0, 0, 0};
+    m.Skin(none, 0.0f, pos, nrm);
+    double M[3][3] = {}, R[3][3] = {};
+    std::vector<char> seen(m.vertices.size(), 0);
+    for (uint16_t i : md.screenIndices)
+    {
+        if (seen[i])
+            continue;
+        seen[i] = 1;
+        float s = (wrap(m.vertices[i].uv[0]) - r[0]) / std::max(1e-6f, r[2] - r[0]);
+        float t = (wrap(m.vertices[i].uv[1]) - r[1]) / std::max(1e-6f, r[3] - r[1]);
+        md.screenST[i * 2] = s;
+        md.screenST[i * 2 + 1] = t;
+        double a[3] = {1.0, s, t};
+        for (int x = 0; x < 3; ++x)
+            for (int y = 0; y < 3; ++y)
+            {
+                M[x][y] += a[x] * a[y];
+                R[x][y] += a[x] * pos[i * 3 + y];
+            }
+    }
+    // Solve M * [A U V] = R (3x3, Cramer).
+    auto det3 = [](const double m[3][3]) {
+        return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+               m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    };
+    double D = det3(M);
+    if (std::fabs(D) > 1e-9)
+    {
+        double sol[3][3];
+        for (int c = 0; c < 3; ++c) // unknown row (A, U, V)
+            for (int k = 0; k < 3; ++k) // coordinate
+            {
+                double Mc[3][3];
+                std::memcpy(Mc, M, sizeof(Mc));
+                for (int x = 0; x < 3; ++x)
+                    Mc[x][c] = R[x][k];
+                sol[c][k] = det3(Mc) / D;
+            }
+        double w = std::sqrt(sol[1][0] * sol[1][0] + sol[1][1] * sol[1][1] + sol[1][2] * sol[1][2]);
+        double h = std::sqrt(sol[2][0] * sol[2][0] + sol[2][1] * sol[2][1] + sol[2][2] * sol[2][2]);
+        if (w > 0 && h > 0)
+            md.screenAspect = (float)(w / h);
+    }
+
+    // Lens: the triangles inside the lens circle of the texture, in the joint that carries them.
+    int joint = -1;
+    double cx = 0, cy = 0, cz = 0, nx = 0, ny = 0, nz = 0;
+    int n = 0;
+    const float *lens = g_Config.cameraLensUV;
+    std::fill(seen.begin(), seen.end(), 0);
+    for (const GlbPrimitive &p : m.primitives)
+    {
+        if (p.material != camMat)
+            continue;
+        for (uint32_t i = p.firstIndex; i + 2 < p.firstIndex + p.indexCount; i += 3)
+        {
+            const uint16_t *t = &m.indices[i];
+            float u = 0, v = 0;
+            for (int k = 0; k < 3; ++k)
+            {
+                u += wrap(m.vertices[t[k]].uv[0]) / 3.0f;
+                v += wrap(m.vertices[t[k]].uv[1]) / 3.0f;
+            }
+            if ((u - lens[0]) * (u - lens[0]) + (v - lens[1]) * (v - lens[1]) > lens[2] * lens[2])
+                continue;
+            for (int k = 0; k < 3; ++k)
+            {
+                if (seen[t[k]])
+                    continue;
+                seen[t[k]] = 1;
+                const GlbVertex &gv = m.vertices[t[k]];
+                if (joint < 0)
+                    joint = gv.joints[0];
+                cx += gv.pos[0], cy += gv.pos[1], cz += gv.pos[2];
+                nx += gv.normal[0], ny += gv.normal[1], nz += gv.normal[2];
+                ++n;
+            }
+        }
+    }
+    md.cameraJoint = joint;
+    if (n > 0 && joint >= 0 && !md.screenIndices.empty())
+    {
+        // Mesh space -> the joint's space (game units, the same frame as INFRA's bone).
+        GlbMat34 ib = m.InverseBind(joint);
+        auto xf = [&](double x, double y, double z, bool point) {
+            Vector r2;
+            float in[3] = {(float)x, (float)y, (float)z};
+            float *o = &r2.x;
+            for (int row = 0; row < 3; ++row)
+                o[row] = ib.m[row][0] * in[0] + ib.m[row][1] * in[1] + ib.m[row][2] * in[2] + (point ? ib.m[row][3] : 0);
+            return r2;
+        };
+        Vector centre = xf(cx / n, cy / n, cz / n, true);
+        Vector fwd = xf(nx, ny, nz, false).Normalized();
+        // Up: the screen's top edge direction (towards smaller t).
+        Vector top, bottom;
+        int nt = 0, nb = 0;
+        std::fill(seen.begin(), seen.end(), 0);
+        for (uint16_t i : md.screenIndices)
+        {
+            if (seen[i])
+                continue;
+            seen[i] = 1;
+            Vector p = xf(m.vertices[i].pos[0], m.vertices[i].pos[1], m.vertices[i].pos[2], true);
+            if (md.screenST[i * 2 + 1] < 0.5f)
+                top = top + p, ++nt;
+            else
+                bottom = bottom + p, ++nb;
+        }
+        Vector up = nt && nb ? (top * (1.0f / nt) - bottom * (1.0f / nb)) : Vector(0, 0, 1);
+        up = (up - fwd * Dot(up, fwd)).Normalized();
+        Vector left = Cross(up, fwd);
+        md.lensLocal.pos = centre;
+        md.lensLocal.rot.SetCol(0, fwd);
+        md.lensLocal.rot.SetCol(1, left);
+        md.lensLocal.rot.SetCol(2, up);
+        md.haveLens = true;
+    }
+}
+
+bool LoadModel(int id, const std::string &file)
+{
+    std::string path = ModuleDir() + "infravr\\" + file, err;
+    ModelData &md = g_model[id];
+    if (!md.glb.Load(path, &err))
+    {
+        IVR_ERR("GLB model: %s", err.c_str());
+        return false;
+    }
+    BuildBatches(md, id == MODEL_CAMERA);
+    const GlbModel &m = md.glb;
+    IVR_LOG("GLB model %s: %u vertices, %u triangles, %u joints (%d finger joints), %u materials, %u images, "
+            "size %.3f x %.3f x %.3f",
+            file.c_str(), (unsigned)m.vertices.size(), (unsigned)m.indices.size() / 3, (unsigned)m.joints.size(),
+            m.fingerJoints, (unsigned)m.materials.size(), (unsigned)m.images.size(), m.boundsMax[0] - m.boundsMin[0],
+            m.boundsMax[1] - m.boundsMin[1], m.boundsMax[2] - m.boundsMin[2]);
+    for (const GlbMaterial &mat : m.materials)
+        IVR_LOG("  material %s: base texture %s, normal map %s", mat.name.c_str(), mat.baseImage >= 0 ? "yes" : "no",
+                mat.normalImage >= 0 ? "yes" : "no");
+    return true;
+}
 
 bool TryLoad()
 {
@@ -61,24 +505,44 @@ bool TryLoad()
         IVR_LOG("GLB hands are skipped (infravr_skip.txt) - INFRA's own arms are used");
         return false;
     }
-    const std::string files[2] = {g_Config.handsLeftFile, g_Config.handsRightFile};
-    for (int h = 0; h < 2; ++h)
+    if (!LoadModel(MODEL_LEFT, g_Config.handsLeftFile) || !LoadModel(MODEL_RIGHT, g_Config.handsRightFile))
     {
-        std::string path = ModuleDir() + "infravr\\" + files[h], err;
-        if (!g_model[h].Load(path, &err))
-        {
-            IVR_ERR("GLB hands: %s - INFRA's own arms are used instead", err.c_str());
-            flags::End(kFlag);
-            return false;
-        }
-        const GlbModel &m = g_model[h];
-        IVR_LOG("GLB hands: %s: %u vertices, %u triangles, %u joints (%d finger joints), texture %dx%d, "
-                "size %.3f x %.3f x %.3f m",
-                files[h].c_str(), (unsigned)m.vertices.size(), (unsigned)m.indices.size() / 3,
-                (unsigned)m.joints.size(), m.fingerJoints, m.texWidth, m.texHeight, m.boundsMax[0] - m.boundsMin[0],
-                m.boundsMax[1] - m.boundsMin[1], m.boundsMax[2] - m.boundsMin[2]);
+        IVR_ERR("GLB hands could not be loaded - INFRA's own arms are used instead");
+        flags::End(kFlag);
+        return false;
     }
+    CompileShaders();
     g_state = 1;
+    return true;
+}
+
+bool TryLoadCamera()
+{
+    if (g_cameraState)
+        return g_cameraState > 0;
+    if (!TryLoad())
+        return false;
+    g_cameraState = -1;
+    if (g_Config.cameraModel.empty())
+        return false;
+    if (!flags::Allowed(kCameraFlag))
+    {
+        IVR_LOG("Camera model is skipped (infravr_skip.txt) - INFRA's camera is used");
+        return false;
+    }
+    if (!LoadModel(MODEL_CAMERA, g_Config.cameraModel))
+    {
+        IVR_ERR("Camera model could not be loaded - INFRA's camera is used instead");
+        return false;
+    }
+    const ModelData &md = g_model[MODEL_CAMERA];
+    g_cameraJointNames.clear();
+    for (int node : md.glb.joints)
+        g_cameraJointNames.push_back(md.glb.nodes[node].name);
+    IVR_LOG("Camera model: %u joints, screen %u triangles (aspect %.2f), lens %s", (unsigned)g_cameraJointNames.size(),
+            (unsigned)md.screenIndices.size() / 3, md.screenAspect,
+            md.haveLens ? "found" : "not found (lens_offset is used)");
+    g_cameraState = 1;
     return true;
 }
 
@@ -140,66 +604,220 @@ Pose ModelToWorld(int hand)
     return p;
 }
 
+// The hand the camera model is drawn on, and the mirror that makes the right-handed model a
+// left hand (reflection across the controller's forward/up plane).
+struct CameraPlacement
+{
+    int hand = HAND_RIGHT;
+    bool mirrored = false;
+    Pose anchor;
+};
+
+CameraPlacement CameraPlace()
+{
+    CameraPlacement c;
+    c.hand = g_Mod.itemHand;
+    c.mirrored = c.hand == HAND_LEFT;
+    c.anchor = g_Mod.AimWorld(c.hand);
+    return c;
+}
+
+Vector MirrorPoint(const CameraPlacement &c, const Vector &p)
+{
+    Vector l = c.anchor.rot.Transposed() * (p - c.anchor.pos);
+    l.y = -l.y;
+    return c.anchor.rot * l + c.anchor.pos;
+}
+
+Vector MirrorDir(const CameraPlacement &c, const Vector &d)
+{
+    Vector l = c.anchor.rot.Transposed() * d;
+    l.y = -l.y;
+    return c.anchor.rot * l;
+}
+
+bool CameraBones(std::vector<GlbMat34> &out)
+{
+    std::lock_guard<std::mutex> lock(g_boneLock);
+    if (g_cameraBones.empty() || g_eyeFrame.load() - g_cameraBonesFrame > 2)
+        return false;
+    out = g_cameraBones;
+    return true;
+}
+
+// --- per-frame data --------------------------------------------------------------------------------
+struct DrawItem
+{
+    int model = 0;
+    bool shader = false;
+    bool mirrored = false;
+    std::vector<SVertex> sv;
+    std::vector<FVertex> fv;
+    float ps[PS_COUNT][4];
+    std::vector<FVertex> screen; // camera screen triangles (world positions, s/t across the screen)
+};
+
+struct Frame
+{
+    std::vector<DrawItem> items;
+};
+
+void BuildItem(DrawItem &it, int model, const std::vector<float> &pos, const std::vector<float> &nrm,
+               const std::vector<float> &tan, const Pose *xf, float xfScale, const CameraPlacement *mirror,
+               const Lighting &light)
+{
+    const ModelData &md = g_model[model];
+    const GlbModel &m = md.glb;
+    it.model = model;
+    it.shader = !g_vsCode.empty() && !g_psCode.empty();
+    it.mirrored = mirror && mirror->mirrored;
+    PackLighting(light, it.ps);
+    it.ps[PS_PARAMS][0] = it.mirrored ? -1.0f : 1.0f;
+    size_t n = m.vertices.size();
+    auto place = [&](size_t i, Vector &p, Vector &nn, Vector &tt) {
+        p = Vector(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
+        nn = Vector(nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2]);
+        tt = Vector(tan[i * 4], tan[i * 4 + 1], tan[i * 4 + 2]);
+        if (xf)
+        {
+            p = xf->Transform(p);
+            nn = (xf->rot * nn) * (1.0f / xfScale);
+            tt = (xf->rot * tt) * (1.0f / xfScale);
+        }
+        if (it.mirrored)
+        {
+            p = MirrorPoint(*mirror, p);
+            nn = MirrorDir(*mirror, nn);
+            tt = MirrorDir(*mirror, tt);
+        }
+    };
+    if (it.shader)
+    {
+        it.sv.resize(n);
+        for (size_t i = 0; i < n; ++i)
+        {
+            Vector p, nn, tt;
+            place(i, p, nn, tt);
+            SVertex &v = it.sv[i];
+            v = {{p.x, p.y, p.z}, {nn.x, nn.y, nn.z}, {tt.x, tt.y, tt.z, tan[i * 4 + 3]}, {m.vertices[i].uv[0], m.vertices[i].uv[1]}};
+        }
+    }
+    else
+    {
+        it.fv.resize(n);
+        for (size_t i = 0; i < n; ++i)
+        {
+            Vector p, nn, tt;
+            place(i, p, nn, tt);
+            nn = nn.Normalized();
+            Vector c = Shade(light, p, nn);
+            auto c8 = [&](float x) {
+                return (DWORD)std::lround(std::pow(std::min(1.0f, std::max(0.0f, x)), kGamma) * 255.0f);
+            };
+            it.fv[i] = {p.x, p.y, p.z, D3DCOLOR_ARGB(255, c8(c.x), c8(c.y), c8(c.z)), m.vertices[i].uv[0],
+                        m.vertices[i].uv[1]};
+        }
+    }
+    if (!md.screenIndices.empty())
+    {
+        for (uint16_t i : md.screenIndices)
+        {
+            Vector p, nn, tt;
+            place(i, p, nn, tt);
+            it.screen.push_back({p.x, p.y, p.z, 0xFFFFFFFF, md.screenST[i * 2], md.screenST[i * 2 + 1]});
+        }
+    }
+}
+
 std::shared_ptr<Frame> BuildFrame(const CViewSetup &v)
 {
     auto fr = std::make_shared<Frame>();
     UpdateCurls();
-    // Head-lamp style light: from the viewer, a little from above.
     Mat3 eye = AnglesToMatrix(v.angles);
-    Vector L = (eye.Up() * 0.6f - eye.Forward()).Normalized();
-    float bright = g_Config.handsBrightness;
-    std::vector<float> pos, nrm;
+    std::vector<float> pos, nrm, tan;
+
+    // The camera model replaces the hand that holds INFRA's camera.
+    int cameraHand = -1;
+    std::vector<GlbMat34> bones;
+    if (TryLoadCamera() && CameraBones(bones))
+    {
+        if (g_cameraFrames == 0)
+            flags::Begin(kCameraFlag);
+        const ModelData &md = g_model[MODEL_CAMERA];
+        md.glb.SkinJoints(bones, pos, nrm, &tan);
+        CameraPlacement place = CameraPlace();
+        cameraHand = place.hand;
+        int hj = md.glb.JointByName("Bip001 R Hand");
+        const GlbMat34 &b = bones[hj >= 0 ? hj : 0];
+        Vector origin(b.m[0][3], b.m[1][3], b.m[2][3]);
+        if (place.mirrored)
+            origin = MirrorPoint(place, origin);
+        DrawItem it;
+        BuildItem(it, MODEL_CAMERA, pos, nrm, tan, nullptr, 1.0f, &place, LightAt(origin, eye));
+        fr->items.push_back(std::move(it));
+        if (++g_cameraFrames == kTrustFrames)
+        {
+            flags::End(kCameraFlag);
+            IVR_LOG("Camera model: %d frames drawn without trouble", g_cameraFrames);
+        }
+    }
+
     for (int h = 0; h < 2; ++h)
     {
-        if (!g_Mod.HandValid(h))
+        if (!g_Mod.HandValid(h) || h == cameraHand)
             continue;
-        const GlbModel &m = g_model[h];
-        m.Skin(g_curl[h], g_Config.handsCurlMax, pos, nrm);
+        const ModelData &md = g_model[h];
+        md.glb.Skin(g_curl[h], g_Config.handsCurlMax, pos, nrm, &tan);
         Pose w = ModelToWorld(h);
-        Mat3 nrot = w.rot; // uniform scale: normals only need renormalising
-        std::vector<Vertex> &out = fr->verts[h];
-        out.resize(m.indices.size());
-        std::vector<Vertex> unique(m.vertices.size());
-        for (size_t i = 0; i < m.vertices.size(); ++i)
-        {
-            Vector p = w.Transform(Vector(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]));
-            Vector n = (nrot * Vector(nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2])).Normalized();
-            float d = std::max(0.0f, Dot(n, L));
-            float lum = std::min(1.0f, bright * (0.42f + 0.58f * d));
-            auto c8 = [&](float c) { return (DWORD)std::lround(std::min(1.0f, std::max(0.0f, c * lum)) * 255.0f); };
-            unique[i] = {p.x, p.y, p.z, D3DCOLOR_ARGB(255, c8(m.baseColor[0]), c8(m.baseColor[1]), c8(m.baseColor[2])),
-                         m.vertices[i].uv[0], m.vertices[i].uv[1]};
-        }
-        for (size_t i = 0; i < m.indices.size(); ++i)
-            out[i] = unique[m.indices[i]];
-        fr->visible[h] = true;
+        float scale = g_Mod.UnitsPerMetre() * g_Config.handsScale;
+        DrawItem it;
+        BuildItem(it, h, pos, nrm, tan, &w, scale, nullptr, LightAt(w.pos, eye));
+        fr->items.push_back(std::move(it));
     }
     return fr;
 }
 
-bool EnsureTexture(IDirect3DDevice9 *dev, int h)
+// --- render thread -----------------------------------------------------------------------------------
+struct DeviceObjects
 {
-    if (g_tex[h] || g_texFailed)
-        return g_tex[h] != nullptr;
-    const GlbModel &m = g_model[h];
-    if (m.texRGBA.empty())
-        return false;
-    if (FAILED(dev->CreateTexture(m.texWidth, m.texHeight, 0, D3DUSAGE_AUTOGENMIPMAP, D3DFMT_A8R8G8B8,
-                                  D3DPOOL_MANAGED, &g_tex[h], nullptr)) ||
-        !g_tex[h])
+    std::vector<IDirect3DTexture9 *> tex[MODEL_COUNT]; // per model image
+    IDirect3DVertexShader9 *vs = nullptr;
+    IDirect3DPixelShader9 *ps = nullptr;
+    IDirect3DVertexDeclaration9 *decl = nullptr;
+    IDirect3DStateBlock9 *state = nullptr;
+    bool shaderFailed = false;
+    bool texFailed = false;
+};
+DeviceObjects g_dev;
+
+IDirect3DTexture9 *Texture(IDirect3DDevice9 *dev, int model, int image)
+{
+    const GlbModel &m = g_model[model].glb;
+    if (image < 0 || image >= (int)m.images.size() || g_dev.texFailed)
+        return nullptr;
+    std::vector<IDirect3DTexture9 *> &list = g_dev.tex[model];
+    if (list.size() < m.images.size())
+        list.resize(m.images.size(), nullptr);
+    if (list[image])
+        return list[image];
+    const GlbImage &img = m.images[image];
+    IDirect3DTexture9 *t = nullptr;
+    if (FAILED(dev->CreateTexture(img.width, img.height, 0, D3DUSAGE_AUTOGENMIPMAP, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &t,
+                                  nullptr)) ||
+        !t)
     {
-        IVR_ERR("GLB hands: could not create the %dx%d hand texture", m.texWidth, m.texHeight);
-        g_texFailed = true;
-        return false;
+        IVR_ERR("GLB hands: could not create a %dx%d texture", img.width, img.height);
+        g_dev.texFailed = true;
+        return nullptr;
     }
     D3DLOCKED_RECT lr;
-    if (SUCCEEDED(g_tex[h]->LockRect(0, &lr, nullptr, 0)))
+    if (SUCCEEDED(t->LockRect(0, &lr, nullptr, 0)))
     {
-        for (int y = 0; y < m.texHeight; ++y)
+        for (int y = 0; y < img.height; ++y)
         {
-            const uint8_t *src = &m.texRGBA[(size_t)y * m.texWidth * 4];
+            const uint8_t *src = &img.rgba[(size_t)y * img.width * 4];
             uint8_t *dst = static_cast<uint8_t *>(lr.pBits) + (size_t)y * lr.Pitch;
-            for (int x = 0; x < m.texWidth; ++x)
+            for (int x = 0; x < img.width; ++x)
             {
                 dst[x * 4 + 0] = src[x * 4 + 2];
                 dst[x * 4 + 1] = src[x * 4 + 1];
@@ -207,8 +825,33 @@ bool EnsureTexture(IDirect3DDevice9 *dev, int h)
                 dst[x * 4 + 3] = 255;
             }
         }
-        g_tex[h]->UnlockRect(0);
+        t->UnlockRect(0);
     }
+    list[image] = t;
+    return t;
+}
+
+bool EnsureShaders(IDirect3DDevice9 *dev)
+{
+    if (g_dev.vs && g_dev.ps && g_dev.decl)
+        return true;
+    if (g_dev.shaderFailed || g_vsCode.empty() || g_psCode.empty())
+        return false;
+    static const D3DVERTEXELEMENT9 elems[] = {
+        {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+        {0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0},
+        {0, 24, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TANGENT, 0},
+        {0, 40, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+        D3DDECL_END()};
+    if (FAILED(dev->CreateVertexShader(g_vsCode.data(), &g_dev.vs)) ||
+        FAILED(dev->CreatePixelShader(g_psCode.data(), &g_dev.ps)) ||
+        FAILED(dev->CreateVertexDeclaration(elems, &g_dev.decl)))
+    {
+        IVR_ERR("GLB hands: the device refused the hand shaders - lit per vertex instead");
+        g_dev.shaderFailed = true;
+        return false;
+    }
+    IVR_LOG("GLB hands: drawn with world lighting and normal maps");
     return true;
 }
 
@@ -245,15 +888,57 @@ void ViewProjection(const CViewSetup &v, D3DMATRIX &view, D3DMATRIX &proj)
     proj._43 = -q * zn;
 }
 
+D3DMATRIX Mul(const D3DMATRIX &a, const D3DMATRIX &b)
+{
+    D3DMATRIX r;
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+        {
+            float s = 0;
+            for (int k = 0; k < 4; ++k)
+                s += a.m[i][k] * b.m[k][j];
+            r.m[i][j] = s;
+        }
+    return r;
+}
+
+// {85C31227-3DE5-4f00-9B3A-F11AC38C18B5}
+const GUID kIID_Texture9 = {0x85c31227, 0x3de5, 0x4f00, {0x9b, 0x3a, 0xf1, 0x1a, 0xc3, 0x8c, 0x18, 0xb5}};
+
+// The camera screen texture INFRA's lens view is copied into, and the part of it to show
+// (cropped to the model screen's shape). Render thread.
+IDirect3DTexture9 *ScreenTexture(float aspect, float rect[4])
+{
+    IDirect3DSurface9 *s = g_D3D.cameraSurface;
+    if (!s || !g_Config.cameraScreenView || g_D3D.learnW <= 0 || g_D3D.learnH <= 0)
+        return nullptr;
+    D3DSURFACE_DESC d{};
+    IDirect3DTexture9 *tex = nullptr;
+    if (FAILED(s->GetDesc(&d)) || !d.Width || !d.Height ||
+        FAILED(s->GetContainer(kIID_Texture9, reinterpret_cast<void **>(&tex))) || !tex)
+        return nullptr;
+    float w = (float)g_D3D.learnW, h = (float)g_D3D.learnH;
+    float cw = w, ch = h;
+    if (w / h > aspect)
+        cw = h * aspect;
+    else
+        ch = w / aspect;
+    rect[0] = (w - cw) * 0.5f / d.Width;
+    rect[1] = (h - ch) * 0.5f / d.Height;
+    rect[2] = cw / d.Width;
+    rect[3] = ch / d.Height;
+    return tex; // AddRef'd by GetContainer
+}
+
 void Draw(const std::shared_ptr<Frame> &fr, const CViewSetup &v)
 {
     IDirect3DDevice9 *dev = g_D3D.device;
-    if (!dev || (!fr->visible[0] && !fr->visible[1]))
+    if (!dev || fr->items.empty())
         return;
-    if (!g_state9 && FAILED(dev->CreateStateBlock(D3DSBT_ALL, &g_state9)))
-        g_state9 = nullptr;
-    if (g_state9)
-        g_state9->Capture();
+    if (!g_dev.state && FAILED(dev->CreateStateBlock(D3DSBT_ALL, &g_dev.state)))
+        g_dev.state = nullptr;
+    if (g_dev.state)
+        g_dev.state->Capture();
 
     // Depth test against the scene only when the bound depth buffer matches the eye image.
     bool depth = false;
@@ -286,11 +971,8 @@ void Draw(const std::shared_ptr<Frame> &fr, const CViewSetup &v)
     dev->SetTransform(D3DTS_WORLD, &ident);
     dev->SetTransform(D3DTS_VIEW, &view);
     dev->SetTransform(D3DTS_PROJECTION, &proj);
-    dev->SetVertexShader(nullptr);
-    dev->SetPixelShader(nullptr);
-    dev->SetFVF(kFvf);
     dev->SetRenderState(D3DRS_LIGHTING, FALSE);
-    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE); // the right hand is a mirrored export
+    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE); // double-sided materials; the right hand is mirrored
     dev->SetRenderState(D3DRS_ZENABLE, depth ? D3DZB_TRUE : D3DZB_FALSE);
     dev->SetRenderState(D3DRS_ZWRITEENABLE, depth ? TRUE : FALSE);
     dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
@@ -305,12 +987,15 @@ void Draw(const std::shared_ptr<Frame> &fr, const CViewSetup &v)
     dev->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
     dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
     dev->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD);
-    dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-    dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-    dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
-    dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
-    dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
-    dev->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+    for (DWORD s = 0; s < 2; ++s)
+    {
+        dev->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        dev->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        dev->SetSamplerState(s, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+        dev->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+        dev->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+        dev->SetSamplerState(s, D3DSAMP_SRGBTEXTURE, FALSE);
+    }
     dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
     dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
     dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
@@ -319,23 +1004,157 @@ void Draw(const std::shared_ptr<Frame> &fr, const CViewSetup &v)
     dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
     dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-    for (int h = 0; h < 2; ++h)
+
+    bool shaders = EnsureShaders(dev);
+    D3DMATRIX vpm = Mul(view, proj);
+    for (const DrawItem &it : fr->items)
     {
-        if (!fr->visible[h] || fr->verts[h].empty())
-            continue;
-        bool tex = EnsureTexture(dev, h);
-        dev->SetTexture(0, tex ? g_tex[h] : nullptr);
-        dev->SetTextureStageState(0, D3DTSS_COLOROP, tex ? D3DTOP_MODULATE : D3DTOP_SELECTARG2);
-        dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)fr->verts[h].size() / 3, fr->verts[h].data(), sizeof(Vertex));
+        const ModelData &md = g_model[it.model];
+        const GlbModel &m = md.glb;
+        bool useShader = it.shader && shaders;
+        if (useShader)
+        {
+            dev->SetVertexDeclaration(g_dev.decl);
+            dev->SetVertexShader(g_dev.vs);
+            dev->SetPixelShader(g_dev.ps);
+            dev->SetVertexShaderConstantF(0, &vpm._11, 4);
+            float ps[PS_COUNT][4];
+            std::memcpy(ps, it.ps, sizeof(ps));
+            ps[PS_EYE][0] = v.origin.x, ps[PS_EYE][1] = v.origin.y, ps[PS_EYE][2] = v.origin.z;
+            ps[PS_PARAMS][2] = g_Config.handsNormalMapGreen;
+            dev->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, TRUE); // base colour: sRGB -> linear
+            for (const Batch &b : md.batches)
+            {
+                const GlbMaterial *mat = b.material >= 0 ? &m.materials[b.material] : nullptr;
+                IDirect3DTexture9 *base = mat ? Texture(dev, it.model, mat->baseImage) : nullptr;
+                IDirect3DTexture9 *nmap =
+                    mat && g_Config.handsNormalMaps ? Texture(dev, it.model, mat->normalImage) : nullptr;
+                ps[PS_EYE][3] = nmap ? 1.0f : 0.0f;
+                dev->SetPixelShaderConstantF(0, &ps[0][0], PS_COUNT);
+                dev->SetTexture(0, base);
+                dev->SetTexture(1, nmap);
+                dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, (UINT)it.sv.size(), (UINT)b.indices.size() / 3,
+                                            b.indices.data(), D3DFMT_INDEX16, it.sv.data(), sizeof(SVertex));
+            }
+            dev->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+            dev->SetTexture(1, nullptr);
+            dev->SetVertexShader(nullptr);
+            dev->SetPixelShader(nullptr);
+        }
+        else if (!it.fv.empty())
+        {
+            dev->SetVertexShader(nullptr);
+            dev->SetPixelShader(nullptr);
+            dev->SetFVF(kFvf);
+            for (const Batch &b : md.batches)
+            {
+                const GlbMaterial *mat = b.material >= 0 ? &m.materials[b.material] : nullptr;
+                IDirect3DTexture9 *base = mat ? Texture(dev, it.model, mat->baseImage) : nullptr;
+                dev->SetTexture(0, base);
+                dev->SetTextureStageState(0, D3DTSS_COLOROP, base ? D3DTOP_MODULATE : D3DTOP_SELECTARG2);
+                dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, (UINT)it.fv.size(), (UINT)b.indices.size() / 3,
+                                            b.indices.data(), D3DFMT_INDEX16, it.fv.data(), sizeof(FVertex));
+            }
+        }
+        // Camera screen: the lens view, unlit, cropped to the screen's shape. Without it, the
+        // screen keeps the model's own (dark) texture.
+        if (!it.screen.empty())
+        {
+            dev->SetVertexShader(nullptr);
+            dev->SetPixelShader(nullptr);
+            dev->SetFVF(kFvf);
+            float rect[4];
+            IDirect3DTexture9 *screen = ScreenTexture(md.screenAspect, rect);
+            std::vector<FVertex> verts = it.screen;
+            if (screen)
+            {
+                for (FVertex &fv : verts)
+                {
+                    float s = it.mirrored ? 1.0f - fv.u : fv.u; // keep the picture the right way round
+                    fv.u = rect[0] + s * rect[2];
+                    fv.v = rect[1] + fv.v * rect[3];
+                }
+                DWORD k = (DWORD)std::lround(std::min(1.0f, std::max(0.0f, g_Config.cameraScreenBrightness)) * 255.0f);
+                dev->SetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_ARGB(255, k, k, k));
+                dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_TFACTOR);
+                dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+                dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+                dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+                dev->SetTexture(0, screen);
+                dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)verts.size() / 3, verts.data(), sizeof(FVertex));
+                dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+                dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+                dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+                screen->Release();
+            }
+            else
+            {
+                // No lens picture yet: a dark screen.
+                for (FVertex &fv : verts)
+                    fv.color = D3DCOLOR_ARGB(255, 6, 6, 8);
+                dev->SetTexture(0, nullptr);
+                dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2);
+                dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)verts.size() / 3, verts.data(), sizeof(FVertex));
+            }
+        }
     }
     dev->SetTexture(0, nullptr);
-    if (g_state9)
-        g_state9->Apply();
+    if (g_dev.state)
+        g_dev.state->Apply();
 }
 
 } // namespace
 
 bool Enabled() { return TryLoad(); }
+
+bool CameraModelEnabled() { return TryLoadCamera(); }
+
+const std::vector<std::string> &CameraJointNames() { return g_cameraJointNames; }
+
+void SetCameraBones(const std::vector<GlbMat34> &world)
+{
+    std::lock_guard<std::mutex> lock(g_boneLock);
+    g_cameraBones = world;
+    g_cameraBonesFrame = g_eyeFrame.load();
+}
+
+bool CameraModelShown()
+{
+    if (g_cameraState <= 0)
+        return false;
+    std::lock_guard<std::mutex> lock(g_boneLock);
+    return !g_cameraBones.empty() && g_eyeFrame.load() - g_cameraBonesFrame <= 2;
+}
+
+bool CameraLens(Pose &out)
+{
+    if (g_cameraState <= 0)
+        return false;
+    const ModelData &md = g_model[MODEL_CAMERA];
+    if (!md.haveLens || md.cameraJoint < 0)
+        return false;
+    std::vector<GlbMat34> bones;
+    if (!CameraBones(bones) || md.cameraJoint >= (int)bones.size())
+        return false;
+    const GlbMat34 &b = bones[md.cameraJoint];
+    Pose joint;
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            joint.rot.m[r][c] = b.m[r][c];
+    joint.pos = Vector(b.m[0][3], b.m[1][3], b.m[2][3]);
+    Pose lens = joint * md.lensLocal;
+    CameraPlacement place = CameraPlace();
+    if (place.mirrored)
+    {
+        Vector f = MirrorDir(place, lens.rot.Forward()), u = MirrorDir(place, lens.rot.Up());
+        lens.pos = MirrorPoint(place, lens.pos);
+        lens.rot.SetCol(0, f);
+        lens.rot.SetCol(1, Cross(u, f));
+        lens.rot.SetCol(2, u);
+    }
+    out = lens;
+    return true;
+}
 
 void DrawEye(int eye, const CViewSetup &v)
 {
@@ -347,24 +1166,39 @@ void DrawEye(int eye, const CViewSetup &v)
     std::shared_ptr<Frame> fr = s_frame;
     CViewSetup view = v;
     Defer([fr, view] { Draw(fr, view); });
-    if (eye == 1 && ++g_framesDrawn == kTrustFrames)
+    if (eye == 1)
     {
-        flags::End(kFlag);
-        IVR_LOG("GLB hands: %d frames drawn without trouble", g_framesDrawn);
+        g_eyeFrame.fetch_add(1);
+        if (++g_framesDrawn == kTrustFrames)
+        {
+            flags::End(kFlag);
+            IVR_LOG("GLB hands: %d frames drawn without trouble", g_framesDrawn);
+        }
     }
 }
 
 void OnDeviceReset()
 {
-    for (auto &t : g_tex)
+    for (auto &list : g_dev.tex)
     {
-        if (t)
-            t->Release();
-        t = nullptr;
+        for (auto &t : list)
+            if (t)
+                t->Release();
+        list.clear();
     }
-    if (g_state9)
-        g_state9->Release();
-    g_state9 = nullptr;
+    if (g_dev.state)
+        g_dev.state->Release();
+    if (g_dev.vs)
+        g_dev.vs->Release();
+    if (g_dev.ps)
+        g_dev.ps->Release();
+    if (g_dev.decl)
+        g_dev.decl->Release();
+    g_dev.state = nullptr;
+    g_dev.vs = nullptr;
+    g_dev.ps = nullptr;
+    g_dev.decl = nullptr;
+    g_dev.shaderFailed = false;
 }
 
 } // namespace hands

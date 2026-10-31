@@ -135,6 +135,10 @@ constexpr int RC_GetCallQueue = 141; // ICallQueue* (null unless mat_queue_mode 
 constexpr int TEX_GetActualWidth = 3;
 constexpr int TEX_GetActualHeight = 4;
 constexpr int TEX_IncrementReferenceCount = 10;
+// IMatRenderContext::GetToneMappingScaleLinear: returns a Vector (MSVC: hidden result pointer, ret 4)
+constexpr int RC_GetToneMappingScaleLinear = 145;
+// IVModelRender (CModelRender, "VEngineModel016")
+constexpr int ComputeLightingState = 26;
 // IVRenderView ("VEngineRenderView013")
 constexpr int VGui_Paint = 38;
 // ISurface ("VGUI_Surface031")
@@ -149,6 +153,44 @@ constexpr int GetActiveWeapon = 243;
 constexpr int SetControllerMovesCursor = 4;
 } // namespace vidx
 
+// World lighting at a point, as the engine lights a model there (IVModelRender::ComputeLightingState).
+// Alien Swarm / Portal 2 layouts, checked in INFRA's engine.dll and engine.dylib (see OFFSETS.md).
+struct LightingQuery_t
+{
+    Vector origin;                  // 0x00
+    unsigned short instance = 0xFFFF; // 0x0C ModelInstanceHandle_t (none)
+    bool ambientBoost = false;      // 0x0E
+};
+static_assert(sizeof(LightingQuery_t) == 0x10, "LightingQuery_t");
+
+struct LightDesc_t
+{
+    int type;              // 0x00 0 off, 1 point, 2 directional, 3 spot
+    Vector color;          // 0x04 linear
+    Vector position;       // 0x10
+    Vector direction;      // 0x1C the way the light travels
+    float range;           // 0x28 0 = unlimited
+    float falloff;         // 0x2C spot falloff exponent
+    float attenuation0;    // 0x30 constant
+    float attenuation1;    // 0x34 linear
+    float attenuation2;    // 0x38 quadratic
+    float theta, phi;      // 0x3C / 0x40 spot inner / outer angles
+    float thetaDot, phiDot; // 0x44 / 0x48 their cosines
+    float oneOverThetaDotMinusPhiDot; // 0x4C
+    uint32_t flags;        // 0x50
+    float rangeSquared;    // 0x54
+};
+static_assert(sizeof(LightDesc_t) == 0x58, "LightDesc_t");
+
+struct MaterialLightingState_t
+{
+    Vector ambientCube[6]; // 0x00 +x -x +y -y +z -z, linear
+    Vector lightingOrigin; // 0x48
+    int localLightCount;   // 0x54
+    LightDesc_t localLights[4]; // 0x58
+};
+static_assert(sizeof(MaterialLightingState_t) == 0x1B8, "MaterialLightingState_t");
+
 struct Game
 {
     // interfaces
@@ -159,6 +201,7 @@ struct Game
     void *surface = nullptr;
     void *screenClicker = nullptr; // INFRA's IINFRAScreenClicker (main menu screen cursor)
     void *vguiInput = nullptr; // vgui::IInputInternal
+    void *modelRender = nullptr; // IVModelRender ("VEngineModel016"), for world lighting
     size_t matGameStartedFlag = 0; // CMaterialSystem byte that blocks late RT allocation
 
     // functions (hook targets)
@@ -225,6 +268,11 @@ struct Game
     void ApplyVRSettings() const;
 
     void *RenderContext() const { return VCall<void *>(materials, vidx::GetRenderContext); }
+    // Main thread, during rendering: how the engine would light a model at `origin` (ambient cube
+    // and up to 4 local lights). False if the interface is missing.
+    bool LightingAt(const Vector &origin, MaterialLightingState_t &out) const;
+    // HDR exposure the game's shaders multiply by (1 1 1 without HDR).
+    Vector ToneMapScale() const;
     static void ReleaseContext(void *ctx) { VCall<int>(ctx, vidx::RC_Release); }
     void BackBufferSize(int &w, int &h) const
     {

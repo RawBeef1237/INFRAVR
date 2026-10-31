@@ -21,6 +21,7 @@ by RTTI vtable + slot or by a unique byte signature, and the RVA is the cross-ch
 | VMaterialSystem080 | materialsystem.dll | wine |
 | VGUI_Surface031 | vguimatsurface.dll | wine |
 | VGUI_InputInternal001 | vgui2.dll | not found under Wine (vgui2 needs the running game) |
+| VEngineModel016 (IVModelRender) | engine.dll | static |
 
 ## materialsystem.dll
 
@@ -31,6 +32,7 @@ by RTTI vtable + slot or by a unique byte signature, and the RVA is the cross-ch
 | vtable slots 91 / 92 Begin/EndRenderTargetAllocation | 91 = RVA 0xb250 | static, wine |
 | vtable slot 96 CreateNamedRenderTargetTextureEx | RVA 0xb170 | static, wine |
 | vtable slot 112 GetRenderContext | RVA 0xbc00 | static, wine |
+| IMatRenderContext slot 144 / 145 Set/GetToneMappingScaleLinear (145 returns a Vector through a hidden result pointer, `ret 4`; the queued context copies its +0x1c0) | slot numbers | static (MaterialSystem.dll and the macOS materialsystem.dylib symbols agree) |
 | vtable slot 13: a two-int setter writing +0x2ac4 / +0x2ac8 | probably SetAdapter, not a size override | static |
 | SetRenderTargetFrameBufferSizeOverrides (what Black Mesa VR uses) | not present in INFRA | verified-fail |
 | CTexture::ApplyRenderTargetSizeMode | RVA 0x2e3b0, 0x138 bytes up to its jump table (0x1002e4e8 at the preferred base) | static, wine (one signature hit) |
@@ -74,6 +76,18 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 | IVRenderView slot 38 (VGui_Paint) | RVA 0x11a040 | wine, headset |
 | IVEngineClient slot 104 (ExecuteClientCmd) | RVA 0x71140 | wine, headset |
 | ISurface slot 56 (IsCursorVisible) | RVA 0x5850 | wine |
+| IVModelRender slot 26 ComputeLightingState(int count, const LightingQuery_t*, MaterialLightingState_t*, ITexture**) | RVA 0xe2da0 (0x100e2da0 at the preferred base), `__thiscall`, `ret 0x10` | static (engine.dll, cross-checked with the engine.dylib symbols) |
+| LightingQuery_t | 0x10 bytes: origin 0, instance (ushort, 0xFFFF = none) 0xC, ambient boost (bool) 0xE | static |
+| MaterialLightingState_t | 0x1B8 bytes: ambient cube (6 Vectors) 0, lighting origin 0x48, local light count 0x54, 4 x LightDesc_t 0x58 | static |
+| LightDesc_t | 0x58 bytes: type 0, color 4, position 0x10, direction 0x1C, range 0x28, falloff 0x2C, attenuation 0/1/2 0x30/0x34/0x38, theta/phi 0x3C/0x40, thetaDot/phiDot 0x44/0x48, oneOver 0x4C, flags 0x50, rangeSq 0x54 | static |
+
+## models
+
+| What | Value | Status |
+|---|---|---|
+| v_camera.mdl | 55 bones (both arms, `Camera`, `w_camera003`, flashlight on the left hand), 7 sequences: idle, fire, dryfire, draw, reload_draw, holster, reload | static (read from the MDL) |
+| camera_hand.glb | 22 skin joints named like v_camera's (`Bip001 R Hand`, fingers, `w_camera003`); its local bone transforms equal v_camera's bind pose; camera mesh skinned to `w_camera003` only; no animations of its own | static, wine (`tests/glb_test`) |
+| camera_hand.glb texture: screen quad / lens | UV 0.113 0.134 to 0.486 0.404 / centre 0.891 0.716, radius 0.044 (v is stored +1, wrapped) | static |
 
 ## How to re-check after a game update
 

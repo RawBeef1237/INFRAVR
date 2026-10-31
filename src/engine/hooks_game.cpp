@@ -1,6 +1,7 @@
 // INFRA VR - Source engine detours: stereo rendering, input, viewmodel, camera lens,
 // flashlight and the server-side grab controller.
 #include "config.h"
+#include "glb_model.h"
 #include "hands_renderer.h"
 #include "world_size.h"
 #include "d3d_vr.h"
@@ -640,8 +641,42 @@ void MoveOtherArm(void *self, void *studioHdr)
     }
 }
 
+// [camera] model: while INFRA draws v_camera, its animated bones drive the mod's camera model
+// (same bone names). Returns true if this is v_camera and the bones were handed over.
+bool CaptureCameraBones(const uint8_t *studio, const matrix3x4_t *bones, int count)
+{
+    const char *name = reinterpret_cast<const char *>(studio + 12);
+    if (!std::strstr(name, "v_camera"))
+        return false;
+    const std::vector<std::string> &joints = hands::CameraJointNames();
+    static const void *s_studio = nullptr;
+    static std::vector<int> s_map;
+    if (s_studio != studio)
+    {
+        s_studio = studio;
+        s_map.assign(joints.size(), -1);
+        int missing = 0;
+        for (size_t j = 0; j < joints.size(); ++j)
+            missing += (s_map[j] = FindBone(studio, joints[j].c_str())) < 0;
+        IVR_LOG("Camera model: %s has %d of the model's %u bones%s", name, (int)joints.size() - missing,
+                (unsigned)joints.size(), missing ? " - the others follow its hand" : "");
+    }
+    int hand = FindBone(studio, "Bip001 R Hand");
+    std::vector<GlbMat34> world(joints.size());
+    for (size_t j = 0; j < joints.size(); ++j)
+    {
+        int b = s_map[j] >= 0 ? s_map[j] : hand;
+        if (b < 0 || b >= count)
+            return false;
+        std::memcpy(world[j].m, bones[b].m, sizeof(world[j].m));
+    }
+    hands::SetCameraBones(world);
+    return true;
+}
+
 // [hands] model = glb: the mod draws its own hands, so INFRA's arms go - every bone outside the held
 // item (camera, phone, flashlight) collapses to a point, which hides the vertices skinned to it.
+// With the mod's camera model, v_camera's camera goes too (only its flashlight stays).
 void HideArms(void *self, void *studioHdr)
 {
     if (!studioHdr || !IsReadable(studioHdr, 4))
@@ -656,7 +691,9 @@ void HideArms(void *self, void *studioHdr)
     matrix3x4_t *bones = *reinterpret_cast<matrix3x4_t **>(static_cast<uint8_t *>(self) + g_Game.boneArrayOffset);
     if (count <= 0 || count > 256 || !bones || !IsReadable(bones, count * sizeof(matrix3x4_t)))
         return;
-    int items[3] = {FindBone(studio, "Camera"), FindBone(studio, "cellular_phone"), FindBone(studio, "flashlight")};
+    bool cameraModel = hands::CameraModelEnabled() && CaptureCameraBones(studio, bones, count);
+    int items[3] = {cameraModel ? -1 : FindBone(studio, "Camera"), FindBone(studio, "cellular_phone"),
+                    FindBone(studio, "flashlight")};
     int hidden = 0;
     for (int b = 0; b < count; ++b)
     {
@@ -673,7 +710,8 @@ void HideArms(void *self, void *studioHdr)
     if (s_logged != studio)
     {
         s_logged = studio;
-        IVR_LOG("GLB hands: %s - %d of %d bones hidden (INFRA's arms), item bones kept", name, hidden, count);
+        IVR_LOG("GLB hands: %s - %d of %d bones hidden (INFRA's arms%s), item bones kept", name, hidden, count,
+                cameraModel ? " and camera: the mod's camera model is drawn" : "");
     }
 }
 
