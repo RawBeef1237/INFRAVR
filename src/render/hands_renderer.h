@@ -8,11 +8,11 @@
 // exposure), and a small vertex/pixel shader applies that per pixel with the models' normal maps.
 // Without a shader compiler the same light is applied per vertex.
 //
-// The camera ([camera] model): a GLB of the camera with the hand holding it, rigged to the same
-// bones as INFRA's v_camera.mdl. While INFRA shows its camera, its animated bones are copied every
-// frame (BuildTransformations) and drive the GLB, so taking the camera out, taking photos and
-// changing the battery animate it; INFRA's own camera model is hidden. Its screen shows the lens
-// view and the lens view is taken from the model's lens.
+// The camera and the flashlight ([camera] model, [flashlight] model): a GLB of the item with the
+// hand holding it, rigged to the same bones as INFRA's v_camera.mdl / v_light.mdl, drawn on the VR
+// hand that holds the item. While INFRA shows the item, its animated bones are copied every frame
+// (BuildTransformations) and move the item in the hand (photos, changing the battery); INFRA's own
+// viewmodel is hidden. The camera's screen shows the lens view, taken from the model's lens.
 #pragma once
 #include "common.h"
 #include "mathlib.h"
@@ -33,14 +33,15 @@ void DrawEye(int eye, const CViewSetup &v);
 // Before a D3D9 device reset.
 void OnDeviceReset();
 
-// --- camera model ---------------------------------------------------------------------------
-// True when the GLB hands are on and the camera model loaded.
-bool CameraModelEnabled();
-// Skin joint names of the camera model, in skin order (INFRA's v_camera bone names).
-const std::vector<std::string> &CameraJointNames();
-// From the viewmodel bone setup (any thread): world matrices of INFRA's v_camera bones, one per
-// CameraJointNames() entry, in game units.
-void SetCameraBones(const std::vector<GlbMat34> &world);
+// --- held-item models (camera, flashlight) ----------------------------------------------------
+constexpr int ITEM_CAMERA = 0, ITEM_FLASHLIGHT = 1, ITEM_COUNT = 2;
+// True when the GLB hands are on and that item's model loaded.
+bool ItemModelEnabled(int item);
+// Skin joint names of the item's model, in skin order (bone names of INFRA's viewmodel).
+const std::vector<std::string> &ItemJointNames(int item);
+// From the viewmodel bone setup (any thread): world matrices of INFRA's viewmodel bones, one per
+// ItemJointNames() entry, in game units.
+void SetItemBones(int item, const std::vector<GlbMat34> &world);
 // The camera model is being drawn (fresh bones from INFRA's camera).
 bool CameraModelShown();
 // The lens of the camera model in the world (x forward out of the lens, z up), when shown.

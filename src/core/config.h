@@ -104,6 +104,8 @@ struct Config
     // The mod's own camera model (glTF, with the hand holding it), drawn instead of INFRA's camera
     // and moved by INFRA's camera animations. Empty = INFRA's camera model.
     std::string cameraModel = "hands\\camera_hand.glb";
+    // The same for the flashlight (v_light.mdl's bones). Empty = INFRA's flashlight model.
+    std::string flashlightModel = "hands\\flashlight_hand.glb";
     // Where the screen and the lens are in the model's base colour texture (0..1): the screen
     // rectangle (left top right bottom) shows the lens view; the lens circle (u v radius) is where
     // that view is taken from.
@@ -139,6 +141,9 @@ struct Config
     bool handsNormalMaps = true;
     float handsNormalMapGreen = 1.0f; // +1: the normal maps' green channel points up (glTF), -1: down
     bool handsDepthTest = true; // hide the hands behind walls/props in front of them
+    // Draw the hands with INFRA's viewmodels, before the engine's post-processing (bloom, tone
+    // mapping, colour correction), instead of on top of the finished picture.
+    bool handsPostProcessing = true;
     bool handsFingers = true;   // bend the fingers from SteamVR's finger tracking
     float handsCurlMax = 75.0f; // degrees each finger joint bends at full curl
 

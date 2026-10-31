@@ -27,6 +27,7 @@ namespace {
 const char *kFlag = "glb_hands";
 const char *kLightFlag = "world_light";
 const char *kCameraFlag = "camera_model";
+const char *kFlashlightFlag = "flashlight_model";
 constexpr int kTrustFrames = 600;
 constexpr float kGamma = 1.0f / 2.2f;
 
@@ -260,7 +261,8 @@ enum : int
     MODEL_LEFT = 0,
     MODEL_RIGHT = 1,
     MODEL_CAMERA = 2,
-    MODEL_COUNT = 3
+    MODEL_FLASHLIGHT = 3,
+    MODEL_COUNT = 4
 };
 
 struct Batch
@@ -285,19 +287,33 @@ struct ModelData
 
 ModelData g_model[MODEL_COUNT];
 int g_state = 0;       // 0 not tried, 1 loaded, -1 failed / off
-int g_cameraState = 0; // 0 not tried, 1 loaded, -1 off
-std::vector<std::string> g_cameraJointNames;
 float g_curl[2][5]{};
 double g_lastCurlAt = 0;
 int g_framesDrawn = 0;
-int g_cameraFrames = 0;
 bool g_loggedDepth = false;
 std::atomic<int> g_eyeFrame{0};
 
-// Camera bones (written by the bone setup, read by the renderer and the lens).
+// Held-item models (camera, flashlight): a GLB of the item with the hand holding it, rigged to
+// the bones of INFRA's viewmodel for that item.
+struct ItemModel
+{
+    const char *what;      // for the log
+    const char *flag;      // crash-sticky flag
+    const char *handJoint; // the joint that goes on the VR hand
+    int side;              // the hand the model is made for (its hand matches that VR hand model)
+    int model;             // g_model index
+    int state = 0;         // 0 not tried, 1 loaded, -1 off
+    std::vector<std::string> jointNames;
+    std::vector<GlbMat34> bones; // INFRA's bones, world, game units (under g_boneLock)
+    int bonesFrame = -100;
+    double shownAt = 0;
+    int frames = 0;
+};
+ItemModel g_items[ITEM_COUNT] = {
+    {"Camera model", kCameraFlag, "Bip001 R Hand", HAND_RIGHT, MODEL_CAMERA},
+    {"Flashlight model", kFlashlightFlag, "Bip001 L Hand", HAND_LEFT, MODEL_FLASHLIGHT},
+};
 std::mutex g_boneLock;
-std::vector<GlbMat34> g_cameraBones;
-int g_cameraBonesFrame = -100;
 
 void BuildBatches(ModelData &md, bool camera)
 {
@@ -516,35 +532,47 @@ bool TryLoad()
     return true;
 }
 
-bool TryLoadCamera()
+bool TryLoadItem(int item)
 {
-    if (g_cameraState)
-        return g_cameraState > 0;
+    ItemModel &im = g_items[item];
+    if (im.state)
+        return im.state > 0;
     if (!TryLoad())
         return false;
-    g_cameraState = -1;
-    if (g_Config.cameraModel.empty())
+    im.state = -1;
+    const std::string &file = item == ITEM_CAMERA ? g_Config.cameraModel : g_Config.flashlightModel;
+    if (file.empty())
         return false;
-    if (!flags::Allowed(kCameraFlag))
+    if (!flags::Allowed(im.flag))
     {
-        IVR_LOG("Camera model is skipped (infravr_skip.txt) - INFRA's camera is used");
+        IVR_LOG("%s is skipped (infravr_skip.txt) - INFRA's own model is used", im.what);
         return false;
     }
-    if (!LoadModel(MODEL_CAMERA, g_Config.cameraModel))
+    if (!LoadModel(im.model, file))
     {
-        IVR_ERR("Camera model could not be loaded - INFRA's camera is used instead");
+        IVR_ERR("%s could not be loaded - INFRA's own model is used instead", im.what);
         return false;
     }
-    const ModelData &md = g_model[MODEL_CAMERA];
-    g_cameraJointNames.clear();
+    const ModelData &md = g_model[im.model];
+    im.jointNames.clear();
     for (int node : md.glb.joints)
-        g_cameraJointNames.push_back(md.glb.nodes[node].name);
-    IVR_LOG("Camera model: %u joints, screen %u triangles (aspect %.2f), lens %s", (unsigned)g_cameraJointNames.size(),
-            (unsigned)md.screenIndices.size() / 3, md.screenAspect,
-            md.haveLens ? "found" : "not found (lens_offset is used)");
-    g_cameraState = 1;
+        im.jointNames.push_back(md.glb.nodes[node].name);
+    if (md.glb.JointByName(im.handJoint) < 0)
+    {
+        IVR_ERR("%s has no %s joint - INFRA's own model is used instead", im.what, im.handJoint);
+        return false;
+    }
+    if (item == ITEM_CAMERA)
+        IVR_LOG("Camera model: %u joints, screen %u triangles (aspect %.2f), lens %s", (unsigned)im.jointNames.size(),
+                (unsigned)md.screenIndices.size() / 3, md.screenAspect,
+                md.haveLens ? "found" : "not found (lens_offset is used)");
+    else
+        IVR_LOG("%s: %u joints", im.what, (unsigned)im.jointNames.size());
+    im.state = 1;
     return true;
 }
+
+int ItemHand(int item) { return item == ITEM_CAMERA ? g_Mod.itemHand : g_Mod.flashlightHand; }
 
 // Finger curls for this frame: SteamVR/OpenXR finger data, or grip and trigger buttons.
 void UpdateCurls()
@@ -606,8 +634,8 @@ Pose ModelToWorld(int hand, int side = -1)
     return p;
 }
 
-// The hand the camera model is drawn on, and the mirror that makes the right-handed model a
-// left hand (reflection across the controller's forward/up plane).
+// The hand an item model is drawn on, and the mirror that makes it the other hand when it is held
+// in the hand it was not made for (reflection across the controller's forward/up plane).
 struct CameraPlacement
 {
     int hand = HAND_RIGHT;
@@ -615,11 +643,11 @@ struct CameraPlacement
     Pose anchor;
 };
 
-CameraPlacement CameraPlace()
+CameraPlacement ItemPlace(int item)
 {
     CameraPlacement c;
-    c.hand = g_Mod.itemHand;
-    c.mirrored = c.hand == HAND_LEFT;
+    c.hand = ItemHand(item);
+    c.mirrored = c.hand != g_items[item].side;
     c.anchor = g_Mod.AimWorld(c.hand);
     return c;
 }
@@ -699,51 +727,53 @@ Mat3 Orthonormal(const Mat3 &r)
     return o;
 }
 
-// The camera is put away for longer than this: the next take-out starts with the draw animation.
-constexpr int kCameraGapFrames = 2;
-// INFRA's v_camera "draw" sequence (16 frames at 30 fps): while it plays the model is held in its
-// rest pose, then eases into INFRA's animation.
+// The item is put away for longer than this: the next take-out starts with the draw animation.
+constexpr int kItemGapFrames = 2;
+// INFRA's "draw" sequences (v_camera 16 frames at 30 fps, v_light 11 at 20 fps): while one plays the
+// model is held in its rest pose, then eases into INFRA's animation.
 constexpr double kDrawSkipSeconds = 0.55;
 constexpr double kDrawBlendSeconds = 0.12;
-double g_cameraShownAt = 0;
 
-// The camera model's joints in the world. Its hand goes where the VR hand would be; the rest follow INFRA's animated
-// bones relative to INFRA's hand, so the camera moves in the hand (photo, battery) but the arm
-// motion of INFRA's viewmodel is not used. Not mirrored here (see CameraPlace).
-bool CameraBones(std::vector<GlbMat34> &out)
+// An item model's joints in the world. Its hand goes where the VR hand would be; the rest follow
+// INFRA's animated bones relative to INFRA's hand, so the item moves in the hand (photo, battery)
+// but the arm motion of INFRA's viewmodel is not used. Not mirrored here (see ItemPlace).
+bool ItemBones(int item, std::vector<GlbMat34> &out)
 {
+    ItemModel &im = g_items[item];
+    if (im.state <= 0)
+        return false;
     std::vector<GlbMat34> raw;
     double shownAt;
     {
         std::lock_guard<std::mutex> lock(g_boneLock);
-        if (g_cameraBones.empty() || g_eyeFrame.load() - g_cameraBonesFrame > kCameraGapFrames)
+        if (im.bones.empty() || g_eyeFrame.load() - im.bonesFrame > kItemGapFrames)
             return false;
-        raw = g_cameraBones;
-        shownAt = g_cameraShownAt;
+        raw = im.bones;
+        shownAt = im.shownAt;
     }
-    const GlbModel &cam = g_model[MODEL_CAMERA].glb;
-    int hj = cam.JointByName("Bip001 R Hand");
-    int hand = g_Mod.itemHand;
-    if (hj < 0 || hj >= (int)raw.size() || raw.size() != cam.joints.size() || !g_Mod.HandValid(hand))
+    const GlbModel &glb = g_model[im.model].glb;
+    int hj = glb.JointByName(im.handJoint);
+    int hand = ItemHand(item);
+    if (hj < 0 || hj >= (int)raw.size() || raw.size() != glb.joints.size() || !g_Mod.HandValid(hand))
         return false;
 
-    // Where the hand joint goes: the camera model is made in the same space as the right-hand
-    // model (its hand at the same place, metres), so its own rest hand joint, placed on the
-    // controller like the right hand, puts it where the VR hand would be.
-    Sim camHandRest = RestJoint(cam, hj);
-    Sim anchor = Sim::From(ModelToWorld(hand, HAND_RIGHT)) * camHandRest;
+    // Where the hand joint goes: the item model is made in the same space as the VR hand model of
+    // its side (its hand at the same place, metres), so its own rest hand joint, placed on the
+    // controller like that hand, puts it where the VR hand would be.
+    Sim handRest = RestJoint(glb, hj);
+    Sim anchor = Sim::From(ModelToWorld(hand, im.side)) * handRest;
 
     double t = NowSeconds() - shownAt;
     float anim = (float)std::min(1.0, std::max(0.0, (t - kDrawSkipSeconds) / kDrawBlendSeconds));
     Sim infraHandInv = Sim::From(raw[hj]).Inverse();
-    Sim restHandInv = camHandRest.Inverse();
+    Sim restHandInv = handRest.Inverse();
     out.resize(raw.size());
     for (size_t j = 0; j < raw.size(); ++j)
     {
         Sim rel = infraHandInv * Sim::From(raw[j]); // game units, rigid
         if (anim < 1.0f)
         {
-            Sim rest = restHandInv * RestJoint(cam, (int)j);
+            Sim rest = restHandInv * RestJoint(glb, (int)j);
             rel.p.pos = rest.p.pos + (rel.p.pos - rest.p.pos) * anim;
             Mat3 r;
             for (int a = 0; a < 3; ++a)
@@ -848,35 +878,40 @@ std::shared_ptr<Frame> BuildFrame(const CViewSetup &v)
     Mat3 eye = AnglesToMatrix(v.angles);
     std::vector<float> pos, nrm, tan;
 
-    // The camera model replaces the hand that holds INFRA's camera.
-    int cameraHand = -1;
+    // An item model (camera, flashlight) replaces the VR hand that holds the item.
+    bool handTaken[2] = {false, false};
     std::vector<GlbMat34> bones;
-    if (TryLoadCamera() && CameraBones(bones))
+    for (int item = 0; item < ITEM_COUNT; ++item)
     {
-        if (g_cameraFrames == 0)
-            flags::Begin(kCameraFlag);
-        const ModelData &md = g_model[MODEL_CAMERA];
+        ItemModel &im = g_items[item];
+        if (!TryLoadItem(item) || !ItemBones(item, bones))
+            continue;
+        CameraPlacement place = ItemPlace(item);
+        if (handTaken[place.hand])
+            continue;
+        handTaken[place.hand] = true;
+        if (im.frames == 0)
+            flags::Begin(im.flag);
+        const ModelData &md = g_model[im.model];
         md.glb.SkinJoints(bones, pos, nrm, &tan);
-        CameraPlacement place = CameraPlace();
-        cameraHand = place.hand;
-        int hj = md.glb.JointByName("Bip001 R Hand");
+        int hj = md.glb.JointByName(im.handJoint);
         const GlbMat34 &b = bones[hj >= 0 ? hj : 0];
         Vector origin(b.m[0][3], b.m[1][3], b.m[2][3]);
         if (place.mirrored)
             origin = MirrorPoint(place, origin);
         DrawItem it;
-        BuildItem(it, MODEL_CAMERA, pos, nrm, tan, nullptr, 1.0f, &place, LightAt(origin, eye));
+        BuildItem(it, im.model, pos, nrm, tan, nullptr, 1.0f, &place, LightAt(origin, eye));
         fr->items.push_back(std::move(it));
-        if (++g_cameraFrames == kTrustFrames)
+        if (++im.frames == kTrustFrames)
         {
-            flags::End(kCameraFlag);
-            IVR_LOG("Camera model: %d frames drawn without trouble", g_cameraFrames);
+            flags::End(im.flag);
+            IVR_LOG("%s: %d frames drawn without trouble", im.what, im.frames);
         }
     }
 
     for (int h = 0; h < 2; ++h)
     {
-        if (!g_Mod.HandValid(h) || h == cameraHand)
+        if (!g_Mod.HandValid(h) || handTaken[h])
             continue;
         const ModelData &md = g_model[h];
         md.glb.Skin(g_curl[h], g_Config.handsCurlMax, pos, nrm, &tan);
@@ -1219,41 +1254,43 @@ void Draw(const std::shared_ptr<Frame> &fr, const CViewSetup &v)
 
 bool Enabled() { return TryLoad(); }
 
-bool CameraModelEnabled() { return TryLoadCamera(); }
+bool ItemModelEnabled(int item) { return item >= 0 && item < ITEM_COUNT && TryLoadItem(item); }
 
-const std::vector<std::string> &CameraJointNames() { return g_cameraJointNames; }
+const std::vector<std::string> &ItemJointNames(int item) { return g_items[item].jointNames; }
 
-void SetCameraBones(const std::vector<GlbMat34> &world)
+void SetItemBones(int item, const std::vector<GlbMat34> &world)
 {
+    ItemModel &im = g_items[item];
     std::lock_guard<std::mutex> lock(g_boneLock);
-    if (g_cameraBones.empty() || g_eyeFrame.load() - g_cameraBonesFrame > kCameraGapFrames)
-        g_cameraShownAt = NowSeconds(); // taken out: the draw animation starts now
-    g_cameraBones = world;
-    g_cameraBonesFrame = g_eyeFrame.load();
+    if (im.bones.empty() || g_eyeFrame.load() - im.bonesFrame > kItemGapFrames)
+        im.shownAt = NowSeconds(); // taken out: the draw animation starts now
+    im.bones = world;
+    im.bonesFrame = g_eyeFrame.load();
 }
 
 bool CameraModelShown()
 {
-    if (g_cameraState <= 0)
+    const ItemModel &im = g_items[ITEM_CAMERA];
+    if (im.state <= 0)
         return false;
     std::lock_guard<std::mutex> lock(g_boneLock);
-    return !g_cameraBones.empty() && g_eyeFrame.load() - g_cameraBonesFrame <= kCameraGapFrames;
+    return !im.bones.empty() && g_eyeFrame.load() - im.bonesFrame <= kItemGapFrames;
 }
 
 bool CameraLens(Pose &out)
 {
-    if (g_cameraState <= 0)
+    if (g_items[ITEM_CAMERA].state <= 0)
         return false;
     const ModelData &md = g_model[MODEL_CAMERA];
     if (!md.haveLens || md.cameraJoint < 0)
         return false;
     std::vector<GlbMat34> bones;
-    if (!CameraBones(bones) || md.cameraJoint >= (int)bones.size())
+    if (!ItemBones(ITEM_CAMERA, bones) || md.cameraJoint >= (int)bones.size())
         return false;
     Sim joint = Sim::From(bones[md.cameraJoint]); // carries the model's scale
     Sim lensLocal{md.lensLocal, 1.0f};
     Pose lens = (joint * lensLocal).p;
-    CameraPlacement place = CameraPlace();
+    CameraPlacement place = ItemPlace(ITEM_CAMERA);
     if (place.mirrored)
     {
         Vector f = MirrorDir(place, lens.rot.Forward()), u = MirrorDir(place, lens.rot.Up());

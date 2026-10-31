@@ -86,6 +86,8 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 | What | Value | Status |
 |---|---|---|
 | v_camera.mdl | 55 bones (both arms, `Camera`, `w_camera003`, flashlight on the left hand), 7 sequences: idle, fire, dryfire, draw, reload_draw, holster, reload | static (read from the MDL) |
+| v_light.mdl | 55 bones (`Bip001 L Hand` 33, `flashlight` 34, `body` 35), sequences idle01, draw (11 frames at 20 fps), reload_draw, holster, reload | static (read from the MDL) |
+| flashlight_hand.glb | 22 skin joints named like v_light's (`Bip001 L Hand` first, fingers, `flashlight`, `body`); made in the same space as vr_hand_left.glb | static, wine |
 | camera_hand.glb | 22 skin joints named like v_camera's (`Bip001 R Hand`, fingers, `w_camera003`); its local bone transforms equal v_camera's bind pose; camera mesh skinned to `w_camera003` only; no animations of its own | static, wine (`tests/glb_test`) |
 | camera_hand.glb texture: screen quad / lens | UV 0.113 0.134 to 0.486 0.404 / centre 0.891 0.716, radius 0.044 (v is stored +1, wrapped) | static |
 

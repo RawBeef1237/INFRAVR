@@ -268,6 +268,27 @@ int main(int argc, char **argv)
         WriteObj(out + "/" + name + "_fist.obj", m, fist);
     }
     failures += TestCamera(dir + "/camera_hand.glb", out);
+    {
+        // The flashlight model: v_light's bones (left hand, flashlight, body), hand joint first.
+        GlbModel f;
+        std::string err;
+        if (!f.Load(dir + "/flashlight_hand.glb", &err))
+        {
+            printf("flashlight_hand: FAIL %s\n", err.c_str());
+            ++failures;
+        }
+        else
+        {
+            printf("flashlight_hand: %zu vertices, %zu joints, %zu materials\n", f.vertices.size(), f.joints.size(),
+                   f.materials.size());
+            if (f.JointByName("Bip001 L Hand") != 0 || f.JointByName("flashlight") < 0 || f.materials.size() != 2)
+            {
+                printf("  FAIL: expected v_light's bones (Bip001 L Hand first, flashlight) and two materials\n");
+                ++failures;
+            }
+            failures += CheckTangents("flashlight_hand", f);
+        }
+    }
     printf(failures ? "FAILED\n" : "OK\n");
     return failures ? 1 : 0;
 }

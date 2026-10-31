@@ -162,6 +162,7 @@ void LoadConfig()
     c.cameraScreenView = ini.GetBool("camera.screen_view", c.cameraScreenView);
     c.cameraScreenEvery = std::max(1, ini.GetInt("camera.screen_every", c.cameraScreenEvery));
     c.cameraModel = ini.GetString("camera.model", c.cameraModel);
+    c.flashlightModel = ini.GetString("flashlight.model", c.flashlightModel);
     {
         float r[4];
         std::string uv = ini.GetString("camera.screen_uv", "");
@@ -192,6 +193,7 @@ void LoadConfig()
     c.handsNormalMaps = ini.GetBool("hands.normal_maps", c.handsNormalMaps);
     c.handsNormalMapGreen = Lower(ini.GetString("hands.normal_map_green", "up")) == "down" ? -1.0f : 1.0f;
     c.handsDepthTest = ini.GetBool("hands.depth_test", c.handsDepthTest);
+    c.handsPostProcessing = ini.GetBool("hands.post_processing", c.handsPostProcessing);
     c.handsFingers = ini.GetBool("hands.fingers", c.handsFingers);
     c.handsCurlMax = ini.GetFloat("hands.curl_max", c.handsCurlMax);
 

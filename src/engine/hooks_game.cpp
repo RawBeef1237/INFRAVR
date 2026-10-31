@@ -54,6 +54,9 @@ int g_hudW = 0, g_hudH = 0;
 bool g_texturesFailed = false;
 int g_renderDepth = 0;
 int g_currentEye = -1;
+// The eye being drawn, for the hands drawn with the viewmodels (before post-processing).
+CViewSetup g_eyeView{};
+bool g_handsDrawn = false;
 CViewSetup g_engineView; // the engine's own (flat) view of this frame
 int g_grabOverride = 0;
 double g_lastLog = 0;
@@ -387,10 +390,13 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
             });
         }
         world::BeginEye(); // post-processing works out its rectangles for the eye, not the window
+        g_eyeView = v;
+        g_handsDrawn = false;
         hkRenderView.original(self, edx, &v, &hudEye, clearFlags,
                               flags | (eye == 1 ? RENDERVIEW_SUPPRESSMONITORRENDERING : 0));
         world::EndEye();
-        hands::DrawEye(eye, v);
+        if (!g_handsDrawn) // no viewmodel pass this eye (or hands.post_processing = false): on top
+            hands::DrawEye(eye, v);
         Defer([trace, eye] {
             if (trace)
             {
@@ -469,6 +475,19 @@ void IVR_FASTCALL RenderCameraWeaponDetour(void *self, void *edx, CViewSetup *vi
         return;
     }
     hkRenderCameraWeapon.original(self, edx, view, drawViewModel);
+    // The mod's hands go in with the viewmodels, so the engine's post-processing (bloom, tone
+    // mapping, colour correction, screen effects) that follows applies to them too.
+    if (g_currentEye >= 0 && !g_handsDrawn && g_Config.handsPostProcessing && hands::Enabled())
+    {
+        hands::DrawEye(g_currentEye, g_eyeView);
+        g_handsDrawn = true;
+        static bool s_said = false;
+        if (!s_said)
+        {
+            s_said = true;
+            IVR_LOG("GLB hands: drawn with the viewmodels, before post-processing");
+        }
+    }
 }
 
 bool IVR_FASTCALL CreateMoveDetour(void *self, void *edx, float sampleTime, CUserCmd *cmd)
@@ -641,42 +660,47 @@ void MoveOtherArm(void *self, void *studioHdr)
     }
 }
 
-// [camera] model: while INFRA draws v_camera, its animated bones drive the mod's camera model
-// (same bone names). Returns true if this is v_camera and the bones were handed over.
-bool CaptureCameraBones(const uint8_t *studio, const matrix3x4_t *bones, int count)
+// [camera] / [flashlight] model: while INFRA draws v_camera / v_light, its animated bones drive the
+// mod's item model (same bone names). Returns true if the bones were handed over.
+bool CaptureItemBones(const uint8_t *studio, const matrix3x4_t *bones, int count)
 {
     const char *name = reinterpret_cast<const char *>(studio + 12);
-    if (!std::strstr(name, "v_camera"))
+    int item = std::strstr(name, "v_camera") ? hands::ITEM_CAMERA
+               : std::strstr(name, "v_light") ? hands::ITEM_FLASHLIGHT
+                                              : -1;
+    if (item < 0 || !hands::ItemModelEnabled(item))
         return false;
-    const std::vector<std::string> &joints = hands::CameraJointNames();
-    static const void *s_studio = nullptr;
-    static std::vector<int> s_map;
-    if (s_studio != studio)
+    const std::vector<std::string> &joints = hands::ItemJointNames(item);
+    static const void *s_studio[hands::ITEM_COUNT] = {};
+    static std::vector<int> s_map[hands::ITEM_COUNT];
+    std::vector<int> &map = s_map[item];
+    if (s_studio[item] != studio || map.size() != joints.size())
     {
-        s_studio = studio;
-        s_map.assign(joints.size(), -1);
+        s_studio[item] = studio;
+        map.assign(joints.size(), -1);
         int missing = 0;
         for (size_t j = 0; j < joints.size(); ++j)
-            missing += (s_map[j] = FindBone(studio, joints[j].c_str())) < 0;
-        IVR_LOG("Camera model: %s has %d of the model's %u bones%s", name, (int)joints.size() - missing,
-                (unsigned)joints.size(), missing ? " - the others follow its hand" : "");
+            missing += (map[j] = FindBone(studio, joints[j].c_str())) < 0;
+        IVR_LOG("%s model: %s has %d of the model's %u bones%s", item == hands::ITEM_CAMERA ? "Camera" : "Flashlight",
+                name, (int)joints.size() - missing, (unsigned)joints.size(),
+                missing ? " - the others follow its hand" : "");
     }
-    int hand = FindBone(studio, "Bip001 R Hand");
+    int hand = FindBone(studio, joints.empty() ? "" : joints[0].c_str()); // the hand joint comes first
     std::vector<GlbMat34> world(joints.size());
     for (size_t j = 0; j < joints.size(); ++j)
     {
-        int b = s_map[j] >= 0 ? s_map[j] : hand;
+        int b = map[j] >= 0 ? map[j] : hand;
         if (b < 0 || b >= count)
             return false;
         std::memcpy(world[j].m, bones[b].m, sizeof(world[j].m));
     }
-    hands::SetCameraBones(world);
+    hands::SetItemBones(item, world);
     return true;
 }
 
 // [hands] model = glb: the mod draws its own hands, so INFRA's arms go - every bone outside the held
 // item (camera, phone, flashlight) collapses to a point, which hides the vertices skinned to it.
-// With the mod's camera model, all of v_camera goes: the mod draws the camera and the hand.
+// With the mod's camera or flashlight model, all of the viewmodel goes: the mod draws the item and the hand.
 void HideArms(void *self, void *studioHdr)
 {
     if (!studioHdr || !IsReadable(studioHdr, 4))
@@ -691,28 +715,42 @@ void HideArms(void *self, void *studioHdr)
     matrix3x4_t *bones = *reinterpret_cast<matrix3x4_t **>(static_cast<uint8_t *>(self) + g_Game.boneArrayOffset);
     if (count <= 0 || count > 256 || !bones || !IsReadable(bones, count * sizeof(matrix3x4_t)))
         return;
-    bool cameraModel = hands::CameraModelEnabled() && CaptureCameraBones(studio, bones, count);
-    // With the camera model nothing of v_camera is left to draw (its left-hand flashlight too).
-    int items[3] = {cameraModel ? -1 : FindBone(studio, "Camera"), cameraModel ? -1 : FindBone(studio, "cellular_phone"),
-                    cameraModel ? -1 : FindBone(studio, "flashlight")};
+    bool itemModel = CaptureItemBones(studio, bones, count);
+    int items[3] = {FindBone(studio, "Camera"), FindBone(studio, "cellular_phone"), FindBone(studio, "flashlight")};
+    // Hidden bones all collapse to one point. Each to its own point left thin triangles between
+    // them (vertices weighted to several hidden bones), seen as dark slivers by the hand.
+    float point[3] = {bones[0].m[0][3], bones[0].m[1][3], bones[0].m[2][3]};
+    for (int it : items)
+    {
+        if (!itemModel && it >= 0 && it < count)
+        {
+            for (int r = 0; r < 3; ++r)
+                point[r] = bones[it].m[r][3];
+            break;
+        }
+    }
     int hidden = 0;
     for (int b = 0; b < count; ++b)
     {
         bool keep = false;
+        // With the mod's item model nothing of INFRA's viewmodel is left to draw.
         for (int it : items)
-            keep = keep || (it >= 0 && InSubtree(studio, b, it));
+            keep = keep || (!itemModel && it >= 0 && InSubtree(studio, b, it));
         if (keep)
             continue;
         for (int r = 0; r < 3; ++r)
+        {
             bones[b].m[r][0] = bones[b].m[r][1] = bones[b].m[r][2] = 0.0f;
+            bones[b].m[r][3] = point[r];
+        }
         ++hidden;
     }
     static const void *s_logged = nullptr;
     if (s_logged != studio)
     {
         s_logged = studio;
-        IVR_LOG("GLB hands: %s - %d of %d bones hidden (INFRA's arms%s), item bones kept", name, hidden, count,
-                cameraModel ? " and camera: the mod's camera model is drawn" : "");
+        IVR_LOG("GLB hands: %s - %d of %d bones hidden (%s)", name, hidden, count,
+                itemModel ? "all of it: the mod's item model is drawn" : "INFRA's arms; item bones kept");
     }
 }
 

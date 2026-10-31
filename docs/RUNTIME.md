@@ -35,6 +35,9 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 | Camera model skinned from v_camera's bones | wine | `tests/glb_test` skins it with game-style bones (hand around the camera, scale consistent); in game: "Camera model: v_camera has N of the model's 22 bones" |
 | Camera model screen showing the lens view, lens view taken from the model's lens | unverified | screen cropped to the screen's aspect; lens pose is one frame behind the bones |
 | Camera model held in the left hand (mirrored) | unverified | text on the camera body appears mirrored |
+| Flashlight model (`[flashlight] model`, flashlight_hand.glb) on the flashlight's VR hand, moved by v_light's bones the same way | wine (loads, tangents; `tests/glb_test`) | in game: "Flashlight model: weapons/v_light.mdl has N of the model's 22 bones" |
+| Hidden viewmodel bones collapse to one point (each to its own point left dark slivers by the hand) | unverified | |
+| Hands drawn with the viewmodels, before post-processing (`hands.post_processing`) | unverified | log "GLB hands: drawn with the viewmodels, before post-processing"; if the hands vanish or flicker, set it to false |
 | OpenXR helper | unverified | 64-bit build compiles; not run (no 64-bit Wine here, no headset) |
 | DXVK D3D9 shared textures for OpenXR | verified-fail | headset (Virtual Desktop OpenXR, RTX 4070 SUPER): DXVK warns "Failed to write shared resource info", the helper's `OpenSharedResource` fails with 0x80070057, the headset stays black |
 | OpenXR off-center eyes (each eye drawn with its own field of view, `vr.offcenter_eyes`) | unverified | builds; log line "Off-center eyes: each eye drawn at ..."; if the picture looks stretched or shifted, the engine ignores the off-center fields: set `offcenter_eyes = false` |
