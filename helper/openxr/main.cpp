@@ -770,7 +770,16 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
         uint32_t frame = 0;
         int64_t period = 0;
         DWORD start = 0;
+        double waitMs = 0, workMs = 0, endMs = 0, worstMs = 0; // time in xrWaitFrame, our work, xrEndFrame
+        uint32_t skipped = 0, noRender = 0; // display times the runtime skipped; frames with shouldRender false
+        XrTime lastDisplay = 0;
     } st;
+    LARGE_INTEGER qpf;
+    QueryPerformanceFrequency(&qpf);
+    auto Ms = [&](const LARGE_INTEGER &a, const LARGE_INTEGER &b) {
+        return (b.QuadPart - a.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+    };
+    LARGE_INTEGER t0, t1, t2, t3;
 
     for (;;)
     {
@@ -816,13 +825,25 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
 
         XrFrameState fs{XR_TYPE_FRAME_STATE};
         XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
+        QueryPerformanceCounter(&t0);
         if (!XR_SUCCEEDED(xrWaitFrame_(session, &fwi, &fs)))
             continue;
+        QueryPerformanceCounter(&t1);
         XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
         xrBeginFrame_(session, &fbi);
         ++st.frame;
         ++st.frames;
         st.period = fs.predictedDisplayPeriod;
+        st.waitMs += Ms(t0, t1);
+        if (!fs.shouldRender)
+            ++st.noRender;
+        if (st.lastDisplay && fs.predictedDisplayPeriod > 0)
+        {
+            XrTime step = fs.predictedDisplayTime - st.lastDisplay;
+            if (step > fs.predictedDisplayPeriod * 3 / 2)
+                st.skipped += (uint32_t)((step + fs.predictedDisplayPeriod / 2) / fs.predictedDisplayPeriod) - 1;
+        }
+        st.lastDisplay = fs.predictedDisplayTime;
         if (!st.start)
             st.start = GetTickCount();
         if (GetTickCount() - st.start >= 5000)
@@ -833,11 +854,17 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
                     "images/s, each shown for %.1f extra frames on average (max %u)",
                     st.period ? 1e9 / (double)st.period : 0.0, st.frames / secs, 100.0 * st.withEyes / st.frames,
                     st.newEyes / secs, (double)st.ageSum / st.withEyes, st.ageMax);
+            double n = st.frames > 1 ? st.frames - 1 : 1;
+            Log("timing: per frame %.1f ms in xrWaitFrame, %.1f ms our work, %.1f ms in xrEndFrame (worst work+end "
+                "%.1f ms); runtime skipped %u display times, shouldRender off on %u frames",
+                st.waitMs / st.frames, st.workMs / n, st.endMs / n, st.worstMs, st.skipped, st.noRender);
             uint32_t frame = st.frame, lastSeq = st.lastSeq, lastNew = st.lastNewFrame;
+            XrTime lastDisplay = st.lastDisplay;
             st = {};
             st.frame = frame;
             st.lastSeq = lastSeq;
             st.lastNewFrame = lastNew;
+            st.lastDisplay = lastDisplay;
             st.start = GetTickCount();
         }
 
@@ -1000,7 +1027,13 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
         fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
         fei.layerCount = (uint32_t)layers.size();
         fei.layers = layers.data();
+        QueryPerformanceCounter(&t2);
         xrEndFrame_(session, &fei);
+        QueryPerformanceCounter(&t3);
+        st.workMs += Ms(t1, t2);
+        st.endMs += Ms(t2, t3);
+        if (Ms(t1, t3) > st.worstMs)
+            st.worstMs = Ms(t1, t3);
     }
 done:
     for (auto &s : eyeSc)
