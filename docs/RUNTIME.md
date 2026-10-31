@@ -21,6 +21,7 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 | Module layout, crash-sticky flags, skip file, crash logger, init mutex | unverified | builds; flag handling exercised by resolve_test |
 | world_eye_size hook | wine | signature found once, hook installs; buffers at the eye size in game is unverified |
 | Post-processing in VR | unverified | only on when world_eye_size reports resized buffers |
+| Eye image size (auto_fit removed) | unverified | the view always fills the whole eye image; the maintainer saw it look fine with auto_fit off. Builds |
 | Stereo once per Present | unverified | logs "A second main view before Present" when it acts |
 | Present handoff only when needed | unverified | |
 | Console commands at the RenderView safe point | unverified | fallback from the frame update while no 3D view is drawn |

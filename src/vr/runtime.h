@@ -104,18 +104,10 @@ public:
     float fovX = 90.0f;                 // degrees, horizontal
     float aspect = 1.0f;                // width / height of the frustum
     vr::VRTextureBounds_t bounds[2]{};  // which part of the eye texture each eye sees
-    // Size the 3D view is actually drawn at inside the eye texture (auto_fit can shrink it when the
-    // game only fills part of the texture); 0 = the whole texture.
-    uint32_t viewWidth = 0, viewHeight = 0;
-    uint32_t ViewW() const { return viewWidth ? viewWidth : renderWidth; }
-    uint32_t ViewH() const { return viewHeight ? viewHeight : renderHeight; }
-    // bounds[e] mapped onto the part of the texture the view occupies
-    vr::VRTextureBounds_t ViewBounds(int e) const
-    {
-        float su = renderWidth ? ViewW() / (float)renderWidth : 1.0f;
-        float sv = renderHeight ? ViewH() / (float)renderHeight : 1.0f;
-        return {bounds[e].uMin * su, bounds[e].vMin * sv, bounds[e].uMax * su, bounds[e].vMax * sv};
-    }
+    // Size the 3D view is drawn at: the whole eye texture.
+    uint32_t ViewW() const { return renderWidth; }
+    uint32_t ViewH() const { return renderHeight; }
+    vr::VRTextureBounds_t ViewBounds(int e) const { return bounds[e]; }
     Vector eyeOffset[2];                // metres, Source axes, relative to the head
 
     vr::IVRSystem *m_system = nullptr;
