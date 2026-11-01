@@ -36,6 +36,7 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 | Camera model screen showing the lens view, lens view taken from the model's lens | unverified | screen cropped to the screen's aspect; lens pose is one frame behind the bones |
 | Camera model held in the left hand (mirrored) | unverified | text on the camera body appears mirrored |
 | Flashlight model (`[flashlight] model`, flashlight_hand.glb) on the flashlight's VR hand, moved by v_light's bones the same way | wine (loads, tangents; `tests/glb_test`) | in game: "Flashlight model: weapons/v_light.mdl has N of the model's 22 bones" |
+| Flashlight beam from the flashlight model's lens (found at load: the item mesh's wider end, faces pointing out) | unverified | log "Flashlight model: 22 joints, beam from the lens on joint flashlight"; without the model drawn the beam comes from the hand with `flashlight_offset` |
 | Hidden viewmodel bones collapse to one point (each to its own point left dark slivers by the hand) | unverified | |
 | Hands drawn with the viewmodels, before post-processing (`hands.post_processing`) | unverified | log "GLB hands: drawn with the viewmodels, before post-processing"; if the hands vanish or flicker, set it to false |
 | OpenXR helper | unverified | 64-bit build compiles; not run (no 64-bit Wine here, no headset) |

@@ -46,6 +46,8 @@ void SetItemBones(int item, const std::vector<GlbMat34> &world);
 bool CameraModelShown();
 // The lens of the camera model in the world (x forward out of the lens, z up), when shown.
 bool CameraLens(Pose &out);
+// The flashlight model's beam in the world (x along the beam from the lens, z up), when shown.
+bool FlashlightBeam(Pose &out);
 
 } // namespace hands
 } // namespace ivr

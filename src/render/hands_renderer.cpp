@@ -280,8 +280,8 @@ struct ModelData
     std::vector<uint16_t> screenIndices;
     std::vector<float> screenST; // 2 per vertex of the model (only screen vertices are used)
     float screenAspect = 4.0f / 3.0f;
-    int cameraJoint = -1;
-    Pose lensLocal; // in cameraJoint's space (game units)
+    int cameraJoint = -1; // camera: the joint carrying the camera; flashlight: the flashlight's
+    Pose lensLocal;       // in cameraJoint's space (game units): camera lens / flashlight beam
     bool haveLens = false;
 };
 
@@ -532,6 +532,116 @@ bool TryLoad()
     return true;
 }
 
+// The flashlight's beam: the item's own mesh (the last material) in the frame of the joint it is
+// skinned to, its long axis, the wider end is the head and the lens is the part of the head
+// facing out along the axis. x = beam direction, z = the joint's z made square to it.
+void FindBeam(ModelData &md)
+{
+    const GlbModel &m = md.glb;
+    if (m.primitives.size() < 2)
+        return;
+    const GlbPrimitive &prim = m.primitives.back();
+    std::vector<int> verts;
+    std::vector<int> jointUse(m.joints.size(), 0);
+    for (uint32_t i = prim.firstIndex; i < prim.firstIndex + prim.indexCount; ++i)
+        verts.push_back(m.indices[i]);
+    std::sort(verts.begin(), verts.end());
+    verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+    for (int v : verts)
+        for (int k = 0; k < 4; ++k)
+            if (m.vertices[v].weights[k] > 0.5f && m.vertices[v].joints[k] < jointUse.size())
+                ++jointUse[m.vertices[v].joints[k]];
+    int joint = (int)(std::max_element(jointUse.begin(), jointUse.end()) - jointUse.begin());
+    if (verts.size() < 8 || jointUse[joint] == 0)
+        return;
+    GlbMat34 ib = m.InverseBind(joint);
+    auto xf = [&](const float *p, float w) {
+        return Vector(ib.m[0][0] * p[0] + ib.m[0][1] * p[1] + ib.m[0][2] * p[2] + ib.m[0][3] * w,
+                      ib.m[1][0] * p[0] + ib.m[1][1] * p[1] + ib.m[1][2] * p[2] + ib.m[1][3] * w,
+                      ib.m[2][0] * p[0] + ib.m[2][1] * p[1] + ib.m[2][2] * p[2] + ib.m[2][3] * w);
+    };
+    std::vector<Vector> pos, nrm;
+    Vector c(0, 0, 0);
+    for (int v : verts)
+    {
+        pos.push_back(xf(m.vertices[v].pos, 1.0f));
+        nrm.push_back(xf(m.vertices[v].normal, 0.0f).Normalized());
+        c = c + pos.back();
+    }
+    c = c * (1.0f / pos.size());
+    // Long axis: power iteration on the covariance.
+    float cov[3][3] = {};
+    for (const Vector &p : pos)
+    {
+        float d[3] = {p.x - c.x, p.y - c.y, p.z - c.z};
+        for (int a = 0; a < 3; ++a)
+            for (int b = 0; b < 3; ++b)
+                cov[a][b] += d[a] * d[b];
+    }
+    Vector ax(1, 1, 1);
+    for (int it = 0; it < 64; ++it)
+    {
+        Vector n(cov[0][0] * ax.x + cov[0][1] * ax.y + cov[0][2] * ax.z,
+                 cov[1][0] * ax.x + cov[1][1] * ax.y + cov[1][2] * ax.z,
+                 cov[2][0] * ax.x + cov[2][1] * ax.y + cov[2][2] * ax.z);
+        ax = n.Normalized();
+    }
+    float tmin = 1e9f, tmax = -1e9f;
+    for (const Vector &p : pos)
+    {
+        float t = Dot(p - c, ax);
+        tmin = std::min(tmin, t);
+        tmax = std::max(tmax, t);
+    }
+    float slab = (tmax - tmin) * 0.05f;
+    auto radius = [&](bool top) {
+        float r = 0;
+        for (const Vector &p : pos)
+        {
+            float t = Dot(p - c, ax);
+            if (top ? t > tmax - slab : t < tmin + slab)
+                r = std::max(r, (p - c - ax * t).Length());
+        }
+        return r;
+    };
+    if (radius(false) > radius(true))
+        ax = ax * -1.0f; // the head (wider end) is along +ax
+    tmax = -1e9f;
+    for (const Vector &p : pos)
+        tmax = std::max(tmax, Dot(p - c, ax));
+    Vector centre(0, 0, 0), dir(0, 0, 0);
+    int n = 0;
+    for (size_t i = 0; i < pos.size(); ++i)
+    {
+        if (Dot(pos[i] - c, ax) > tmax - slab * 2.0f && Dot(nrm[i], ax) > 0.8f)
+        {
+            centre = centre + pos[i];
+            dir = dir + nrm[i];
+            ++n;
+        }
+    }
+    if (n == 0)
+    {
+        centre = c + ax * tmax;
+        dir = ax;
+    }
+    else
+    {
+        centre = centre * (1.0f / n);
+        dir = dir.Normalized();
+    }
+    Vector up = Vector(0, 0, 1) - dir * dir.z;
+    if (up.Length() < 0.1f)
+        up = Vector(0, 1, 0) - dir * dir.y;
+    up = up.Normalized();
+    md.cameraJoint = joint;
+    md.lensLocal.pos = centre + dir * 0.5f; // just in front of the glass
+    md.lensLocal.rot.SetCol(0, dir);
+    md.lensLocal.rot.SetCol(1, Cross(up, dir));
+    md.lensLocal.rot.SetCol(2, up);
+    md.haveLens = true;
+}
+
 bool TryLoadItem(int item)
 {
     ItemModel &im = g_items[item];
@@ -567,7 +677,13 @@ bool TryLoadItem(int item)
                 (unsigned)md.screenIndices.size() / 3, md.screenAspect,
                 md.haveLens ? "found" : "not found (lens_offset is used)");
     else
-        IVR_LOG("%s: %u joints", im.what, (unsigned)im.jointNames.size());
+    {
+        FindBeam(g_model[im.model]);
+        const ModelData &fm = g_model[im.model];
+        IVR_LOG("%s: %u joints, beam %s", im.what, (unsigned)im.jointNames.size(),
+                fm.haveLens ? ("from the lens on joint " + im.jointNames[fm.cameraJoint]).c_str()
+                            : "not found (flashlight_offset is used)");
+    }
     im.state = 1;
     return true;
 }
@@ -1277,20 +1393,22 @@ bool CameraModelShown()
     return !im.bones.empty() && g_eyeFrame.load() - im.bonesFrame <= kItemGapFrames;
 }
 
-bool CameraLens(Pose &out)
+namespace {
+// The camera's lens / the flashlight's beam as the item model is drawn (x out of it, z up).
+bool ItemLens(int item, Pose &out)
 {
-    if (g_items[ITEM_CAMERA].state <= 0)
+    if (g_items[item].state <= 0)
         return false;
-    const ModelData &md = g_model[MODEL_CAMERA];
+    const ModelData &md = g_model[g_items[item].model];
     if (!md.haveLens || md.cameraJoint < 0)
         return false;
     std::vector<GlbMat34> bones;
-    if (!ItemBones(ITEM_CAMERA, bones) || md.cameraJoint >= (int)bones.size())
+    if (!ItemBones(item, bones) || md.cameraJoint >= (int)bones.size())
         return false;
     Sim joint = Sim::From(bones[md.cameraJoint]); // carries the model's scale
     Sim lensLocal{md.lensLocal, 1.0f};
     Pose lens = (joint * lensLocal).p;
-    CameraPlacement place = ItemPlace(ITEM_CAMERA);
+    CameraPlacement place = ItemPlace(item);
     if (place.mirrored)
     {
         Vector f = MirrorDir(place, lens.rot.Forward()), u = MirrorDir(place, lens.rot.Up());
@@ -1299,9 +1417,15 @@ bool CameraLens(Pose &out)
         lens.rot.SetCol(1, Cross(u, f));
         lens.rot.SetCol(2, u);
     }
+    lens.rot = Orthonormal(lens.rot);
     out = lens;
     return true;
 }
+} // namespace
+
+bool CameraLens(Pose &out) { return ItemLens(ITEM_CAMERA, out); }
+
+bool FlashlightBeam(Pose &out) { return ItemLens(ITEM_FLASHLIGHT, out); }
 
 void DrawEye(int eye, const CViewSetup &v)
 {

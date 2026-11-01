@@ -804,6 +804,18 @@ void IVR_FASTCALL CalcViewModelViewDetour(void *self, void *edx, const Vector *e
     hkCalcViewModelView.original(self, edx, &origin, &angles);
 }
 
+// Where the flashlight beam starts and points: the lens of the mod's flashlight model while it is
+// drawn, else the flashlight hand with [viewmodel] flashlight_offset.
+Pose FlashlightPose()
+{
+    Pose p;
+    if (hands::FlashlightBeam(p))
+        return p;
+    p = g_Mod.AimWorld(g_Mod.flashlightHand);
+    p.pos = p.pos + p.rot * g_Config.flashlightOffset;
+    return p;
+}
+
 void IVR_FASTCALL UpdateLightDetour(void *self, void *edx, int entIndex, const Vector *pos, const Vector *forward,
                                     const Vector *right, const Vector *up, float fov, float farZ, float atten,
                                     bool shadows, const char *texture)
@@ -822,8 +834,8 @@ void IVR_FASTCALL UpdateLightDetour(void *self, void *edx, int entIndex, const V
     }
     if (hand)
     {
-        Pose p = g_Mod.AimWorld(g_Mod.flashlightHand);
-        Vector P = p.pos + p.rot * g_Config.flashlightOffset;
+        Pose p = FlashlightPose();
+        Vector P = p.pos;
         Vector F = p.rot.Forward(), R = -p.rot.Left(), U = p.rot.Up();
         return hkUpdateLight.original(self, edx, entIndex, &P, &F, &R, &U, fov, farZ, atten, shadows, texture);
     }
@@ -837,8 +849,8 @@ void IVR_FASTCALL InfraFlashlightDetour(void *self, void *edx, float ox, float o
     static bool s_logged = false;
     if (g_Mod.Active() && !g_Mod.menuMode && g_Mod.HandValid(g_Mod.flashlightHand))
     {
-        Pose p = g_Mod.AimWorld(g_Mod.flashlightHand);
-        Vector P = p.pos + p.rot * g_Config.flashlightOffset;
+        Pose p = FlashlightPose();
+        Vector P = p.pos;
         Quat q = Mat3ToQuat(p.rot); // forward, left, up columns, as Source's BasisToQuaternion
         if (!s_logged)
         {
