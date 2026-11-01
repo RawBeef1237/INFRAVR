@@ -60,6 +60,10 @@ DXVK 2.7.1 (32-bit; DXVK-GPLALL 2.6.1-6, the build L4D2VR uses, is included as a
    - `bin\infravr\hands\` - the VR hand models
    - `bin\infravr\openxr\` - the OpenXR helper (only used with `backend = openxr`)
 
+   It also applies the 4GB patch (Large Address Aware) to `infra.exe` if it is not already set,
+   so the 32-bit game can use 4 GB of memory; the original is kept as `infra.exe.before-infravr-4gb`.
+   If Steam verifies or updates INFRA, run `install.bat` again.
+
 3. Steam -> INFRA -> Properties -> Launch options:
 
    `-windowed -novid +mat_queue_mode 0`
@@ -67,7 +71,7 @@ DXVK 2.7.1 (32-bit; DXVK-GPLALL 2.6.1-6, the build L4D2VR uses, is included as a
 4. Start SteamVR, then INFRA. Menus and loading screens appear on a large screen in front of you:
    point a controller at it and pull the trigger to click.
 
-`uninstall.bat` removes everything again.
+`uninstall.bat` removes everything again, including the 4GB patch if the installer applied it.
 
 ## Controls (defaults, right-handed)
 
