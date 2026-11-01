@@ -19,3 +19,6 @@ dist/
 CMakeUserPresets.json
 __pycache__/
 build-xr/
+build-vs/
+build-vs-xr/
+build-downloads/
