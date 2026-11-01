@@ -61,7 +61,6 @@ struct Config
     bool renderFitWindow = false;
     // If the game only fills part of the eye images (the rest stretched lines), draw the view
     // into just that part and show only that part in the headset.
-    bool autoFit = true;
     // In-game pause menu (INFRA's phone): held in the hand, controlled with sticks/buttons.
     bool phoneMenu = true;
     // INFRA's main menu is a live 3D level; false = show it on the flat virtual screen.

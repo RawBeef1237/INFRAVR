@@ -128,7 +128,6 @@ void LoadConfig()
     c.postProcessing = ini.GetBool("vr.post_processing", c.postProcessing);
     c.explicitHandoff = ini.GetBool("vr.explicit_handoff", c.explicitHandoff);
     c.renderFitWindow = ini.GetBool("vr.render_fit_window", c.renderFitWindow);
-    c.autoFit = ini.GetBool("vr.auto_fit", c.autoFit);
     c.phoneMenu = ini.GetBool("vr.phone_menu", c.phoneMenu);
     c.mainMenuInVR = ini.GetBool("vr.main_menu_in_vr", c.mainMenuInVR);
     c.phoneMenuWidth = ini.GetFloat("vr.phone_menu_width", c.phoneMenuWidth);

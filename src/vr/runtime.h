@@ -104,34 +104,29 @@ public:
     float fovX = 90.0f;                 // degrees, horizontal
     float aspect = 1.0f;                // width / height of the frustum
     vr::VRTextureBounds_t bounds[2]{};  // which part of the eye texture each eye sees
-    // Size the 3D view is actually drawn at inside the eye texture (auto_fit can shrink it when the
-    // game only fills part of the texture); 0 = the whole texture.
-    uint32_t viewWidth = 0, viewHeight = 0;
-    // Off-center eyes (OpenXR, vr.offcenter_eyes): each eye is drawn with only its own part of the
-    // shared frustum (bounds[e]) as an off-center projection, at that part's size, instead of the
-    // whole symmetric frustum. Same picture, about a third fewer pixels.
+    // Size the 3D view is drawn at: the whole eye texture, or with off-center eyes (OpenXR,
+    // vr.offcenter_eyes) the size of each eye's own part of the shared frustum (bounds[e]), drawn
+    // as an off-center projection. Same picture, about a third fewer pixels.
     bool offCenter = false;
     float eyeFracW = 1.0f, eyeFracH = 1.0f; // the largest eye's share of the shared frustum
     uint32_t ViewW() const
     {
-        uint32_t w = viewWidth ? viewWidth : renderWidth;
         uint32_t e = (uint32_t)std::lround(renderWidth * eyeFracW) & ~1u;
-        return offCenter && e && e < w ? e : w;
+        return offCenter && e && e < renderWidth ? e : renderWidth;
     }
     uint32_t ViewH() const
     {
-        uint32_t h = viewHeight ? viewHeight : renderHeight;
         uint32_t e = (uint32_t)std::lround(renderHeight * eyeFracH) & ~1u;
-        return offCenter && e && e < h ? e : h;
+        return offCenter && e && e < renderHeight ? e : renderHeight;
     }
-    // bounds[e] mapped onto the part of the texture the view occupies
     vr::VRTextureBounds_t ViewBounds(int e) const
     {
+        if (!offCenter)
+            return bounds[e];
+        // the eye fills its whole view, in the corner of the texture
         float su = renderWidth ? ViewW() / (float)renderWidth : 1.0f;
         float sv = renderHeight ? ViewH() / (float)renderHeight : 1.0f;
-        if (offCenter) // the eye fills its whole view
-            return {0.0f, 0.0f, su, sv};
-        return {bounds[e].uMin * su, bounds[e].vMin * sv, bounds[e].uMax * su, bounds[e].vMax * sv};
+        return {0.0f, 0.0f, su, sv};
     }
     // Eye e's part of the shared frustum in Source's off-center terms (0..1 across it, left to
     // right and bottom to top), and as tangents: left, right, up, down (left and down negative).
