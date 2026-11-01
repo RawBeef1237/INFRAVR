@@ -363,6 +363,7 @@ void TryInitEngine()
         if (g_Game.Init() && InstallClientHooks())
         {
             IVR_LOG("Engine hooks installed");
+            flags::InstallCrashLogger(); // ahead of the engine's own crash handler
             g_Game.ApplyVRSettings(); // convars only; console commands go through the queue
             g_Mod.QueueCommand("mat_queue_mode 0");
             g_Mod.QueueCommand("r_drawviewmodel 1");
@@ -390,6 +391,7 @@ void AfterPresent()
     if (!g_VR.Ok() || !g_Mod.Active())
         return;
     ResetStereoGuard();
+    g_D3D.OnAfterPresent();
     // With multicore rendering Present runs on the engine's render thread; the VR logic (poses,
     // input) then runs on the main thread at the start of each RenderView instead.
     g_Game.presentThread = GetCurrentThreadId();
@@ -643,8 +645,12 @@ void WINAPI Direct3D9EnableMaximizedWindowedModeShim(BOOL enable)
 
 } // extern "C"
 
-BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
 {
+    // Process exit (reserved != null): a normal quit, or a crash whose handler exited the process.
+    // Not called when the process is killed. The crash filter tells the two apart.
+    if (reason == DLL_PROCESS_DETACH && reserved && g_active)
+        flags::OnProcessExit();
     if (reason == DLL_PROCESS_ATTACH)
     {
         DisableThreadLibraryCalls(instance);

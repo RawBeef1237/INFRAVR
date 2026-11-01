@@ -7,6 +7,9 @@
 
 #include <d3d9.h>
 
+struct ID3D11Device;
+struct ID3D11Texture2D;
+
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan_core.h>
 
@@ -65,6 +68,7 @@ public:
     void OnDeviceCreated(IDirect3DDevice9 *device);
     void OnBeforeReset();
     void OnPresent(); // called right before the real Present
+    void OnAfterPresent(); // called right after it
 
     IDirect3DDevice9 *device = nullptr;
     bool interopOk = false;
@@ -153,34 +157,61 @@ private:
     bool m_msaaLogged = false;
     void MirrorEyeToBackBuffer();
 
-    // OpenXR backend: the eye images and panels go to the helper process as shared D3D textures
-    // (xr_publish.cpp). An eye pair is copied into a free slot, and handed over one frame later,
-    // once an event query says the GPU has finished the copy (the helper's D3D11 device does not
-    // wait for DXVK's work by itself).
+    // OpenXR backend: the eye images and panels go to the helper process as shared textures
+    // (xr_publish.cpp). DXVK cannot export D3D9 shared textures that D3D11 can open on Windows, so
+    // the textures are made by a small D3D11 device of our own (legacy shared handles, opened by the
+    // helper with OpenSharedResource) and imported into DXVK's Vulkan device; our own command buffer
+    // on DXVK's queue copies the eye images into them. An eye pair is copied into a free slot and
+    // handed over at a later Present, once its fence says the GPU has finished the copy.
+    struct XrImage
+    {
+        ID3D11Texture2D *d3d11 = nullptr;
+        HANDLE handle = nullptr; // KMT shared handle for the helper
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+    };
+    struct XrCopier // command buffer + fence for one destination
+    {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        bool submitted = false;
+    };
     struct XrSlot
     {
-        IDirect3DTexture9 *tex[2] = {nullptr, nullptr};
-        HANDLE handle[2] = {nullptr, nullptr};
+        XrImage img[2];
+        XrCopier copier;
     } m_xrSlots[ivrxr::kEyeSlots];
     UINT m_xrW = 0, m_xrH = 0;
-    IDirect3DQuery9 *m_xrQuery = nullptr;
     int m_xrPending = -1; // slot copied, waiting for the GPU
     vr::HmdMatrix34_t m_xrPendingPose{};
     uint32_t m_xrSeq = 0;
     struct XrPanel
     {
         vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid;
-        IDirect3DTexture9 *tex = nullptr;
-        HANDLE handle = nullptr;
+        XrImage img;
+        XrCopier copier;
         UINT w = 0, h = 0;
     } m_xrPanels[2];
     bool m_xrFailed = false;
+    uint32_t m_xrBusy = 0, m_xrNoSlot = 0, m_xrLastSubmits = 0; // eye pairs not sent (pacing log)
+    double m_xrStatsAt = 0;
+    bool m_xrTrusted = false;               // the crash-sticky flag has been cleared
+    int m_xrInit = 0;                       // 0 not tried, 1 ready, -1 failed
+    ID3D11Device *m_xrD3D11 = nullptr;
+    VkCommandPool m_xrPool = VK_NULL_HANDLE;
+    bool XrInitInterop();
+    bool XrCreateImage(UINT w, UINT h, XrImage &out);
+    void XrDestroyImage(XrImage &img);
+    bool XrCreateCopier(XrCopier &c);
+    void XrDestroyCopier(XrCopier &c);
+    bool XrCopy(XrCopier &c, const VrTexture *const *src, XrImage *const *dst, int count, UINT w, UINT h);
     bool XrEnsureSlots(UINT w, UINT h);
     void XrHandOver();
     void XrPublishEyes(const vr::HmdMatrix34_t &pose);
     void XrPublishPanel(vr::VROverlayHandle_t overlay, const VrTexture &src);
     void XrShowEyes(bool on);
     void XrRelease();
+    void XrForgetDevice(); // a new D3D9 device: the old Vulkan objects went with the old one
 
     ID3D9VkInteropDevice *m_interop = nullptr;
     VkInstance m_instance = VK_NULL_HANDLE;

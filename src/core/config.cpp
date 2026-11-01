@@ -111,6 +111,7 @@ void LoadConfig()
     c.mirrorToDesktop = ini.GetBool("vr.mirror_to_desktop", c.mirrorToDesktop);
     c.mirrorFill = ini.GetBool("vr.mirror_fill", c.mirrorFill);
     c.antialiasing = ini.GetInt("vr.antialiasing", c.antialiasing);
+    c.offCenterEyes = ini.GetBool("vr.offcenter_eyes", c.offCenterEyes);
     if (c.antialiasing != 2 && c.antialiasing != 4 && c.antialiasing != 8)
         c.antialiasing = 0;
     c.multicore = ini.GetBool("vr.multicore", c.multicore);

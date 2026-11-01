@@ -181,6 +181,21 @@ downloads DXVK 2.7.1, OpenVR and Khronos' OpenXR loader once into `build-downloa
 everything into `dist\INFRA-VR\` with `install.bat` and `uninstall.bat`. `build.bat install`
 also runs the installer right away. Set `INFRAVR_VERSION` to put a version in the log.
 
+**Building a pull request:** any pull request can be fetched by its number, without knowing its
+branch. Clone once (`git clone https://github.com/RawBeef1237/INFRAVR`, then `cd INFRAVR`), then
+for pull request `N` (for example `5`):
+
+```
+git checkout main
+git fetch origin +pull/N/head:pr-N
+git checkout pr-N
+.\build.bat
+```
+
+Running the same commands again picks up commits pushed to the pull request later. `git checkout main`
+and `git pull` go back to the main branch. Pull requests older than #3 have no `build.bat`: build
+those by hand (below).
+
 **By hand**, MinGW-w64 (i686) or Visual Studio (Win32):
 
 ```

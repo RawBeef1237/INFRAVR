@@ -34,6 +34,19 @@ static_assert(offsetof(CViewSetup, fov) == 0x58, "fov");
 static_assert(offsetof(CViewSetup, origin) == 0x60, "origin");
 static_assert(offsetof(CViewSetup, m_flAspectRatio) == 0x88, "aspect");
 
+// Off-center projection (Alien Swarm layout): the view draws only part of the frustum given by fov
+// and aspect - top, bottom, left, right as 0..1 across it - when bit 0 of the flag byte is set.
+inline float *OffCenterTBLR(CViewSetup &v) { return reinterpret_cast<float *>(&v.rest[0xE0 - 0x8C]); }
+inline const float *OffCenterTBLR(const CViewSetup &v) { return reinterpret_cast<const float *>(&v.rest[0xE0 - 0x8C]); }
+inline bool IsOffCenter(const CViewSetup &v) { return (v.rest[0xF0 - 0x8C] & 1u) != 0; }
+inline void SetOffCenter(CViewSetup &v, bool on)
+{
+    if (on)
+        v.rest[0xF0 - 0x8C] |= 1u;
+    else
+        v.rest[0xF0 - 0x8C] &= ~1u;
+}
+
 // --- CUserCmd ------------------------------------------------------------------------
 struct CUserCmd
 {

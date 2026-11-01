@@ -757,6 +757,29 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
     bool running = false, haveFov = false;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     uint32_t submitted = 0;
+    // The eye images last copied into the swapchains: while the game has no new pair, the same
+    // images are submitted again with the pose they were drawn for, without copying (the GPU is
+    // busy with the game, and a copy every headset frame made this loop miss frames).
+    uint32_t copiedSeq = 0;
+    float copiedHead[3][4] = {};
+    // Pacing statistics, logged every 5 s: headset frames, frames with the game's eye images, new
+    // eye images, and how old (in headset frames) the shown eye images were.
+    struct
+    {
+        uint32_t frames = 0, withEyes = 0, newEyes = 0, ageSum = 0, ageMax = 0, lastSeq = 0, lastNewFrame = 0;
+        uint32_t frame = 0;
+        int64_t period = 0;
+        DWORD start = 0;
+        double waitMs = 0, workMs = 0, endMs = 0, worstMs = 0; // time in xrWaitFrame, our work, xrEndFrame
+        uint32_t skipped = 0, noRender = 0; // display times the runtime skipped; frames with shouldRender false
+        XrTime lastDisplay = 0;
+    } st;
+    LARGE_INTEGER qpf;
+    QueryPerformanceFrequency(&qpf);
+    auto Ms = [&](const LARGE_INTEGER &a, const LARGE_INTEGER &b) {
+        return (b.QuadPart - a.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+    };
+    LARGE_INTEGER t0, t1, t2, t3;
 
     for (;;)
     {
@@ -802,10 +825,48 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
 
         XrFrameState fs{XR_TYPE_FRAME_STATE};
         XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
+        QueryPerformanceCounter(&t0);
         if (!XR_SUCCEEDED(xrWaitFrame_(session, &fwi, &fs)))
             continue;
+        QueryPerformanceCounter(&t1);
         XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
         xrBeginFrame_(session, &fbi);
+        ++st.frame;
+        ++st.frames;
+        st.period = fs.predictedDisplayPeriod;
+        st.waitMs += Ms(t0, t1);
+        if (!fs.shouldRender)
+            ++st.noRender;
+        if (st.lastDisplay && fs.predictedDisplayPeriod > 0)
+        {
+            XrTime step = fs.predictedDisplayTime - st.lastDisplay;
+            if (step > fs.predictedDisplayPeriod * 3 / 2)
+                st.skipped += (uint32_t)((step + fs.predictedDisplayPeriod / 2) / fs.predictedDisplayPeriod) - 1;
+        }
+        st.lastDisplay = fs.predictedDisplayTime;
+        if (!st.start)
+            st.start = GetTickCount();
+        if (GetTickCount() - st.start >= 5000)
+        {
+            double secs = (GetTickCount() - st.start) / 1000.0;
+            if (st.withEyes)
+                Log("pacing: headset %.0f Hz, %.1f frames/s, game eye images on %.0f%% of them, %.1f new eye "
+                    "images/s, each shown for %.1f extra frames on average (max %u)",
+                    st.period ? 1e9 / (double)st.period : 0.0, st.frames / secs, 100.0 * st.withEyes / st.frames,
+                    st.newEyes / secs, (double)st.ageSum / st.withEyes, st.ageMax);
+            double n = st.frames > 1 ? st.frames - 1 : 1;
+            Log("timing: per frame %.1f ms in xrWaitFrame, %.1f ms our work, %.1f ms in xrEndFrame (worst work+end "
+                "%.1f ms); runtime skipped %u display times, shouldRender off on %u frames",
+                st.waitMs / st.frames, st.workMs / n, st.endMs / n, st.worstMs, st.skipped, st.noRender);
+            uint32_t frame = st.frame, lastSeq = st.lastSeq, lastNew = st.lastNewFrame;
+            XrTime lastDisplay = st.lastDisplay;
+            st = {};
+            st.frame = frame;
+            st.lastSeq = lastSeq;
+            st.lastNewFrame = lastNew;
+            st.lastDisplay = lastDisplay;
+            st.start = GetTickCount();
+        }
 
         // ---- poses and input for the game ----------------------------------------------------
         XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
@@ -859,49 +920,71 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
         uint32_t seq = g_shm->eyeSeq;
         if (fs.shouldRender && seq && g_shm->eyesVisible)
         {
-            uint32_t slot = seq % ivrxr::kEyeSlots;
-            g_shm->helperUsingSlot = slot;
-            MemoryBarrier();
-            if (g_shm->eyeSeq == seq) // not overwritten meanwhile
+            bool ok = seq == copiedSeq && eyeSc[0].handle && eyeSc[1].handle;
+            if (!ok)
             {
-                bool ok = true;
-                for (int e = 0; e < 2 && ok; ++e)
+                uint32_t slot = seq % ivrxr::kEyeSlots;
+                g_shm->helperUsingSlot = slot;
+                MemoryBarrier();
+                if (g_shm->eyeSeq == seq) // not overwritten meanwhile
                 {
-                    ID3D11Texture2D *src = OpenShared(g_shm->eyeHandle[slot][e]);
-                    if (!src)
+                    ok = true;
+                    for (int e = 0; e < 2 && ok; ++e)
                     {
-                        ok = false;
-                        break;
+                        ID3D11Texture2D *src = OpenShared(g_shm->eyeHandle[slot][e]);
+                        if (!src)
+                        {
+                            ok = false;
+                            break;
+                        }
+                        if (eyeSc[e].width != g_shm->eyeWidth || eyeSc[e].height != g_shm->eyeHeight)
+                        {
+                            DestroySwapchain(eyeSc[e]);
+                            ok = CreateSwapchain(session, g_shm->eyeWidth, g_shm->eyeHeight, eyeSc[e]);
+                        }
+                        ok = ok && CopyToSwapchain(eyeSc[e], src);
                     }
-                    if (eyeSc[e].width != g_shm->eyeWidth || eyeSc[e].height != g_shm->eyeHeight)
+                    if (ok)
                     {
-                        DestroySwapchain(eyeSc[e]);
-                        ok = CreateSwapchain(session, g_shm->eyeWidth, g_shm->eyeHeight, eyeSc[e]);
+                        copiedSeq = seq;
+                        std::memcpy(copiedHead, g_shm->renderHead[slot].m, sizeof(copiedHead));
                     }
-                    ok = ok && CopyToSwapchain(eyeSc[e], src);
+                    else
+                        copiedSeq = 0;
                 }
-                if (ok)
-                {
-                    const float *f = g_shm->renderFov;
-                    for (int e = 0; e < 2; ++e)
-                    {
-                        pv[e].pose = EyeFromHead(g_shm->renderHead[slot].m, g_shm->eyeToHead[e]);
-                        pv[e].fov.angleLeft = std::atan(f[0]);
-                        pv[e].fov.angleRight = std::atan(f[1]);
-                        pv[e].fov.angleUp = std::atan(f[2]);
-                        pv[e].fov.angleDown = std::atan(f[3]);
-                        pv[e].subImage.swapchain = eyeSc[e].handle;
-                        pv[e].subImage.imageRect = {{0, 0}, {(int32_t)eyeSc[e].width, (int32_t)eyeSc[e].height}};
-                    }
-                    proj.space = stage;
-                    proj.viewCount = 2;
-                    proj.views = pv;
-                    layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader *>(&proj));
-                    if (++submitted == 1)
-                        Log("First frame from the game: %ux%u", g_shm->eyeWidth, g_shm->eyeHeight);
-                }
+                g_shm->helperUsingSlot = 0xFFFFFFFFu;
             }
-            g_shm->helperUsingSlot = 0xFFFFFFFFu;
+            if (ok)
+            {
+                for (int e = 0; e < 2; ++e)
+                {
+                    const float *f = g_shm->perEyeFov ? g_shm->renderFovEye[e] : g_shm->renderFov;
+                    pv[e].pose = EyeFromHead(copiedHead, g_shm->eyeToHead[e]);
+                    pv[e].fov.angleLeft = std::atan(f[0]);
+                    pv[e].fov.angleRight = std::atan(f[1]);
+                    pv[e].fov.angleUp = std::atan(f[2]);
+                    pv[e].fov.angleDown = std::atan(f[3]);
+                    pv[e].subImage.swapchain = eyeSc[e].handle;
+                    pv[e].subImage.imageRect = {{0, 0}, {(int32_t)eyeSc[e].width, (int32_t)eyeSc[e].height}};
+                }
+                proj.space = stage;
+                proj.viewCount = 2;
+                proj.views = pv;
+                layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader *>(&proj));
+                if (++submitted == 1)
+                    Log("First frame from the game: %ux%u", g_shm->eyeWidth, g_shm->eyeHeight);
+                ++st.withEyes;
+                if (seq != st.lastSeq)
+                {
+                    ++st.newEyes;
+                    st.lastSeq = seq;
+                    st.lastNewFrame = st.frame;
+                }
+                uint32_t age = st.frame - st.lastNewFrame;
+                st.ageSum += age;
+                if (age > st.ageMax)
+                    st.ageMax = age;
+            }
         }
         // Quad layers, lowest sort order first.
         int order[ivrxr::kLayers] = {0, 1, 2, 3};
@@ -944,7 +1027,13 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
         fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
         fei.layerCount = (uint32_t)layers.size();
         fei.layers = layers.data();
+        QueryPerformanceCounter(&t2);
         xrEndFrame_(session, &fei);
+        QueryPerformanceCounter(&t3);
+        st.workMs += Ms(t1, t2);
+        st.endMs += Ms(t2, t3);
+        if (Ms(t1, t3) > st.worstMs)
+            st.worstMs = Ms(t1, t3);
     }
 done:
     for (auto &s : eyeSc)

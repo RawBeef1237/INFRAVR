@@ -27,8 +27,12 @@ void Skip(const char *name, const char *reason);
 void SetStage(const char *stage);
 const char *Stage();
 
-// Logs the stage and exception if INFRA crashes (chains to the previous handler).
+// Logs the stage and exception if INFRA crashes (chains to the previous handler). Called again
+// once the engine is up, so it runs before the engine's own crash handler.
 void InstallCrashLogger();
+// INFRA is exiting normally (not after a crash our filter saw): mechanisms still on trial are not
+// held against the next launch.
+void OnProcessExit();
 
 } // namespace flags
 } // namespace ivr
