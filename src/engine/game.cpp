@@ -168,6 +168,26 @@ Vector Game::ToneMapScale() const
     return s;
 }
 
+std::string Game::MaterialTexture(const char *material, const char *var) const
+{
+    if (!materials)
+        return {};
+    void *mat = VCall<void *, const char *, const char *, bool, const char *>(materials, vidx::FindMaterial, material,
+                                                                             nullptr, false, nullptr);
+    if (!mat)
+        return {};
+    const char *name = VCall<const char *>(mat, vidx::MAT_GetName);
+    if (!name || _stricmp(name, material) != 0) // the error material, or not what we asked for
+        return {};
+    bool found = false;
+    void *mv = VCall<void *, const char *, bool *, bool>(mat, vidx::MAT_FindVar, var, &found, false);
+    if (!mv || !found)
+        return {};
+    void *tex = VCall<void *>(mv, vidx::MV_GetTextureValue);
+    const char *tn = tex ? VCall<const char *>(tex, vidx::TEX_GetName) : nullptr;
+    return tn ? std::string(tn) : std::string();
+}
+
 bool Game::InitServer()
 {
     if (!GetModuleHandleA("server.dll"))

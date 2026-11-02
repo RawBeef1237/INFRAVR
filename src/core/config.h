@@ -106,6 +106,12 @@ struct Config
     std::string cameraModel = "hands\\camera_hand.glb";
     // The same for the flashlight (v_light.mdl's bones). Empty = INFRA's flashlight model.
     std::string flashlightModel = "hands\\flashlight_hand.glb";
+    // The same for the phone (v_phone.mdl's bones): drawn in the phone menu and when INFRA takes the
+    // phone out. Its screen (left top right bottom in its texture, 0..1) carries the phone menu,
+    // and call_texture replaces the phone's texture while INFRA shows its call screen.
+    std::string phoneModel = "hands\\phone_hand.glb";
+    float phoneScreenUV[4] = {0.041f, 0.133f, 0.480f, 0.879f};
+    std::string phoneCallTexture = "hands\\phone_hand_call.png";
     // Where the screen and the lens are in the model's base colour texture (0..1): the screen
     // rectangle (left top right bottom) shows the lens view; the lens circle (u v radius) is where
     // that view is taken from.

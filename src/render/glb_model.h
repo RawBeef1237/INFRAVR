@@ -83,6 +83,8 @@ public:
     int JointByName(const std::string &name) const;
     // Inverse bind matrix of joint j as a row-major 3x4 (mesh space -> joint j's local space).
     GlbMat34 InverseBind(int joint) const;
+    // Decodes an image file (PNG, JPEG, ...) to RGBA8.
+    static bool LoadImageFile(const std::string &path, GlbImage &out);
 
     std::vector<GlbVertex> vertices;
     std::vector<uint16_t> indices;

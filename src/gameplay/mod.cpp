@@ -805,7 +805,7 @@ void VRMod::UpdateOverlays(bool showMenu, bool showHud, int menuWidth, int menuH
                 HidePointer();
         }
         else if (atHand)
-            ProcessPointer(m_phoneXf, g_Config.phoneMenuInWorld ? g_Config.phoneMenuWorldWidth : g_Config.phoneMenuWidth,
+            ProcessPointer(m_phoneXf, g_Config.phoneMenuInWorld ? g_Config.phoneMenuWorldWidth : m_phoneWidth,
                            aspect, g_Config.phoneMenuInWorld ? -1 : 1 - itemHand, false);
         else if (!showMenu && m_pointerShown)
         {
@@ -890,34 +890,64 @@ void VRMod::PlacePhoneMenuInWorld(float aspect)
 
 // HUD panel: head-locked subtitles normally; during the phone menu it is the phone's screen,
 // held above the phone hand and tilted toward your eyes.
+// The phone model's screen as the phone menu panel: OpenVR pose (standing universe) and width.
+// The panel is landscape, so it takes the screen's axis that runs most across your view as its
+// width and is fitted inside the glass.
+bool VRMod::PhoneScreenPanel(float aspect, vr::HmdMatrix34_t &xf, float &width) const
+{
+    Pose sp;
+    float w = 0, h = 0;
+    if (!hands::PhoneScreen(sp, w, h) || !g_VR.Head().valid)
+        return false;
+    const TrackedPose &head = g_VR.Head();
+    Pose hw = HeadWorld();
+    Mat3 Rinv = RotationZ(-m_yawOffset);
+    Vector right = hw.rot.Col(1) * -1.0f;
+    Vector cand[4] = {sp.rot.Col(0), sp.rot.Col(0) * -1.0f, sp.rot.Col(1), sp.rot.Col(1) * -1.0f};
+    int best = 0;
+    for (int i = 1; i < 4; ++i)
+        if (Dot(cand[i], right) > Dot(cand[best], right))
+            best = i;
+    Vector X = cand[best], Z = sp.rot.Col(2), Y = Cross(Z, X);
+    float alongX = best < 2 ? w : h, alongY = best < 2 ? h : w;
+    float fit = std::min(alongX, alongY / std::max(0.05f, aspect)) / m_scale; // metres
+    if (fit < 0.01f)
+        return false;
+    auto raw = [](const Vector &v, float out[3]) { // Source axes -> OpenVR axes
+        out[0] = -v.y;
+        out[1] = v.z;
+        out[2] = -v.x;
+    };
+    float x[3], y[3], z[3], p[3];
+    raw(Rinv * X, x);
+    raw(Rinv * Y, y);
+    raw(Rinv * Z, z);
+    raw(head.pos + Rinv * ((sp.pos - hw.pos) * (1.0f / m_scale)), p);
+    xf = {{{x[0], y[0], z[0], p[0]}, {x[1], y[1], z[1], p[1]}, {x[2], y[2], z[2], p[2]}}};
+    width = fit;
+    return true;
+}
+
 void VRMod::PlaceHud(bool atHand, float aspect)
 {
     OverlayApi *ov = g_VR.Overlays();
-    if (atHand)
+    vr::HmdMatrix34_t screenXf;
+    float screenW = 0;
+    if (atHand && PhoneScreenPanel(aspect, screenXf, screenW))
     {
-        const TrackedPose &c = g_VR.HandPose(itemHand);
-        if (!c.valid)
-            return;
-        const auto &r = c.raw.m;
-        const float k = 0.70710678f;
-        float X[3], Y[3], Z[3];
-        for (int i = 0; i < 3; ++i)
+        // On the phone model's screen, wherever INFRA's animation holds it.
+        m_phoneXf = screenXf;
+        if (!m_hudAtHand || std::fabs(screenW - m_phoneWidth) > 0.001f)
         {
-            X[i] = r[i][0];
-            Y[i] = (r[i][1] - r[i][2]) * k; // screen up: up and forward from the hand
-            Z[i] = (r[i][1] + r[i][2]) * k; // screen faces up and back toward you
-        }
-        float w = g_Config.phoneMenuWidth, h = w * aspect;
-        float up = h * 0.5f + 0.03f;
-        m_phoneXf = {{{X[0], Y[0], Z[0], r[0][3] + Y[0] * up + Z[0] * 0.02f},
-                      {X[1], Y[1], Z[1], r[1][3] + Y[1] * up + Z[1] * 0.02f},
-                      {X[2], Y[2], Z[2], r[2][3] + Y[2] * up + Z[2] * 0.02f}}};
-        if (!m_hudAtHand)
-        {
-            ov->SetOverlayWidthInMeters(hudOverlay, w);
+            ov->SetOverlayWidthInMeters(hudOverlay, screenW);
             ov->SetOverlaySortOrder(hudOverlay, 1);
+            m_phoneWidth = screenW;
         }
         ov->SetOverlayTransformAbsolute(hudOverlay, m_phoneXf);
+        m_hudAtHand = true;
+    }
+    else if (atHand)
+    {        ov->SetOverlayTransformAbsolute(hudOverlay, m_phoneXf);
         m_hudAtHand = true;
     }
     else

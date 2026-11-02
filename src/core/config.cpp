@@ -163,6 +163,14 @@ void LoadConfig()
     c.cameraScreenEvery = std::max(1, ini.GetInt("camera.screen_every", c.cameraScreenEvery));
     c.cameraModel = ini.GetString("camera.model", c.cameraModel);
     c.flashlightModel = ini.GetString("flashlight.model", c.flashlightModel);
+    c.phoneModel = ini.GetString("phone.model", c.phoneModel);
+    c.phoneCallTexture = ini.GetString("phone.call_texture", c.phoneCallTexture);
+    {
+        std::string uv = ini.GetString("phone.screen_uv", "");
+        float r[4];
+        if (!uv.empty() && std::sscanf(uv.c_str(), "%f %f %f %f", &r[0], &r[1], &r[2], &r[3]) == 4)
+            std::copy(r, r + 4, c.phoneScreenUV);
+    }
     {
         float r[4];
         std::string uv = ini.GetString("camera.screen_uv", "");

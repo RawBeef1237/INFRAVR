@@ -30,6 +30,7 @@ const char *kFlag = "glb_hands";
 const char *kLightFlag = "world_light";
 const char *kCameraFlag = "camera_model";
 const char *kFlashlightFlag = "flashlight_model";
+const char *kPhoneFlag = "phone_model";
 constexpr int kTrustFrames = 600;
 constexpr float kGamma = 1.0f / 2.2f;
 
@@ -263,7 +264,8 @@ enum : int
     MODEL_RIGHT = 1,
     MODEL_CAMERA = 2,
     MODEL_FLASHLIGHT = 3,
-    MODEL_COUNT = 4
+    MODEL_PHONE = 4,
+    MODEL_COUNT = 5
 };
 
 struct Batch
@@ -284,6 +286,13 @@ struct ModelData
     int cameraJoint = -1; // camera: the joint carrying the camera; flashlight: the flashlight's
     Pose lensLocal;       // in cameraJoint's space (game units): camera lens / flashlight beam
     bool haveLens = false;
+    // Phone only: its screen in screenJoint's space (x right, y up, z out of the glass; game
+    // units), and the image shown instead of the phone's texture during INFRA's call screen.
+    int screenJoint = -1;
+    Pose screenLocal;
+    float screenW = 0, screenH = 0;
+    int itemMaterial = -1; // the item's own material (not the hand's)
+    int altImage = -1;     // index into glb.images
 };
 
 ModelData g_model[MODEL_COUNT];
@@ -314,7 +323,9 @@ struct ItemModel
 ItemModel g_items[ITEM_COUNT] = {
     {"Camera model", kCameraFlag, "Bip001 R Hand", HAND_RIGHT, MODEL_CAMERA},
     {"Flashlight model", kFlashlightFlag, "Bip001 L Hand", HAND_LEFT, MODEL_FLASHLIGHT},
+    {"Phone model", kPhoneFlag, "Bip001 R Hand", HAND_RIGHT, MODEL_PHONE},
 };
+std::atomic<bool> g_phoneCall{false}; // INFRA shows its call screen on the phone
 std::mutex g_boneLock;
 
 void BuildBatches(ModelData &md, bool camera)
@@ -644,6 +655,110 @@ void FindBeam(ModelData &md)
     md.haveLens = true;
 }
 
+// The phone's screen: the item material's triangles inside [phone] screen_uv, fitted as a plane
+// P = A + s U + t V (s, t across the screen) in the frame of the joint they are skinned to.
+void FindPhoneScreen(ModelData &md)
+{
+    const GlbModel &m = md.glb;
+    // The item's material: not the hands' one.
+    for (size_t i = 0; i < m.materials.size() && md.itemMaterial < 0; ++i)
+    {
+        std::string n = m.materials[i].name;
+        std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+        if (n.find("hand") == std::string::npos)
+            md.itemMaterial = (int)i;
+    }
+    const float *r = g_Config.phoneScreenUV;
+    auto wrap = [](float x) { return x - std::floor(x); };
+    std::vector<char> seen(m.vertices.size(), 0);
+    std::vector<int> verts;
+    for (const GlbPrimitive &p : m.primitives)
+    {
+        if (p.material != md.itemMaterial)
+            continue;
+        for (uint32_t i = p.firstIndex; i + 2 < p.firstIndex + p.indexCount; i += 3)
+        {
+            const uint16_t *t = &m.indices[i];
+            bool in = true;
+            for (int k = 0; k < 3; ++k)
+            {
+                float u = wrap(m.vertices[t[k]].uv[0]), v = wrap(m.vertices[t[k]].uv[1]);
+                in = in && u >= r[0] && u <= r[2] && v >= r[1] && v <= r[3];
+            }
+            for (int k = 0; in && k < 3; ++k)
+                if (!seen[t[k]])
+                {
+                    seen[t[k]] = 1;
+                    verts.push_back(t[k]);
+                }
+        }
+    }
+    if (verts.size() < 3)
+        return;
+    int joint = m.vertices[verts[0]].joints[0];
+    GlbMat34 ib = m.InverseBind(joint);
+    auto xf = [&](const float *p, float w) {
+        return Vector(ib.m[0][0] * p[0] + ib.m[0][1] * p[1] + ib.m[0][2] * p[2] + ib.m[0][3] * w,
+                      ib.m[1][0] * p[0] + ib.m[1][1] * p[1] + ib.m[1][2] * p[2] + ib.m[1][3] * w,
+                      ib.m[2][0] * p[0] + ib.m[2][1] * p[1] + ib.m[2][2] * p[2] + ib.m[2][3] * w);
+    };
+    double M[3][3] = {}, R[3][3] = {};
+    Vector nsum(0, 0, 0);
+    for (int i : verts)
+    {
+        const GlbVertex &gv = m.vertices[i];
+        Vector p = xf(gv.pos, 1.0f);
+        nsum = nsum + xf(gv.normal, 0.0f);
+        double a[3] = {1.0, (wrap(gv.uv[0]) - r[0]) / std::max(1e-6f, r[2] - r[0]),
+                       (wrap(gv.uv[1]) - r[1]) / std::max(1e-6f, r[3] - r[1])};
+        double pv[3] = {p.x, p.y, p.z};
+        for (int x = 0; x < 3; ++x)
+            for (int y = 0; y < 3; ++y)
+            {
+                M[x][y] += a[x] * a[y];
+                R[x][y] += a[x] * pv[y];
+            }
+    }
+    auto det3 = [](const double q[3][3]) {
+        return q[0][0] * (q[1][1] * q[2][2] - q[1][2] * q[2][1]) - q[0][1] * (q[1][0] * q[2][2] - q[1][2] * q[2][0]) +
+               q[0][2] * (q[1][0] * q[2][1] - q[1][1] * q[2][0]);
+    };
+    double D = det3(M);
+    if (std::fabs(D) < 1e-12)
+        return;
+    double sol[3][3];
+    for (int c = 0; c < 3; ++c)
+        for (int k = 0; k < 3; ++k)
+        {
+            double Mc[3][3];
+            std::memcpy(Mc, M, sizeof(Mc));
+            for (int x = 0; x < 3; ++x)
+                Mc[x][c] = R[x][k];
+            sol[c][k] = det3(Mc) / D;
+        }
+    Vector A((float)sol[0][0], (float)sol[0][1], (float)sol[0][2]);
+    Vector U((float)sol[1][0], (float)sol[1][1], (float)sol[1][2]); // left -> right
+    Vector V((float)sol[2][0], (float)sol[2][1], (float)sol[2][2]); // top -> bottom
+    md.screenW = U.Length();
+    md.screenH = V.Length();
+    if (md.screenW < 1e-4f || md.screenH < 1e-4f)
+        return;
+    Vector x = U * (1.0f / md.screenW);
+    Vector y = (V * (-1.0f / md.screenH));
+    y = (y - x * Dot(y, x)).Normalized();
+    Vector z = Cross(x, y);
+    if (Dot(z, nsum) < 0) // the texture is mirrored on the glass
+    {
+        x = x * -1.0f;
+        z = Cross(x, y);
+    }
+    md.screenLocal.pos = A + U * 0.5f + V * 0.5f + z * 0.05f; // a hair in front of the glass
+    md.screenLocal.rot.SetCol(0, x);
+    md.screenLocal.rot.SetCol(1, y);
+    md.screenLocal.rot.SetCol(2, z);
+    md.screenJoint = joint;
+}
+
 bool TryLoadItem(int item)
 {
     ItemModel &im = g_items[item];
@@ -652,7 +767,9 @@ bool TryLoadItem(int item)
     if (!TryLoad())
         return false;
     im.state = -1;
-    const std::string &file = item == ITEM_CAMERA ? g_Config.cameraModel : g_Config.flashlightModel;
+    const std::string &file = item == ITEM_CAMERA       ? g_Config.cameraModel
+                              : item == ITEM_FLASHLIGHT ? g_Config.flashlightModel
+                                                        : g_Config.phoneModel;
     if (file.empty())
         return false;
     if (!flags::Allowed(im.flag))
@@ -678,6 +795,21 @@ bool TryLoadItem(int item)
         IVR_LOG("Camera model: %u joints, screen %u triangles (aspect %.2f), lens %s", (unsigned)im.jointNames.size(),
                 (unsigned)md.screenIndices.size() / 3, md.screenAspect,
                 md.haveLens ? "found" : "not found (lens_offset is used)");
+    else if (item == ITEM_PHONE)
+    {
+        ModelData &pm = g_model[im.model];
+        FindPhoneScreen(pm);
+        GlbImage call;
+        std::string callFile = ModuleDir() + "infravr\\" + g_Config.phoneCallTexture;
+        if (!g_Config.phoneCallTexture.empty() && pm.itemMaterial >= 0 && GlbModel::LoadImageFile(callFile, call))
+        {
+            pm.glb.images.push_back(std::move(call));
+            pm.altImage = (int)pm.glb.images.size() - 1;
+        }
+        IVR_LOG("Phone model: %u joints, screen %s (%.1f x %.1f units), call texture %s", (unsigned)im.jointNames.size(),
+                pm.screenJoint >= 0 ? "found" : "not found (the phone menu stays at the hand)", pm.screenW, pm.screenH,
+                pm.altImage >= 0 ? "loaded" : "not loaded");
+    }
     else
     {
         FindBeam(g_model[im.model]);
@@ -690,7 +822,16 @@ bool TryLoadItem(int item)
     return true;
 }
 
-int ItemHand(int item) { return item == ITEM_CAMERA ? g_Mod.itemHand : g_Mod.flashlightHand; }
+// The item is put away for longer than this: the next take-out starts with the draw animation.
+constexpr int kItemGapFrames = 2;
+
+int ItemHand(int item) { return item == ITEM_FLASHLIGHT ? g_Mod.flashlightHand : g_Mod.itemHand; }
+
+// INFRA's phone stays still while its pause menu is up and may not set its bones up every frame.
+bool ItemStale(int item, int bonesFrame)
+{
+    return g_eyeFrame.load() - bonesFrame > kItemGapFrames && !(item == ITEM_PHONE && g_Mod.phoneMenu);
+}
 
 // Finger curls for this frame: SteamVR/OpenXR finger data, or grip and trigger buttons.
 void UpdateCurls()
@@ -845,8 +986,6 @@ Mat3 Orthonormal(const Mat3 &r)
     return o;
 }
 
-// The item is put away for longer than this: the next take-out starts with the draw animation.
-constexpr int kItemGapFrames = 2;
 // INFRA's "draw" sequences (v_camera 16 frames at 30 fps, v_light 11 at 20 fps): while one plays the
 // model is held in its rest pose, then eases into INFRA's animation.
 constexpr double kDrawSkipSeconds = 0.55;
@@ -864,7 +1003,7 @@ bool ItemBones(int item, std::vector<GlbMat34> &out)
     double shownAt;
     {
         std::lock_guard<std::mutex> lock(g_boneLock);
-        if (im.bones.empty() || g_eyeFrame.load() - im.bonesFrame > kItemGapFrames)
+        if (im.bones.empty() || ItemStale(item, im.bonesFrame))
             return false;
         raw = im.bones;
         shownAt = im.shownAt;
@@ -911,6 +1050,7 @@ struct DrawItem
     int model = 0;
     bool shader = false;
     bool mirrored = false;
+    bool altTexture = false; // phone: INFRA's call screen is up
     std::vector<SVertex> sv;
     std::vector<FVertex> fv;
     float ps[PS_COUNT][4];
@@ -989,6 +1129,27 @@ void BuildItem(DrawItem &it, int model, const std::vector<float> &pos, const std
     }
 }
 
+// Whether INFRA has put its call screen on the phone: the texture behind v_phone's material
+// (checked a few times a second; every change is logged).
+void UpdatePhoneCall()
+{
+    static double s_next = 0;
+    static std::string s_last = "?";
+    double now = NowSeconds();
+    if (now < s_next)
+        return;
+    s_next = now + 0.25;
+    std::string tex = g_Game.MaterialTexture("models/weapons/v_phone/mobile_phone_001", "$basetexture");
+    if (tex != s_last)
+    {
+        IVR_LOG("Phone model: INFRA's phone texture is \"%s\"", tex.c_str());
+        s_last = tex;
+    }
+    std::string lower = tex;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    g_phoneCall = lower.find("skin1") != std::string::npos;
+}
+
 std::shared_ptr<Frame> BuildFrame(const CViewSetup &v)
 {
     auto fr = std::make_shared<Frame>();
@@ -1032,6 +1193,11 @@ std::shared_ptr<Frame> BuildFrame(const CViewSetup &v)
             origin = MirrorPoint(place, origin);
         DrawItem it;
         BuildItem(it, im.model, pos, nrm, tan, nullptr, 1.0f, &place, LightAt(origin, eye));
+        if (item == ITEM_PHONE)
+        {
+            UpdatePhoneCall();
+            it.altTexture = g_phoneCall.load() && md.altImage >= 0;
+        }
         fr->items.push_back(std::move(it));
         if (++im.frames == kTrustFrames)
         {
@@ -1305,7 +1471,8 @@ void Draw(const std::shared_ptr<Frame> &fr, const CViewSetup &v)
             for (const Batch &b : md.batches)
             {
                 const GlbMaterial *mat = b.material >= 0 ? &m.materials[b.material] : nullptr;
-                IDirect3DTexture9 *base = mat ? Texture(dev, it.model, mat->baseImage) : nullptr;
+                int baseImage = !mat ? -1 : it.altTexture && b.material == md.itemMaterial ? md.altImage : mat->baseImage;
+                IDirect3DTexture9 *base = mat ? Texture(dev, it.model, baseImage) : nullptr;
                 IDirect3DTexture9 *nmap =
                     mat && g_Config.handsNormalMaps ? Texture(dev, it.model, mat->normalImage) : nullptr;
                 ps[PS_EYE][3] = nmap ? 1.0f : 0.0f;
@@ -1328,7 +1495,8 @@ void Draw(const std::shared_ptr<Frame> &fr, const CViewSetup &v)
             for (const Batch &b : md.batches)
             {
                 const GlbMaterial *mat = b.material >= 0 ? &m.materials[b.material] : nullptr;
-                IDirect3DTexture9 *base = mat ? Texture(dev, it.model, mat->baseImage) : nullptr;
+                int baseImage = !mat ? -1 : it.altTexture && b.material == md.itemMaterial ? md.altImage : mat->baseImage;
+                IDirect3DTexture9 *base = mat ? Texture(dev, it.model, baseImage) : nullptr;
                 dev->SetTexture(0, base);
                 dev->SetTextureStageState(0, D3DTSS_COLOROP, base ? D3DTOP_MODULATE : D3DTOP_SELECTARG2);
                 dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, (UINT)it.fv.size(), (UINT)b.indices.size() / 3,
@@ -1442,6 +1610,33 @@ bool ItemLens(int item, Pose &out)
 bool CameraLens(Pose &out) { return ItemLens(ITEM_CAMERA, out); }
 
 bool FlashlightBeam(Pose &out) { return ItemLens(ITEM_FLASHLIGHT, out); }
+
+bool PhoneScreen(Pose &out, float &width, float &height)
+{
+    if (g_items[ITEM_PHONE].state <= 0)
+        return false;
+    const ModelData &md = g_model[MODEL_PHONE];
+    std::vector<GlbMat34> bones;
+    if (md.screenJoint < 0 || !ItemBones(ITEM_PHONE, bones) || md.screenJoint >= (int)bones.size())
+        return false;
+    Sim joint = Sim::From(bones[md.screenJoint]);
+    Pose sp = (joint * Sim{md.screenLocal, 1.0f}).p;
+    sp.rot = Orthonormal(sp.rot);
+    CameraPlacement place = ItemPlace(ITEM_PHONE);
+    if (place.mirrored)
+    {
+        Vector x = MirrorDir(place, sp.rot.Col(0)), y = MirrorDir(place, sp.rot.Col(1));
+        sp.pos = MirrorPoint(place, sp.pos);
+        x = x * -1.0f; // keep the picture readable: mirror its right edge back
+        sp.rot.SetCol(0, x);
+        sp.rot.SetCol(1, y);
+        sp.rot.SetCol(2, Cross(x, y));
+    }
+    out = sp;
+    width = md.screenW * joint.scale;
+    height = md.screenH * joint.scale;
+    return true;
+}
 
 void DrawEye(int eye, const CViewSetup &v)
 {

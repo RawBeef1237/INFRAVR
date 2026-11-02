@@ -660,13 +660,14 @@ void MoveOtherArm(void *self, void *studioHdr)
     }
 }
 
-// [camera] / [flashlight] model: while INFRA draws v_camera / v_light, its animated bones drive the
+// [camera] / [flashlight] / [phone] model: while INFRA draws v_camera / v_light / v_phone, its animated bones drive the
 // mod's item model (same bone names). Returns true if the bones were handed over.
 bool CaptureItemBones(const uint8_t *studio, const matrix3x4_t *bones, int count)
 {
     const char *name = reinterpret_cast<const char *>(studio + 12);
-    int item = std::strstr(name, "v_camera") ? hands::ITEM_CAMERA
+    int item = std::strstr(name, "v_camera")  ? hands::ITEM_CAMERA
                : std::strstr(name, "v_light") ? hands::ITEM_FLASHLIGHT
+               : std::strstr(name, "v_phone") ? hands::ITEM_PHONE
                                               : -1;
     if (item < 0 || !hands::ItemModelEnabled(item))
         return false;
@@ -681,7 +682,8 @@ bool CaptureItemBones(const uint8_t *studio, const matrix3x4_t *bones, int count
         int missing = 0;
         for (size_t j = 0; j < joints.size(); ++j)
             missing += (map[j] = FindBone(studio, joints[j].c_str())) < 0;
-        IVR_LOG("%s model: %s has %d of the model's %u bones%s", item == hands::ITEM_CAMERA ? "Camera" : "Flashlight",
+        static const char *kWhat[hands::ITEM_COUNT] = {"Camera", "Flashlight", "Phone"};
+        IVR_LOG("%s model: %s has %d of the model's %u bones%s", kWhat[item],
                 name, (int)joints.size() - missing, (unsigned)joints.size(),
                 missing ? " - the others follow its hand" : "");
     }

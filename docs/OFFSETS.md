@@ -32,6 +32,9 @@ by RTTI vtable + slot or by a unique byte signature, and the RVA is the cross-ch
 | vtable slots 91 / 92 Begin/EndRenderTargetAllocation | 91 = RVA 0xb250 | static, wine |
 | vtable slot 96 CreateNamedRenderTargetTextureEx | RVA 0xb170 | static, wine |
 | vtable slot 112 GetRenderContext | RVA 0xbc00 | static, wine |
+| vtable slot 81 FindMaterial(name, group, complain, prefix) | RVA 0x17390, `ret 0x10` | static (Windows DLL; the macOS dylib's CMaterialSystem vtable has FindMaterial at 81 and GetRenderContext at 112) |
+| IMaterial slot 0 GetName, slot 11 FindVar(name, found*, complain) | CMaterial vtable RVA 0x92c5c: slot 0 `add ecx,0x18; jmp` (name symbol), slot 11 `ret 0xc` | static (Windows and macOS agree) |
+| IMaterialVar slot 0 GetTextureValue, ITexture slot 0 GetName | CMaterialVar vtable RVA 0x962d4, CTexture vtable RVA 0x983ec | static (Windows and macOS agree) |
 | IMatRenderContext slot 144 / 145 Set/GetToneMappingScaleLinear (145 returns a Vector through a hidden result pointer, `ret 4`; the queued context copies its +0x1c0) | slot numbers | static (MaterialSystem.dll and the macOS materialsystem.dylib symbols agree) |
 | vtable slot 13: a two-int setter writing +0x2ac4 / +0x2ac8 | probably SetAdapter, not a size override | static |
 | SetRenderTargetFrameBufferSizeOverrides (what Black Mesa VR uses) | not present in INFRA | verified-fail |
@@ -87,6 +90,8 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 |---|---|---|
 | v_camera.mdl | 55 bones (both arms, `Camera`, `w_camera003`, flashlight on the left hand), 7 sequences: idle, fire, dryfire, draw, reload_draw, holster, reload | static (read from the MDL) |
 | v_light.mdl | 55 bones (`Bip001 L Hand` 33, `flashlight` 34, `body` 35), sequences idle01, draw (11 frames at 20 fps), reload_draw, holster, reload | static (read from the MDL) |
+| v_phone.mdl | one skin family (mobile_phone_001, player_body_work, player_hands); material models/weapons/v_phone/mobile_phone_001 ($basetexture models/props_office/mobile_phone_001); sequences idle01, fire, answer, talk_idle, hangup, draw (13 frames at 30 fps), holster, text | static (read from the MDL and VMT) |
+| phone_hand.glb | 22 skin joints (`Bip001 R Hand` first, fingers, `cellular_phone`, `Plane002`); made in the same space as vr_hand_right.glb; screen at texture 0.041 0.133 - 0.480 0.879, a plane about 7.3 x 12.4 cm | static |
 | flashlight_hand.glb | 22 skin joints named like v_light's (`Bip001 L Hand` first, fingers, `flashlight`, `body`); made in the same space as vr_hand_left.glb | static, wine |
 | camera_hand.glb | 22 skin joints named like v_camera's (`Bip001 R Hand`, fingers, `w_camera003`); its local bone transforms equal v_camera's bind pose; camera mesh skinned to `w_camera003` only; no animations of its own | static, wine (`tests/glb_test`) |
 | camera_hand.glb texture: screen quad / lens | UV 0.113 0.134 to 0.486 0.404 / centre 0.891 0.716, radius 0.044 (v is stored +1, wrapped) | static |

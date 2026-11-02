@@ -288,6 +288,29 @@ int main(int argc, char **argv)
             }
             failures += CheckTangents("flashlight_hand", f);
         }
+        GlbModel ph;
+        if (!ph.Load(dir + "/phone_hand.glb", &err))
+        {
+            printf("phone_hand: FAIL %s\n", err.c_str());
+            ++failures;
+        }
+        else
+        {
+            printf("phone_hand: %zu vertices, %zu joints, %zu materials\n", ph.vertices.size(), ph.joints.size(),
+                   ph.materials.size());
+            if (ph.JointByName("Bip001 R Hand") != 0 || ph.JointByName("cellular_phone") < 0 || ph.materials.size() != 2)
+            {
+                printf("  FAIL: expected v_phone's bones (Bip001 R Hand first, cellular_phone) and two materials\n");
+                ++failures;
+            }
+            failures += CheckTangents("phone_hand", ph);
+        }
+        GlbImage call;
+        if (!GlbModel::LoadImageFile(dir + "/phone_hand_call.png", call) || call.width != 1024)
+        {
+            printf("phone_hand_call.png: FAIL could not be decoded\n");
+            ++failures;
+        }
     }
     printf(failures ? "FAILED\n" : "OK\n");
     return failures ? 1 : 0;

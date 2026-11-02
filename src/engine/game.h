@@ -8,6 +8,8 @@
 #include "mathlib.h"
 #include "vfunc.h"
 
+#include <string>
+
 namespace ivr {
 
 // --- CViewSetup (Alien Swarm / Portal 2 layout, 0xF4 bytes) ---------------------------
@@ -122,6 +124,11 @@ constexpr int BeginRenderTargetAllocation = 91;
 constexpr int EndRenderTargetAllocation = 92;
 constexpr int CreateNamedRenderTargetTextureEx = 96;
 constexpr int GetRenderContext = 112;
+constexpr int FindMaterial = 81; // IMaterial* (const char *name, const char *group, bool complain, const char *prefix)
+// IMaterial / IMaterialVar
+constexpr int MAT_GetName = 0;
+constexpr int MAT_FindVar = 11;         // IMaterialVar* (const char *name, bool *found, bool complain)
+constexpr int MV_GetTextureValue = 0;   // ITexture*
 // IMatRenderContext
 constexpr int RC_Release = 1;
 constexpr int RC_SetRenderTarget = 6;
@@ -132,6 +139,7 @@ constexpr int RC_PopRenderTargetAndViewport = 111;
 constexpr int RC_OverrideAlphaWriteEnable = 184;
 constexpr int RC_GetCallQueue = 141; // ICallQueue* (null unless mat_queue_mode is queued)
 // ITexture
+constexpr int TEX_GetName = 0;
 constexpr int TEX_GetActualWidth = 3;
 constexpr int TEX_GetActualHeight = 4;
 constexpr int TEX_IncrementReferenceCount = 10;
@@ -273,6 +281,8 @@ struct Game
     bool LightingAt(const Vector &origin, MaterialLightingState_t &out) const;
     // HDR exposure the game's shaders multiply by (1 1 1 without HDR).
     Vector ToneMapScale() const;
+    // The texture a material's texture variable points at now (e.g. "$basetexture"), "" if unknown.
+    std::string MaterialTexture(const char *material, const char *var) const;
     static void ReleaseContext(void *ctx) { VCall<int>(ctx, vidx::RC_Release); }
     void BackBufferSize(int &w, int &h) const
     {

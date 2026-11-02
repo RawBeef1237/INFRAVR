@@ -1,5 +1,7 @@
 #include "glb_model.h"
 
+#include <cstdio>
+
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 #define STB_IMAGE_IMPLEMENTATION
@@ -337,6 +339,28 @@ int GlbModel::JointByName(const std::string &name) const
         if (nodes[joints[j]].name == name)
             return (int)j;
     return -1;
+}
+
+bool GlbModel::LoadImageFile(const std::string &path, GlbImage &out)
+{
+    int w = 0, h = 0, c = 0;
+    FILE *f = std::fopen(path.c_str(), "rb");
+    if (!f)
+        return false;
+    std::vector<uint8_t> bytes;
+    uint8_t buf[65536];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0)
+        bytes.insert(bytes.end(), buf, buf + n);
+    std::fclose(f);
+    uint8_t *px = bytes.empty() ? nullptr : stbi_load_from_memory(bytes.data(), (int)bytes.size(), &w, &h, &c, 4);
+    if (!px)
+        return false;
+    out.width = w;
+    out.height = h;
+    out.rgba.assign(px, px + (size_t)w * h * 4);
+    stbi_image_free(px);
+    return true;
 }
 
 GlbMat34 GlbModel::InverseBind(int joint) const

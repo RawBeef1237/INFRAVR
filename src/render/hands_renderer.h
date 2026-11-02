@@ -8,7 +8,7 @@
 // exposure), and a small vertex/pixel shader applies that per pixel with the models' normal maps.
 // Without a shader compiler the same light is applied per vertex.
 //
-// The camera and the flashlight ([camera] model, [flashlight] model): a GLB of the item with the
+// The camera, the flashlight and the phone ([camera] / [flashlight] / [phone] model): a GLB of the item with the
 // hand holding it, rigged to the same bones as INFRA's v_camera.mdl / v_light.mdl, drawn on the VR
 // hand that holds the item. While INFRA shows the item, its animated bones are copied every frame
 // (BuildTransformations) and move the item in the hand (photos, changing the battery); INFRA's own
@@ -34,7 +34,7 @@ void DrawEye(int eye, const CViewSetup &v);
 void OnDeviceReset();
 
 // --- held-item models (camera, flashlight) ----------------------------------------------------
-constexpr int ITEM_CAMERA = 0, ITEM_FLASHLIGHT = 1, ITEM_COUNT = 2;
+constexpr int ITEM_CAMERA = 0, ITEM_FLASHLIGHT = 1, ITEM_PHONE = 2, ITEM_COUNT = 3;
 // True when the GLB hands are on and that item's model loaded.
 bool ItemModelEnabled(int item);
 // Skin joint names of the item's model, in skin order (bone names of INFRA's viewmodel).
@@ -48,6 +48,9 @@ bool CameraModelShown();
 bool CameraLens(Pose &out);
 // The flashlight model's beam in the world (x along the beam from the lens, z up), when shown.
 bool FlashlightBeam(Pose &out);
+// The phone model's screen in the world (x right, y up, z out of the glass) and its size in game
+// units, when the phone model is drawn.
+bool PhoneScreen(Pose &out, float &width, float &height);
 
 } // namespace hands
 } // namespace ivr
