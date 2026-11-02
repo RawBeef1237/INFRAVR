@@ -51,6 +51,11 @@ bool FlashlightBeam(Pose &out);
 // The phone model's screen in the world (x right, y up, z out of the glass) and its size in game
 // units, when the phone model is drawn.
 bool PhoneScreen(Pose &out, float &width, float &height);
+// Where one of INFRA's screen panels on the item's viewmodel goes on the item model: the panel's
+// centre and frame (x along its width, y up it, z out of it) in the space of INFRA's bone `bone`
+// (game units) -> the world, on the model as it is drawn (mirrored back to be readable when the
+// model is mirrored). Main thread, while the model is drawn.
+bool ItemPanel(int item, const char *bone, const Vector &centre, const Mat3 &frame, Pose &out);
 
 } // namespace hands
 } // namespace ivr

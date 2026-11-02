@@ -662,7 +662,8 @@ void MoveOtherArm(void *self, void *studioHdr)
 
 // [camera] / [flashlight] / [phone] model: while INFRA draws v_camera / v_light / v_phone, its animated bones drive the
 // mod's item model (same bone names). Returns true if the bones were handed over.
-bool CaptureItemBones(const uint8_t *studio, const matrix3x4_t *bones, int count)
+// Returns the item whose model takes over this viewmodel, or -1.
+int CaptureItemBones(const uint8_t *studio, const matrix3x4_t *bones, int count)
 {
     const char *name = reinterpret_cast<const char *>(studio + 12);
     int item = std::strstr(name, "v_camera")  ? hands::ITEM_CAMERA
@@ -670,7 +671,7 @@ bool CaptureItemBones(const uint8_t *studio, const matrix3x4_t *bones, int count
                : std::strstr(name, "v_phone") ? hands::ITEM_PHONE
                                               : -1;
     if (item < 0 || !hands::ItemModelEnabled(item))
-        return false;
+        return -1;
     const std::vector<std::string> &joints = hands::ItemJointNames(item);
     static const void *s_studio[hands::ITEM_COUNT] = {};
     static std::vector<int> s_map[hands::ITEM_COUNT];
@@ -693,11 +694,110 @@ bool CaptureItemBones(const uint8_t *studio, const matrix3x4_t *bones, int count
     {
         int b = map[j] >= 0 ? map[j] : hand;
         if (b < 0 || b >= count)
-            return false;
+            return -1;
         std::memcpy(world[j].m, bones[b].m, sizeof(world[j].m));
     }
     hands::SetItemBones(item, world);
-    return true;
+    return item;
+}
+
+// INFRA's screen panels: C_VGuiScreen entities parented to the viewmodel's controlpanel%d_ll
+// attachment, sized from the _ll -> _ur attachments (its menu on v_phone, the viewfinder on
+// v_camera). Attachments are worked out from the bones after BuildTransformations, so the bones
+// carrying them decide where INFRA draws the panel.
+struct ScreenPanel
+{
+    int bone = -1;
+    Vector ll;     // lower left corner, in the bone's space
+    Mat3 frame;    // the attachment's axes in the bone's space (x width, y up, z out)
+    Vector centre; // the panel's centre, in the bone's space
+    float width = 0, height = 0;
+};
+
+constexpr int kStudioAttachmentSize = 92; // mstudioattachment_t: name, flags, localbone, matrix3x4_t local, unused[8]
+
+bool FindScreenPanel(const uint8_t *studio, ScreenPanel &out)
+{
+    int count = *reinterpret_cast<const int *>(studio + 240);  // numlocalattachments
+    int index = *reinterpret_cast<const int *>(studio + 244);  // localattachmentindex
+    int bones = *reinterpret_cast<const int *>(studio + 156);
+    if (count <= 0 || count > 64 || index <= 0 || !IsReadable(studio + index, count * kStudioAttachmentSize))
+        return false;
+    const uint8_t *ll = nullptr, *ur = nullptr;
+    for (int i = 0; i < count; ++i)
+    {
+        const uint8_t *a = studio + index + i * kStudioAttachmentSize;
+        const char *name = reinterpret_cast<const char *>(a + *reinterpret_cast<const int *>(a));
+        if (std::strcmp(name, "controlpanel0_ll") == 0)
+            ll = a;
+        else if (std::strcmp(name, "controlpanel0_ur") == 0)
+            ur = a;
+    }
+    if (!ll || !ur)
+        return false;
+    int bone = *reinterpret_cast<const int *>(ll + 8);
+    if (bone < 0 || bone >= bones || bone != *reinterpret_cast<const int *>(ur + 8))
+        return false;
+    const float *ml = reinterpret_cast<const float *>(ll + 12), *mu = reinterpret_cast<const float *>(ur + 12);
+    out.bone = bone;
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            out.frame.m[r][c] = ml[r * 4 + c];
+    out.ll = Vector(ml[3], ml[7], ml[11]);
+    Vector u(mu[3], mu[7], mu[11]);
+    Vector d = out.frame.Transposed() * (u - out.ll); // the upper right corner in the panel's frame
+    out.width = d.x;
+    out.height = d.y;
+    out.centre = (out.ll + u) * 0.5f;
+    return out.width > 0.01f && out.height > 0.01f;
+}
+
+// With the mod's item model drawn: the bone carrying INFRA's panel (no vertices are skinned to it in
+// v_phone or v_camera) is turned and placed so that the panel's attachment lands on the model's
+// screen, centred on it. Returns that bone (or -1); `point` becomes the panel's corner,
+// where the rest of the hidden viewmodel collapses to.
+int PlaceScreenPanel(const uint8_t *studio, int item, matrix3x4_t *bones, int count, float point[3])
+{
+    static const void *s_studio[hands::ITEM_COUNT] = {};
+    static ScreenPanel s_panel[hands::ITEM_COUNT];
+    static bool s_have[hands::ITEM_COUNT] = {};
+    if (s_studio[item] != studio)
+    {
+        s_studio[item] = studio;
+        s_have[item] = FindScreenPanel(studio, s_panel[item]);
+        const char *name = reinterpret_cast<const char *>(studio + 12);
+        if (s_have[item])
+            IVR_LOG("Screen panel: %s has INFRA's screen on bone %d (%.2f x %.2f units) - moved onto the mod's model",
+                    name, s_panel[item].bone, s_panel[item].width, s_panel[item].height);
+        else
+            IVR_LOG("Screen panel: %s has no screen panel", name);
+    }
+    if (!s_have[item])
+        return -1;
+    const ScreenPanel &sp = s_panel[item];
+    if (sp.bone >= count)
+        return -1;
+    int index = *reinterpret_cast<const int *>(studio + 160);
+    const uint8_t *b = studio + index + sp.bone * kStudioBoneSize;
+    const char *boneName = reinterpret_cast<const char *>(b + *reinterpret_cast<const int *>(b));
+    Pose panel;
+    if (!hands::ItemPanel(item, boneName, sp.centre, sp.frame, panel))
+        return -1;
+    // The panel keeps INFRA's size: centre it on the model's screen.
+    Vector corner = panel.pos - panel.rot.Col(0) * (sp.width * 0.5f) - panel.rot.Col(1) * (sp.height * 0.5f);
+    // bone * attachment = (corner, panel axes): bone axes = panel axes * frame^T.
+    Mat3 rot = panel.rot * sp.frame.Transposed();
+    Vector t = corner - rot * sp.ll;
+    for (int r = 0; r < 3; ++r)
+    {
+        for (int c = 0; c < 3; ++c)
+            bones[sp.bone].m[r][c] = rot.m[r][c];
+        point[r] = (&corner.x)[r];
+    }
+    bones[sp.bone].m[0][3] = t.x;
+    bones[sp.bone].m[1][3] = t.y;
+    bones[sp.bone].m[2][3] = t.z;
+    return sp.bone;
 }
 
 // [hands] model = glb: the mod draws its own hands, so INFRA's arms go - every bone outside the held
@@ -717,7 +817,8 @@ void HideArms(void *self, void *studioHdr)
     matrix3x4_t *bones = *reinterpret_cast<matrix3x4_t **>(static_cast<uint8_t *>(self) + g_Game.boneArrayOffset);
     if (count <= 0 || count > 256 || !bones || !IsReadable(bones, count * sizeof(matrix3x4_t)))
         return;
-    bool itemModel = CaptureItemBones(studio, bones, count);
+    int item = CaptureItemBones(studio, bones, count);
+    bool itemModel = item >= 0;
     int items[3] = {FindBone(studio, "Camera"), FindBone(studio, "cellular_phone"), FindBone(studio, "flashlight")};
     // Hidden bones all collapse to one point. Each to its own point left thin triangles between
     // them (vertices weighted to several hidden bones), seen as dark slivers by the hand.
@@ -731,9 +832,17 @@ void HideArms(void *self, void *studioHdr)
             break;
         }
     }
+    // INFRA's screen panel (phone menu, camera viewfinder) goes onto the mod's model; the hidden
+    // bones collapse at its corner so nothing of the viewmodel is left visible next to it.
+    int panelBone = itemModel ? PlaceScreenPanel(studio, item, bones, count, point) : -1;
     int hidden = 0;
     for (int b = 0; b < count; ++b)
     {
+        if (b == panelBone)
+        {
+            ++hidden;
+            continue;
+        }
         bool keep = false;
         // With the mod's item model nothing of INFRA's viewmodel is left to draw.
         for (int it : items)

@@ -1638,6 +1638,32 @@ bool PhoneScreen(Pose &out, float &width, float &height)
     return true;
 }
 
+bool ItemPanel(int item, const char *bone, const Vector &centre, const Mat3 &frame, Pose &out)
+{
+    if (item < 0 || item >= ITEM_COUNT || g_items[item].state <= 0 || !bone)
+        return false;
+    const ModelData &md = g_model[g_items[item].model];
+    int j = md.glb.JointByName(bone);
+    std::vector<GlbMat34> bones;
+    if (j < 0 || !ItemBones(item, bones) || j >= (int)bones.size())
+        return false;
+    Sim b = Sim::From(bones[j]); // INFRA's bone moved onto the VR hand, with the model's scale
+    Pose p;
+    p.pos = b.p.rot * (centre * b.scale) + b.p.pos;
+    p.rot = Orthonormal(b.p.rot * frame); // keeps x (width) and z (out of the panel)
+    CameraPlacement place = ItemPlace(item);
+    if (place.mirrored)
+    {
+        Vector x = MirrorDir(place, p.rot.Col(0)) * -1.0f, z = MirrorDir(place, p.rot.Col(2));
+        p.pos = MirrorPoint(place, p.pos);
+        p.rot.SetCol(0, x);
+        p.rot.SetCol(1, Cross(z, x));
+        p.rot.SetCol(2, z);
+    }
+    out = p;
+    return true;
+}
+
 void DrawEye(int eye, const CViewSetup &v)
 {
     if (!TryLoad())
