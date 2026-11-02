@@ -7,6 +7,8 @@
 #include "hand_shaders.h"
 #include "mod.h"
 
+#include <d3dcommon.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -64,11 +66,10 @@ enum : int
 };
 
 // --- shader compiler (d3dcompiler, loaded at run time) -----------------------------------------
-struct IBlob : public IUnknown
-{
-    virtual LPVOID STDMETHODCALLTYPE GetBufferPointer() = 0;
-    virtual SIZE_T STDMETHODCALLTYPE GetBufferSize() = 0;
-};
+// ID3DBlob from the SDK header. (A blob interface declared here, inside the anonymous namespace,
+// had no implementation the compiler could see, so GCC turned its calls into pure-virtual calls:
+// the first time D3DCompile returned a message - a warning is enough - INFRA crashed.)
+using IBlob = ID3D10Blob;
 using D3DCompileFn = HRESULT(WINAPI *)(LPCVOID, SIZE_T, LPCSTR, const void *, void *, LPCSTR, LPCSTR, UINT, UINT,
                                        IBlob **, IBlob **);
 
