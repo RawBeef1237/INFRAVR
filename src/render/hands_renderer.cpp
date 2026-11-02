@@ -319,6 +319,7 @@ struct ItemModel
     double shownAt = 0;
     int frames = 0;
     bool onTrial = false; // its crash-sticky flag is set
+    int panelFrame = -100; // the last frame INFRA's screen panel was put on the model (main thread)
 };
 ItemModel g_items[ITEM_COUNT] = {
     {"Camera model", kCameraFlag, "Bip001 R Hand", HAND_RIGHT, MODEL_CAMERA},
@@ -1051,6 +1052,7 @@ struct DrawItem
     bool shader = false;
     bool mirrored = false;
     bool altTexture = false; // phone: INFRA's call screen is up
+    bool panelOnScreen = false; // camera: INFRA's viewfinder panel sits on the screen, which stays dark
     std::vector<SVertex> sv;
     std::vector<FVertex> fv;
     float ps[PS_COUNT][4];
@@ -1193,6 +1195,7 @@ std::shared_ptr<Frame> BuildFrame(const CViewSetup &v)
             origin = MirrorPoint(place, origin);
         DrawItem it;
         BuildItem(it, im.model, pos, nrm, tan, nullptr, 1.0f, &place, LightAt(origin, eye));
+        it.panelOnScreen = g_eyeFrame.load() - im.panelFrame <= kItemGapFrames;
         if (item == ITEM_PHONE)
         {
             UpdatePhoneCall();
@@ -1362,16 +1365,18 @@ IDirect3DTexture9 *ScreenTexture(float aspect, float rect[4])
     if (FAILED(s->GetDesc(&d)) || !d.Width || !d.Height ||
         FAILED(s->GetContainer(kIID_Texture9, reinterpret_cast<void **>(&tex))) || !tex)
         return nullptr;
+    // The lens view is stretched over the whole texture (see hkStretchRect); crop it to the
+    // screen's shape.
     float w = (float)g_D3D.learnW, h = (float)g_D3D.learnH;
-    float cw = w, ch = h;
+    float cw = 1.0f, ch = 1.0f;
     if (w / h > aspect)
-        cw = h * aspect;
+        cw = h * aspect / w;
     else
-        ch = w / aspect;
-    rect[0] = (w - cw) * 0.5f / d.Width;
-    rect[1] = (h - ch) * 0.5f / d.Height;
-    rect[2] = cw / d.Width;
-    rect[3] = ch / d.Height;
+        ch = w / aspect / h;
+    rect[0] = (1.0f - cw) * 0.5f;
+    rect[1] = (1.0f - ch) * 0.5f;
+    rect[2] = cw;
+    rect[3] = ch;
     return tex; // AddRef'd by GetContainer
 }
 
@@ -1511,7 +1516,9 @@ void Draw(const std::shared_ptr<Frame> &fr, const CViewSetup &v)
             dev->SetPixelShader(nullptr);
             dev->SetFVF(kFvf);
             float rect[4];
-            IDirect3DTexture9 *screen = ScreenTexture(md.screenAspect, rect);
+            // INFRA's viewfinder panel is added on top (it draws additively): the screen stays dark
+            // under it, as on INFRA's own camera.
+            IDirect3DTexture9 *screen = it.panelOnScreen ? nullptr : ScreenTexture(md.screenAspect, rect);
             std::vector<FVertex> verts = it.screen;
             if (screen)
             {
@@ -1660,9 +1667,12 @@ bool ItemPanel(int item, const char *bone, const Vector &centre, const Mat3 &fra
         p.rot.SetCol(1, Cross(z, x));
         p.rot.SetCol(2, z);
     }
+    g_items[item].panelFrame = g_eyeFrame.load();
     out = p;
     return true;
 }
+
+float CameraScreenAspect() { return g_model[MODEL_CAMERA].screenAspect; }
 
 void DrawEye(int eye, const CViewSetup &v)
 {

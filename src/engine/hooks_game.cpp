@@ -274,6 +274,15 @@ void RenderLensView(void *self, void *edx, CViewSetup *view, CViewSetup *hudView
     int bw = 0, bh = 0;
     g_Game.BackBufferSize(bw, bh);
     int w = std::min(bw, (int)g_VR.renderWidth), h = std::min(bh, (int)g_VR.renderHeight);
+    // The shape of the camera's screen: the view is stretched over the whole screen texture.
+    float aspect = hands::Enabled() ? hands::CameraScreenAspect() : 0.0f;
+    if (aspect > 0.3f && aspect < 4.0f)
+    {
+        if ((float)w / (float)h > aspect)
+            w = (int)(h * aspect);
+        else
+            h = (int)(w / aspect);
+    }
     if (w <= 0 || h <= 0)
         return;
     CViewSetup v = *view;
@@ -474,9 +483,10 @@ void IVR_FASTCALL RenderCameraWeaponDetour(void *self, void *edx, CViewSetup *vi
         Defer([] { g_D3D.learnCameraCopy = false; });
         return;
     }
-    hkRenderCameraWeapon.original(self, edx, view, drawViewModel);
     // The mod's hands go in with the viewmodels, so the engine's post-processing (bloom, tone
-    // mapping, colour correction, screen effects) that follows applies to them too.
+    // mapping, colour correction, screen effects) that follows applies to them too. They go first:
+    // INFRA's screen panels (phone menu, camera viewfinder) draw additively onto the dark glass of
+    // the mod's phone / camera, as they do on INFRA's own models.
     if (g_currentEye >= 0 && !g_handsDrawn && g_Config.handsPostProcessing && hands::Enabled())
     {
         hands::DrawEye(g_currentEye, g_eyeView);
@@ -485,9 +495,10 @@ void IVR_FASTCALL RenderCameraWeaponDetour(void *self, void *edx, CViewSetup *vi
         if (!s_said)
         {
             s_said = true;
-            IVR_LOG("GLB hands: drawn with the viewmodels, before post-processing");
+            IVR_LOG("GLB hands: drawn just before the viewmodels, before post-processing");
         }
     }
+    hkRenderCameraWeapon.original(self, edx, view, drawViewModel);
 }
 
 bool IVR_FASTCALL CreateMoveDetour(void *self, void *edx, float sampleTime, CUserCmd *cmd)

@@ -137,6 +137,20 @@ HRESULT STDMETHODCALLTYPE hkStretchRect(IDirect3DDevice9 *self, IDirect3DSurface
         if (g_D3D.cameraSurface != dst)
             IVR_LOG("Camera screen texture: %p %ux%u", (void *)dst, dd.Width, dd.Height);
         g_D3D.cameraSurface = dst;
+        // INFRA's viewfinder shows all of the texture, which world_eye_size made eye-sized: stretch
+        // the lens view over all of it, or the rest keeps the first eye view copied into it.
+        RECT whole = {0, 0, g_D3D.learnW, g_D3D.learnH};
+        HRESULT hr = g_hkStretchRect.original(self, g_D3D.MapCopySource(src), sr ? sr : &whole, g_D3D.MapCopyDest(dst),
+                                              nullptr, D3DTEXF_LINEAR);
+        static bool s_said = false;
+        if (!s_said)
+        {
+            s_said = true;
+            IVR_LOG("Camera screen: lens view stretched over the whole %ux%u texture: %s", dd.Width, dd.Height,
+                    SUCCEEDED(hr) ? "ok" : "refused, copied as INFRA does");
+        }
+        if (SUCCEEDED(hr))
+            return hr;
     }
     else if (g_D3D.blockCameraCopy && dst && dst == g_D3D.cameraSurface)
         return D3D_OK; // keep the picture from the camera lens

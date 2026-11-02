@@ -55,6 +55,8 @@ bool PhoneScreen(Pose &out, float &width, float &height);
 // centre and frame (x along its width, y up it, z out of it) in the space of INFRA's bone `bone`
 // (game units) -> the world, on the model as it is drawn (mirrored back to be readable when the
 // model is mirrored). Main thread, while the model is drawn.
+// Width / height of the camera model's screen.
+float CameraScreenAspect();
 bool ItemPanel(int item, const char *bone, const Vector &centre, const Mat3 &frame, Pose &out);
 
 } // namespace hands
