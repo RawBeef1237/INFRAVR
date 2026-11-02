@@ -308,6 +308,7 @@ struct ItemModel
     int bonesFrame = -100;
     double shownAt = 0;
     int frames = 0;
+    bool onTrial = false; // its crash-sticky flag is set
 };
 ItemModel g_items[ITEM_COUNT] = {
     {"Camera model", kCameraFlag, "Bip001 R Hand", HAND_RIGHT, MODEL_CAMERA},
@@ -1000,14 +1001,27 @@ std::shared_ptr<Frame> BuildFrame(const CViewSetup &v)
     for (int item = 0; item < ITEM_COUNT; ++item)
     {
         ItemModel &im = g_items[item];
-        if (!TryLoadItem(item) || !ItemBones(item, bones))
+        CameraPlacement place;
+        bool drawn = TryLoadItem(item) && ItemBones(item, bones);
+        if (drawn)
+        {
+            place = ItemPlace(item);
+            drawn = !handTaken[place.hand];
+        }
+        if (!drawn)
+        {
+            // Put away without trouble: a short take-out must not leave the flag set (the next
+            // launch would read it as a crash).
+            if (im.onTrial)
+            {
+                flags::End(im.flag);
+                im.onTrial = false;
+            }
             continue;
-        CameraPlacement place = ItemPlace(item);
-        if (handTaken[place.hand])
-            continue;
+        }
         handTaken[place.hand] = true;
-        if (im.frames == 0)
-            flags::Begin(im.flag);
+        if (!im.onTrial && im.frames < kTrustFrames)
+            im.onTrial = flags::Begin(im.flag);
         const ModelData &md = g_model[im.model];
         md.glb.SkinJoints(bones, pos, nrm, &tan);
         int hj = md.glb.JointByName(im.handJoint);
@@ -1021,6 +1035,7 @@ std::shared_ptr<Frame> BuildFrame(const CViewSetup &v)
         if (++im.frames == kTrustFrames)
         {
             flags::End(im.flag);
+            im.onTrial = false;
             IVR_LOG("%s: %d frames drawn without trouble", im.what, im.frames);
         }
     }
