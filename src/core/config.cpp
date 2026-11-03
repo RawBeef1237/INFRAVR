@@ -1,5 +1,6 @@
 #include "config.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -111,6 +112,7 @@ void LoadConfig()
     c.mirrorToDesktop = ini.GetBool("vr.mirror_to_desktop", c.mirrorToDesktop);
     c.mirrorFill = ini.GetBool("vr.mirror_fill", c.mirrorFill);
     c.antialiasing = ini.GetInt("vr.antialiasing", c.antialiasing);
+    c.offCenterEyes = ini.GetBool("vr.offcenter_eyes", c.offCenterEyes);
     if (c.antialiasing != 2 && c.antialiasing != 4 && c.antialiasing != 8)
         c.antialiasing = 0;
     c.multicore = ini.GetBool("vr.multicore", c.multicore);
@@ -159,6 +161,25 @@ void LoadConfig()
     c.phoneOpensMenu = ini.GetBool("holsters.phone_opens_menu", c.phoneOpensMenu);
     c.cameraScreenView = ini.GetBool("camera.screen_view", c.cameraScreenView);
     c.cameraScreenEvery = std::max(1, ini.GetInt("camera.screen_every", c.cameraScreenEvery));
+    c.cameraModel = ini.GetString("camera.model", c.cameraModel);
+    c.flashlightModel = ini.GetString("flashlight.model", c.flashlightModel);
+    c.phoneModel = ini.GetString("phone.model", c.phoneModel);
+    c.phoneCallTexture = ini.GetString("phone.call_texture", c.phoneCallTexture);
+    {
+        std::string uv = ini.GetString("phone.screen_uv", "");
+        float r[4];
+        if (!uv.empty() && std::sscanf(uv.c_str(), "%f %f %f %f", &r[0], &r[1], &r[2], &r[3]) == 4)
+            std::copy(r, r + 4, c.phoneScreenUV);
+    }
+    {
+        float r[4];
+        std::string uv = ini.GetString("camera.screen_uv", "");
+        if (sscanf(uv.c_str(), "%f %f %f %f", &r[0], &r[1], &r[2], &r[3]) == 4)
+            std::copy(r, r + 4, c.cameraScreenUV);
+        Vector l = ini.GetVector("camera.lens_uv", Vector(c.cameraLensUV[0], c.cameraLensUV[1], c.cameraLensUV[2]));
+        c.cameraLensUV[0] = l.x, c.cameraLensUV[1] = l.y, c.cameraLensUV[2] = l.z;
+    }
+    c.cameraScreenBrightness = ini.GetFloat("camera.screen_brightness", c.cameraScreenBrightness);
 
     c.vmOffsetCamera = ini.GetVector("viewmodel.offset_camera", c.vmOffsetCamera);
     c.vmOffsetPhone = ini.GetVector("viewmodel.offset_phone", c.vmOffsetPhone);
@@ -176,7 +197,11 @@ void LoadConfig()
     c.handsAngles = ini.GetVector("hands.angles", c.handsAngles);
     c.handsScale = ini.GetFloat("hands.scale", c.handsScale);
     c.handsBrightness = ini.GetFloat("hands.brightness", c.handsBrightness);
+    c.handsLighting = Lower(ini.GetString("hands.lighting", c.handsLighting));
+    c.handsNormalMaps = ini.GetBool("hands.normal_maps", c.handsNormalMaps);
+    c.handsNormalMapGreen = Lower(ini.GetString("hands.normal_map_green", "up")) == "down" ? -1.0f : 1.0f;
     c.handsDepthTest = ini.GetBool("hands.depth_test", c.handsDepthTest);
+    c.handsPostProcessing = ini.GetBool("hands.post_processing", c.handsPostProcessing);
     c.handsFingers = ini.GetBool("hands.fingers", c.handsFingers);
     c.handsCurlMax = ini.GetFloat("hands.curl_max", c.handsCurlMax);
 

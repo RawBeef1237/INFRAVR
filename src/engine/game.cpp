@@ -4,6 +4,7 @@
 #include "config.h"
 
 #include <algorithm>
+#include <cstring>
 #include <map>
 
 namespace ivr {
@@ -79,6 +80,7 @@ bool Game::Init()
     materials = Require("materialsystem.dll", "VMaterialSystem080");
     surface = Require("vguimatsurface.dll", "VGUI_Surface031");
     vguiInput = Require("vgui2.dll", "VGUI_InputInternal001");
+    modelRender = Require("engine.dll", "VEngineModel016");
     if (!engineClient || !renderView || !entityList || !materials)
         return false;
 
@@ -133,6 +135,57 @@ bool Game::Init()
     FindScreenClicker();
     ready = fnRenderView && fnCreateMove;
     return ready;
+}
+
+bool Game::LightingAt(const Vector &origin, MaterialLightingState_t &out) const
+{
+    if (!modelRender)
+        return false;
+    LightingQuery_t q;
+    q.origin = origin;
+    void *envCubemap = nullptr; // ITexture*, written by the engine
+    out = MaterialLightingState_t{};
+    VCall<void, int, const LightingQuery_t *, MaterialLightingState_t *, void **>(
+        modelRender, vidx::ComputeLightingState, 1, &q, &out, &envCubemap);
+    if (out.localLightCount < 0 || out.localLightCount > 4)
+        out.localLightCount = 0;
+    return true;
+}
+
+Vector Game::ToneMapScale() const
+{
+    Vector s(1, 1, 1);
+    void *ctx = materials ? RenderContext() : nullptr;
+    if (!ctx)
+        return s;
+    // Vector GetToneMappingScaleLinear(): MSVC returns the struct through a hidden pointer.
+    using Fn = Vector *(IVR_THISCALL *)(void *, Vector *);
+    Vector r;
+    reinterpret_cast<Fn>(VTable(ctx)[vidx::RC_GetToneMappingScaleLinear])(ctx, &r);
+    ReleaseContext(ctx);
+    if (r.x > 0.0f && r.x < 64.0f && r.y > 0.0f && r.y < 64.0f && r.z > 0.0f && r.z < 64.0f)
+        s = r;
+    return s;
+}
+
+std::string Game::MaterialTexture(const char *material, const char *var) const
+{
+    if (!materials)
+        return {};
+    void *mat = VCall<void *, const char *, const char *, bool, const char *>(materials, vidx::FindMaterial, material,
+                                                                             nullptr, false, nullptr);
+    if (!mat)
+        return {};
+    const char *name = VCall<const char *>(mat, vidx::MAT_GetName);
+    if (!name || _stricmp(name, material) != 0) // the error material, or not what we asked for
+        return {};
+    bool found = false;
+    void *mv = VCall<void *, const char *, bool *, bool>(mat, vidx::MAT_FindVar, var, &found, false);
+    if (!mv || !found)
+        return {};
+    void *tex = VCall<void *>(mv, vidx::MV_GetTextureValue);
+    const char *tn = tex ? VCall<const char *>(tex, vidx::TEX_GetName) : nullptr;
+    return tn ? std::string(tn) : std::string();
 }
 
 bool Game::InitServer()

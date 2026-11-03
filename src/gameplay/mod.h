@@ -93,6 +93,7 @@ private:
     void TogglePhone();
     void PhoneButton(int padCode, WPARAM vk);
     float m_phoneAspect = 9.0f / 16.0f;
+    float m_phoneWidth = 0.32f; // phone menu panel width now (metres)
     int m_lastPhoneButtonResult = 2;
     void NavigateWithStick(double now, const AnalogAction &a, bool pad = false); // stick = arrow keys, with repeat
     void FocusGameWindow();
@@ -177,6 +178,7 @@ private:
     bool m_forceScreen = false;     // show the flat game on the virtual screen even in game
     bool m_hudAtHand = false;     // the HUD panel is placed for the phone menu, not head-locked
     bool m_phoneWorldPlaced = false;
+    bool PhoneScreenPanel(float aspect, vr::HmdMatrix34_t &xf, float &width) const;
     vr::HmdMatrix34_t m_phoneXf{};  // phone menu panel pose (standing universe)
     int m_savedItemHand = -1;       // item hand before the phone menu moved the phone to the off hand
     int m_navDir = 0;               // phone menu stick navigation: current direction key, 0 = none

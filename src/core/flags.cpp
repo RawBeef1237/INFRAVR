@@ -119,19 +119,6 @@ void Skip(const char *name, const char *reason)
     }
 }
 
-void OnCleanExit()
-{
-    if (g_crashed) // a crash handler that ends with ExitProcess: keep the flags
-        return;
-    // Other threads are already gone at process exit and may have died holding the lock.
-    if (!g_lock.try_lock())
-        return;
-    for (const std::string &name : g_active)
-        DeleteFileA(FlagFile(name).c_str());
-    g_active.clear();
-    g_lock.unlock();
-}
-
 void SetStage(const char *stage) { g_stage = stage; }
 const char *Stage() { return g_stage; }
 
@@ -155,7 +142,28 @@ static LONG WINAPI CrashFilter(EXCEPTION_POINTERS *ep)
     return g_prevFilter ? g_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
 }
 
-void InstallCrashLogger() { g_prevFilter = SetUnhandledExceptionFilter(&CrashFilter); }
+void InstallCrashLogger()
+{
+    LPTOP_LEVEL_EXCEPTION_FILTER prev = SetUnhandledExceptionFilter(&CrashFilter);
+    if (prev != &CrashFilter) // installed again after the engine set its own: chain to that one
+        g_prevFilter = prev;
+}
+
+void OnProcessExit()
+{
+    if (g_crashed)
+        return;
+    // Other threads are already gone at process exit and may have died holding the lock.
+    if (!g_lock.try_lock())
+        return;
+    for (const std::string &name : g_active)
+    {
+        DeleteFileA(FlagFile(name).c_str());
+        IVR_LOG("Flags: INFRA closed normally while \"%s\" was still on trial - it stays on", name.c_str());
+    }
+    g_active.clear();
+    g_lock.unlock();
+}
 
 } // namespace flags
 } // namespace ivr

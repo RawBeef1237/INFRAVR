@@ -62,6 +62,8 @@ void VrTexture::Reset()
 // --- device -------------------------------------------------------------------------------------
 void D3DVR::OnDeviceCreated(IDirect3DDevice9 *dev)
 {
+    if (device && device != dev)
+        XrForgetDevice();
     device = dev;
     interopOk = false;
     if (m_interop)
@@ -121,6 +123,11 @@ void D3DVR::OnBeforeReset()
     ReleaseMsaa();
     XrRelease();
     hands::OnDeviceReset();
+    if (cameraTemp)
+    {
+        cameraTemp->Release();
+        cameraTemp = nullptr;
+    }
     // Our own textures are D3DPOOL_DEFAULT and must go before a reset. Engine textures are
     // released by the engine itself (it recreates its render targets).
     blank.Reset();
@@ -764,6 +771,17 @@ void D3DVR::ProbeFrame(bool stereo, bool hudOn)
 // submitted (or keeps timing out), the headset is not getting the game's pictures.
 void D3DVR::LogCompositorStats()
 {
+    if (g_VR.IsOpenXR())
+    {
+        double now = NowSeconds();
+        if (m_xrStatsAt > 0)
+            IVR_LOG("OpenXR: %.1f eye pairs/s sent to the helper; skipped %u (copy still running), %u (no free slot)",
+                    (m_submits - m_xrLastSubmits) / (now - m_xrStatsAt), m_xrBusy, m_xrNoSlot);
+        m_xrStatsAt = now;
+        m_xrLastSubmits = m_submits;
+        m_xrBusy = m_xrNoSlot = 0;
+        return;
+    }
     if (!g_VR.UsesSteamVR())
         return;
     vr::Compositor_CumulativeStats st{};
@@ -833,7 +851,7 @@ void D3DVR::OnPresent()
         if (!levelIn && now - m_firstPresent < 20.0)
             return;
         m_submitReady = true;
-        IVR_LOG("Sending frames to SteamVR (%s, %.1f s after the first frame)",
+        IVR_LOG("Sending frames to the headset (%s, %.1f s after the first frame)",
                 levelIn ? "main menu loaded" : "no map loaded yet", now - m_firstPresent);
     }
     if (!EnsureOwnTextures())
