@@ -96,6 +96,7 @@ struct Config
     bool haptics = true;
     bool phoneOpensMenu = true; // the phone comes out as INFRA's phone (pause) menu
     bool gripToCarry = true; // physics objects are only carried while a grip is held
+    bool triggerAttacks = true; // an empty-handed trigger also sends IN_ATTACK (scripted screens)
 
     // [camera]
     bool cameraScreenView = true; // draw the camera screen from the lens in your hand

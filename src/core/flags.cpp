@@ -153,13 +153,16 @@ void OnProcessExit()
 {
     if (g_crashed)
         return;
-    std::lock_guard<std::mutex> lock(g_lock);
+    // Other threads are already gone at process exit and may have died holding the lock.
+    if (!g_lock.try_lock())
+        return;
     for (const std::string &name : g_active)
     {
         DeleteFileA(FlagFile(name).c_str());
         IVR_LOG("Flags: INFRA closed normally while \"%s\" was still on trial - it stays on", name.c_str());
     }
     g_active.clear();
+    g_lock.unlock();
 }
 
 } // namespace flags

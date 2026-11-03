@@ -30,6 +30,9 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 | GLB hands placement on the controllers | unverified | orientation derived offline from the models, tune with `[hands] offset/angles` |
 | GLB hands drawing in the eyes, depth test | unverified | log line "GLB hands: eye target ... depth test on/off" |
 | INFRA's arms hidden in glb mode | unverified | log line "GLB hands: ... bones hidden" |
+| Trigger also sends attack when empty-handed (`[aim] trigger_attacks`) | unverified | for the office slides at the start, which ignored "use"; the slides listening for attack is inferred, not checked in the map. Builds |
+| "Use" aimed from the eye through the hand's pointing spot | unverified | the game traces use from the eye, so aiming it along the hand missed small targets like keycard readers by the hand-to-eye offset; now aimed at a point 48 units along the hand's ray. Builds |
+| Quitting normally keeps mechanisms on | unverified | in-progress flags are removed at DLL_PROCESS_DETACH on process exit unless the crash logger fired, so closing INFRA during a trial run no longer adds a skip line. Builds |
 | Hands lit by the world (`[hands] lighting = world`): engine ambient cube + 4 local lights per hand, times the HDR exposure | unverified | log lines "Hand lighting at (...)" every 30 s and "Hand lighting: ... frames lit by the engine"; falls back to simple lighting when the engine call is missing |
 | Hand shaders (per-pixel light, normal maps) | wine | `tests/shader_test` compiles both with INFRA's `bin\d3dcompiler_41.dll` under Wine; Wine's own d3dcompiler_47 cannot (vkd3d), so the mod tries 47, 43, then INFRA's 41. In game: log "Hand shaders compiled with ..." and "GLB hands: drawn with world lighting and normal maps" |
 | Normal map green channel | unverified | `hands.normal_map_green = up/down`; if bumps look inverted, flip it |
