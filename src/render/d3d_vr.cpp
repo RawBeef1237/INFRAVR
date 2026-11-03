@@ -123,6 +123,11 @@ void D3DVR::OnBeforeReset()
     ReleaseMsaa();
     XrRelease();
     hands::OnDeviceReset();
+    if (cameraTemp)
+    {
+        cameraTemp->Release();
+        cameraTemp = nullptr;
+    }
     // Our own textures are D3DPOOL_DEFAULT and must go before a reset. Engine textures are
     // released by the engine itself (it recreates its render targets).
     blank.Reset();

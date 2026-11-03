@@ -90,6 +90,7 @@ public:
     LONG learnW = 0, learnH = 0; // the lens view size: the camera copy's destination rect
     bool blockCameraCopy = false;
     IDirect3DSurface9 *cameraSurface = nullptr;
+    IDirect3DSurface9 *cameraTemp = nullptr; // lens view, resolved, before it is stretched into cameraSurface
     int traceDraws = 0;
     void TraceSurface(const char *what, IDirect3DSurface9 *s, const RECT *r = nullptr);
     void OnTextureCreated(IDirect3DTexture9 *tex, UINT w, UINT h, DWORD usage);

@@ -118,6 +118,58 @@ HRESULT STDMETHODCALLTYPE hkSetViewport(IDirect3DDevice9 *self, const D3DVIEWPOR
     return g_hkSetViewport.original(self, vp);
 }
 
+// INFRA's viewfinder shows all of _rt_CameraWeapon, which world_eye_size made eye-sized, while the
+// lens view only fills its top left: stretch it over the whole texture, or the rest keeps the eye
+// view copied in when the camera came out. The eye image is multisampled, so it is resolved at its
+// own size into a plain surface first, and stretched from there (a stretched copy straight from the
+// multisampled image froze the game). Crash-sticky: a hang turns it off for the next launch.
+bool StretchLensView(IDirect3DDevice9 *self, IDirect3DSurface9 *src, const RECT *sr, IDirect3DSurface9 *dst,
+                     const D3DSURFACE_DESC &dd)
+{
+    static const char *kFlag = "camera_stretch";
+    static int s_state = 0; // 0 not tried, 1 on trial, 2 trusted, -1 off
+    static int s_copies = 0;
+    if (s_state < 0)
+        return false;
+    if (s_state == 0)
+        s_state = flags::Begin(kFlag) ? 1 : -1;
+    if (s_state < 0)
+        return false;
+    LONG w = g_D3D.learnW, h = g_D3D.learnH;
+    D3DSURFACE_DESC td{};
+    if (g_D3D.cameraTemp && (FAILED(g_D3D.cameraTemp->GetDesc(&td)) || (LONG)td.Width != w || (LONG)td.Height != h ||
+                             td.Format != dd.Format))
+    {
+        g_D3D.cameraTemp->Release();
+        g_D3D.cameraTemp = nullptr;
+    }
+    if (!g_D3D.cameraTemp &&
+        FAILED(self->CreateRenderTarget((UINT)w, (UINT)h, dd.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &g_D3D.cameraTemp,
+                                        nullptr)))
+        g_D3D.cameraTemp = nullptr;
+    RECT whole = {0, 0, w, h};
+    HRESULT hr = g_D3D.cameraTemp ? g_hkStretchRect.original(self, g_D3D.MapCopySource(src), sr ? sr : &whole,
+                                                             g_D3D.cameraTemp, nullptr, D3DTEXF_NONE)
+                                  : E_FAIL;
+    if (SUCCEEDED(hr))
+        hr = g_hkStretchRect.original(self, g_D3D.cameraTemp, nullptr, g_D3D.MapCopyDest(dst), nullptr, D3DTEXF_LINEAR);
+    if (s_copies == 0)
+        IVR_LOG("Camera screen: lens view %ldx%ld stretched over the whole %ux%u texture: %s", w, h, dd.Width, dd.Height,
+                SUCCEEDED(hr) ? "ok" : "refused, copied as INFRA does");
+    if (FAILED(hr))
+    {
+        flags::Skip(kFlag, "the device refused the copy");
+        s_state = -1;
+        return false;
+    }
+    if (++s_copies == 300 && s_state == 1)
+    {
+        flags::End(kFlag);
+        s_state = 2;
+    }
+    return true;
+}
+
 HRESULT STDMETHODCALLTYPE hkStretchRect(IDirect3DDevice9 *self, IDirect3DSurface9 *src, const RECT *sr,
                                         IDirect3DSurface9 *dst, const RECT *dr, D3DTEXTUREFILTERTYPE f)
 {
@@ -137,20 +189,8 @@ HRESULT STDMETHODCALLTYPE hkStretchRect(IDirect3DDevice9 *self, IDirect3DSurface
         if (g_D3D.cameraSurface != dst)
             IVR_LOG("Camera screen texture: %p %ux%u", (void *)dst, dd.Width, dd.Height);
         g_D3D.cameraSurface = dst;
-        // INFRA's viewfinder shows all of the texture, which world_eye_size made eye-sized: stretch
-        // the lens view over all of it, or the rest keeps the first eye view copied into it.
-        RECT whole = {0, 0, g_D3D.learnW, g_D3D.learnH};
-        HRESULT hr = g_hkStretchRect.original(self, g_D3D.MapCopySource(src), sr ? sr : &whole, g_D3D.MapCopyDest(dst),
-                                              nullptr, D3DTEXF_LINEAR);
-        static bool s_said = false;
-        if (!s_said)
-        {
-            s_said = true;
-            IVR_LOG("Camera screen: lens view stretched over the whole %ux%u texture: %s", dd.Width, dd.Height,
-                    SUCCEEDED(hr) ? "ok" : "refused, copied as INFRA does");
-        }
-        if (SUCCEEDED(hr))
-            return hr;
+        if (StretchLensView(self, src, sr, dst, dd))
+            return D3D_OK;
     }
     else if (g_D3D.blockCameraCopy && dst && dst == g_D3D.cameraSurface)
         return D3D_OK; // keep the picture from the camera lens
