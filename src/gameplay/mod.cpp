@@ -138,6 +138,20 @@ Pose VRMod::AimWorld(int hand) const
     return p;
 }
 
+// "Use" is traced by the game from the player's eye, not from the hand. Aiming that trace along
+// the hand's direction misses small things like keycard readers by the hand-to-eye offset, so
+// aim it from the eye at a point on the hand's ray, about where the hand is pointing.
+QAngle VRMod::UseAimAngles(int hand) const
+{
+    constexpr float kReach = 48.0f; // units past the hand, about the game's use distance
+    Pose p = AimWorld(hand);
+    Vector target = p.pos + p.rot * Vector(kReach, 0, 0);
+    Vector d = target - m_anchor;
+    if (d.Length() < 1.0f)
+        return p.Angles();
+    return VectorAngles(d);
+}
+
 Pose VRMod::LensWorld() const
 {
     Pose p = AimWorld(itemHand);
@@ -245,7 +259,7 @@ void VRMod::OnCreateMove(CUserCmd *cmd)
         aim = ClampForCmd(LensWorld().Angles()); // photos and camera targets use the lens
     if (m_aimTicks > 0)
     {
-        aim = ClampForCmd(m_aimSource == 1 ? LensWorld().Angles() : AimWorld(interactHand).Angles());
+        aim = ClampForCmd(m_aimSource == 1 ? LensWorld().Angles() : UseAimAngles(interactHand));
         --m_aimTicks;
     }
 
@@ -258,7 +272,7 @@ void VRMod::OnCreateMove(CUserCmd *cmd)
     {
         cmd->buttons |= IN_USE;
         if (m_useTicks == 0 && triggerUse)
-            aim = ClampForCmd(AimWorld(interactHand).Angles());
+            aim = ClampForCmd(UseAimAngles(interactHand));
     }
     if (m_useTicks > 0)
         --m_useTicks;

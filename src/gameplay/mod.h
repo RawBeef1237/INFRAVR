@@ -38,6 +38,7 @@ public:
     Pose HandWorld(int hand) const;   // controller grip pose
     Pose AimWorld(int hand) const;    // pointing ray (grip pose + aim pitch)
     Pose LensWorld() const;           // camera lens, in the hand holding the camera
+    QAngle UseAimAngles(int hand) const; // "use" aim: from the eye through where the hand points
     bool HandValid(int hand) const { return g_VR.HandPose(hand).valid; }
     float UnitsPerMetre() const { return m_scale; }
 

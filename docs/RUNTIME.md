@@ -31,6 +31,7 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 | GLB hands drawing in the eyes, depth test | unverified | log line "GLB hands: eye target ... depth test on/off" |
 | INFRA's arms hidden in glb mode | unverified | log line "GLB hands: ... bones hidden" |
 | Trigger also sends attack when empty-handed (`[aim] trigger_attacks`) | unverified | for the office slides at the start, which ignored "use"; the slides listening for attack is inferred, not checked in the map. Builds |
+| "Use" aimed from the eye through the hand's pointing spot | unverified | the game traces use from the eye, so aiming it along the hand missed small targets like keycard readers by the hand-to-eye offset; now aimed at a point 48 units along the hand's ray. Builds |
 | Quitting normally keeps mechanisms on | unverified | in-progress flags are removed at DLL_PROCESS_DETACH on process exit unless the crash logger fired, so closing INFRA during a trial run no longer adds a skip line. Builds |
 | OpenXR helper | unverified | 64-bit build compiles; not run (no 64-bit Wine here, no headset) |
 | DXVK D3D9 shared textures for OpenXR | unverified | the main open question: if stock DXVK refuses `pSharedHandle`, the log says so and `backend = openvr` is the way |
