@@ -345,7 +345,7 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
     g_engineView = *view;
     g_Mod.OnRenderViewBegin(*view);
 
-    int w = (int)g_VR.ViewW(), h = (int)g_VR.ViewH(); // auto_fit may shrink this below the texture size
+    int w = (int)g_VR.ViewW(), h = (int)g_VR.ViewH();
     CViewSetup hudEye = *hudView;
     hudEye.x = hudEye.y = 0;
     hudEye.width = w;

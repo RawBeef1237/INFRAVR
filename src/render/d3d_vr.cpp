@@ -712,45 +712,6 @@ bool D3DVR::MeasureSmear(const VrTexture &t, const char *what, UINT &picW, UINT 
     return ok;
 }
 
-// auto_fit: once two measurements agree that only part of the eye image holds the picture, draw
-// the view into just that part. If the picture then shrinks again, the limit is relative (a
-// scale, not a fixed size) and shrinking cannot help, so go back to the full image.
-void D3DVR::AutoFit(UINT picW, UINT picH)
-{
-    UINT areaW = g_VR.ViewW(), areaH = g_VR.ViewH();
-    bool smeared = picW + 8 < areaW || picH + 8 < areaH;
-    if (g_VR.viewWidth) // already fitted: check it worked (a scale limit would shrink it by far more than 5%)
-    {
-        if (picW < areaW * 0.95f || picH < areaH * 0.95f)
-        {
-            IVR_LOG("auto_fit: the picture shrank again (%ux%u of %ux%u), so the limit is not a fixed size; "
-                    "drawing into the whole eye image again", picW, picH, areaW, areaH);
-            g_VR.viewWidth = g_VR.viewHeight = 0;
-            m_autoFitDone = true;
-        }
-        else
-        {
-            IVR_LOG("auto_fit: confirmed, the %ux%u view has no stretched lines", areaW, areaH);
-            m_autoFitDone = true;
-        }
-        return;
-    }
-    bool agree = m_lastPicW && (picW > m_lastPicW ? picW - m_lastPicW : m_lastPicW - picW) <= 16 &&
-                 (picH > m_lastPicH ? picH - m_lastPicH : m_lastPicH - picH) <= 16;
-    UINT prevW = m_lastPicW, prevH = m_lastPicH;
-    m_lastPicW = picW;
-    m_lastPicH = picH;
-    if (!smeared || !agree || picW < 256 || picH < 256)
-        return;
-    g_VR.viewWidth = std::min(picW, prevW) & ~1u;
-    g_VR.viewHeight = std::min(picH, prevH) & ~1u;
-    m_smearChecks = 0; // measure again to confirm
-    m_nextProbe = NowSeconds() + 2.0;
-    IVR_LOG("auto_fit: the game only fills %ux%u of each %ux%u eye image; drawing the view at that size "
-            "and showing only that part in the headset", g_VR.viewWidth, g_VR.viewHeight, g_VR.renderWidth,
-            g_VR.renderHeight);
-}
-
 void D3DVR::ProbeFrame(bool stereo, bool hudOn)
 {
     double now = NowSeconds();
@@ -763,12 +724,8 @@ void D3DVR::ProbeFrame(bool stereo, bool hudOn)
         vr::VRTextureBounds_t bl = g_VR.ViewBounds(0), br = g_VR.ViewBounds(1);
         ProbeStats l = Probe(eye[0], &bl), r = Probe(eye[1], &br);
         UINT pw = 0, ph = 0;
-        if (!m_autoFitDone && m_smearChecks < 4 && l.max > 2.0f && MeasureSmear(eye[0], "left eye", pw, ph))
-        {
+        if (m_smearChecks < 4 && l.max > 2.0f && MeasureSmear(eye[0], "left eye", pw, ph))
             ++m_smearChecks;
-            if (g_Config.autoFit)
-                AutoFit(pw, ph);
-        }
         IVR_LOG("probe: left eye brightness avg %.0f max %.0f, right eye avg %.0f max %.0f; repeated rows/cols "
                 "L %d/%d R %d/%d (of 31)",
                 l.avg, l.max, r.avg, r.max, l.rowsSame, l.colsSame, r.rowsSame, r.colsSame);

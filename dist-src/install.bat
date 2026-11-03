@@ -82,6 +82,11 @@ if exist "%BIN%\infravr\infravr.ini" (
     copy /y "%HERE%bin\infravr\infravr.ini" "%BIN%\infravr\" >nul && echo   copied bin\infravr\infravr.ini
 )
 
+rem --- 4GB patch: set the Large Address Aware flag on the 32-bit infra.exe so it can use 4 GB of
+rem     memory instead of 2 GB. The original is kept as infra.exe.before-infravr-4gb (uninstall.bat
+rem     puts it back). Nothing is changed if the flag is already set.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path $env:GAME 'infra.exe'; try { $b = [IO.File]::ReadAllBytes($f); $pe = [BitConverter]::ToInt32($b, 60); if ($b[0] -ne 77 -or $b[1] -ne 90 -or [BitConverter]::ToUInt32($b, $pe) -ne 17744) { '  4GB patch skipped: infra.exe is not a Windows program'; exit 0 }; if ([BitConverter]::ToUInt16($b, $pe + 4) -ne 332) { '  4GB patch not needed: infra.exe is not 32-bit'; exit 0 }; $o = $pe + 22; if ($b[$o] -band 32) { '  infra.exe already has the 4GB patch'; exit 0 }; Copy-Item -LiteralPath $f -Destination ($f + '.before-infravr-4gb') -Force; $b[$o] = $b[$o] -bor 32; [IO.File]::WriteAllBytes($f, $b); '  applied the 4GB patch to infra.exe (original kept as infra.exe.before-infravr-4gb)' } catch { '  4GB patch failed: ' + $_.Exception.Message }"
+
 echo.
 echo Done.
 echo  1. Start SteamVR (Quest: Link/Air Link/Virtual Desktop with SteamVR).
