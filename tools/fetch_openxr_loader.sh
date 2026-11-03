@@ -1,6 +1,6 @@
 #!/bin/sh
 # Downloads Khronos' 64-bit openxr_loader.dll (Apache-2.0) for the OpenXR helper and puts it in
-# <out>/openxr_loader.dll. The helper loads it from its own folder (bin\infravr\openxr).
+# <out>/openxr_loader.dll. The helper loads it from its own folder (INFRA\infravr\bin).
 # Usage: tools/fetch_openxr_loader.sh <out folder> [version]
 set -e
 OUT=${1:?usage: fetch_openxr_loader.sh <out folder> [version]}

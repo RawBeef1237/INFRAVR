@@ -75,6 +75,11 @@ std::string ModuleDir()
     return slash == std::string::npos ? std::string() : s.substr(0, slash + 1);
 }
 
+std::string ModDir()
+{
+    return GameDir() + "infravr\\";
+}
+
 double NowSeconds()
 {
     static LARGE_INTEGER freq = [] {

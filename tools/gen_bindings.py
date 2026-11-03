@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Generates the SteamVR action manifest + default bindings (dist: bin/infravr/actions)."""
+"""Generates the SteamVR action manifest + default bindings (repo: infravr/cfg/steamvr, installed: INFRA\\infravr\\cfg\\steamvr)."""
 import json, os, sys
 
-out = sys.argv[1] if len(sys.argv) > 1 else 'actions'
+out = sys.argv[1] if len(sys.argv) > 1 else 'infravr/cfg/steamvr'
 os.makedirs(out, exist_ok=True)
 
 B = [

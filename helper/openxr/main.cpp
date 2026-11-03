@@ -10,7 +10,7 @@
 //     pointer dot and beam),
 //   - plays haptic pulses.
 //
-// It exits when the game exits. Everything is logged to INFRA\infravr_openxr.log.
+// It exits when the game exits. Everything is logged to INFRA\infravr\infravr_openxr.log.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -603,11 +603,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
     char exeDir[MAX_PATH];
     GetModuleFileNameA(nullptr, exeDir, MAX_PATH);
     *strrchr(exeDir, '\\') = 0;
-    std::string gameDir = exeDir;
-    // exe lives in INFRA\bin\infravr\openxr: the log goes next to infra.exe
-    for (int i = 0; i < 3; ++i)
-        gameDir = gameDir.substr(0, gameDir.find_last_of('\\'));
-    g_log = fopen((gameDir + "\\infravr_openxr.log").c_str(), "w");
+    std::string modDir = exeDir;
+    // exe lives in INFRA\infravr\bin: the log goes in the mod folder, INFRA\infravr
+    modDir = modDir.substr(0, modDir.find_last_of('\\'));
+    g_log = fopen((modDir + "\\infravr_openxr.log").c_str(), "w");
     Log("INFRA VR OpenXR helper, game process %lu", (unsigned long)gamePid);
 
     char name[96];

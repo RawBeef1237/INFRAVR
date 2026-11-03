@@ -38,6 +38,9 @@ void LogError(const char *fmt, ...);
 
 std::string GameDir();   // folder with infra.exe, trailing backslash
 std::string ModuleDir(); // folder with this d3d9.dll (INFRA\bin\), trailing backslash
+// The mod folder INFRA\infravr\ (like Half-Life 2 VR's hlvr\ or Black Mesa VR's BMS\): cfg\,
+// cfg\steamvr\, models\, bin\ and the logs. Trailing backslash.
+std::string ModDir();
 double NowSeconds();
 
 } // namespace ivr

@@ -49,6 +49,7 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 | Hidden viewmodel bones collapse to one point (each to its own point left dark slivers by the hand) | unverified | |
 | Hands drawn just before the viewmodels, before post-processing (`hands.post_processing`), so INFRA's additive screen panels land on the dark glass of the mod's phone / camera | unverified | log "GLB hands: drawn just before the viewmodels, before post-processing"; drawn after them, the panels' depth hid the glass and the phone looked see-through. If the hands vanish or flicker, set it to false |
 | Camera viewfinder live: INFRA's viewfinder (vgui/camera/view, additive, `_rt_CameraWeapon`) shows all of that texture, which world_eye_size made eye-sized; the lens view (rendered in the camera screen's shape) is stretched over all of it. The mod's own picture on the screen is off while INFRA's panel sits there | unverified | log "Camera screen: lens view WxH stretched over the whole ... texture: ok". Before, only the top-left part was refreshed and the rest kept the view from when the camera came out. A stretched copy straight from the multisampled eye image froze the game (headset black when the camera came out); it is now resolved at its own size into a plain surface and stretched from there, crash-sticky as `camera_stretch` |
+| Mod folder layout (`INFRA\infravr\`: cfg, cfg\steamvr, models, bin, logs) | wine | the built `d3d9.dll` loaded by `tests/dll_smoke` renamed to `infra.exe` in a fake INFRA folder (`WINEDLLOVERRIDES=d3d9=n`): it made `infravr\`, wrote `infravr\infravr.log` and logged "Loaded ...\infravr\cfg\infravr.ini". `glb_test` loads the hands from `infravr/models/hands`. SteamVR manifest from `cfg\steamvr`, OpenXR helper from `infravr\bin` and install.bat/uninstall.bat/infravr.bat not run (no SteamVR, no Windows here) |
 | OpenXR helper | unverified | 64-bit build compiles; not run (no 64-bit Wine here, no headset) |
 | DXVK D3D9 shared textures for OpenXR | verified-fail | headset (Virtual Desktop OpenXR, RTX 4070 SUPER): DXVK warns "Failed to write shared resource info", the helper's `OpenSharedResource` fails with 0x80070057, the headset stays black |
 | OpenXR off-center eyes (each eye drawn with its own field of view, `vr.offcenter_eyes`) | unverified | builds; log line "Off-center eyes: each eye drawn at ..."; if the picture looks stretched or shifted, the engine ignores the off-center fields: set `offcenter_eyes = false` |
@@ -56,6 +57,6 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 
 ## Logs
 
-- `INFRA\infravr.log`: the mod. Look for `Flags:`, `world_eye_size:`, `GLB hands:`, `OpenXR`.
-- `INFRA\infravr_openxr.log`: the OpenXR helper.
-- `INFRA\infravr_skip.txt`: mechanisms switched off after a crash, one per line with the reason.
+- `INFRA\infravr\infravr.log`: the mod. Look for `Flags:`, `world_eye_size:`, `GLB hands:`, `OpenXR`.
+- `INFRA\infravr\infravr_openxr.log`: the OpenXR helper.
+- `INFRA\infravr\infravr_skip.txt`: mechanisms switched off after a crash, one per line with the reason.

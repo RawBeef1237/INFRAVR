@@ -7,7 +7,7 @@
 //     compositor needs (same approach as L4D2VR/Portal2VR). This also covers OpenXR-only headsets
 //     through OpenOpenVR / OpenComposite, which is the recommended route for them.
 //   openxr - OpenXR runtimes are 64-bit only, so the session lives in a helper process
-//     (bin\infravr\openxr\infravr_openxr.exe) and the game talks to it through shared memory
+//     (infravr\bin\infravr_openxr.exe) and the game talks to it through shared memory
 //     (openxr_bridge.h). Falls back to openvr when the helper does not come up.
 // The rest of the mod sees the same poses, input, finger curls and overlay calls either way.
 #pragma once

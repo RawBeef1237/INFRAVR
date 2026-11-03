@@ -2,10 +2,12 @@
 setlocal EnableDelayedExpansion
 title INFRA VR build
 
-rem Builds INFRA VR into one ready-to-install folder: dist\INFRA-VR\
-rem   install.bat, uninstall.bat, bin\d3d9.dll (the mod), bin\dxvk_d3d9.dll (DXVK, 32-bit),
-rem   bin\openvr_api.dll (OpenVR, 32-bit), bin\infravr\ (settings, SteamVR bindings, hand models,
-rem   and the 64-bit OpenXR helper with Khronos' loader), licenses\
+rem Builds INFRA VR into one ready-to-install folder, dist\INFRA-VR\, laid out like the INFRA folder
+rem it installs into (the way Half-Life 2 VR and Black Mesa VR ship):
+rem   install.bat, uninstall.bat, infravr.bat (VR launcher)
+rem   bin\d3d9.dll (the mod), bin\dxvk_d3d9.dll (DXVK, 32-bit), bin\openvr_api.dll (OpenVR, 32-bit)
+rem   infravr\ (the mod folder: cfg\ settings, cfg\steamvr\ bindings, models\hands\ hand models,
+rem   bin\ the 64-bit OpenXR helper with Khronos' loader), licenses\
 rem
 rem Needs Visual Studio 2022 (or newer) with "Desktop development with C++", and Windows 10/11
 rem (curl and tar are built in). DXVK, OpenVR and the OpenXR loader are downloaded once into
@@ -69,20 +71,18 @@ if not exist "%DL%\openxr_loader.dll" (
 
 echo [4/4] Putting it together in dist\INFRA-VR
 if exist "%OUT%" rmdir /s /q "%OUT%"
-mkdir "%OUT%\bin\infravr\actions" "%OUT%\bin\infravr\hands" "%OUT%\bin\infravr\openxr" "%OUT%\licenses" || goto :fail
+mkdir "%OUT%\bin" "%OUT%\infravr\bin" "%OUT%\licenses" || goto :fail
 copy /y "%ROOT%\dist-src\install.bat" "%OUT%\" >nul || goto :fail
 copy /y "%ROOT%\dist-src\uninstall.bat" "%OUT%\" >nul || goto :fail
+copy /y "%ROOT%\dist-src\infravr.bat" "%OUT%\" >nul || goto :fail
 copy /y "%ROOT%\README.md" "%OUT%\" >nul
 copy /y "%ROOT%\build-vs\Release\d3d9.dll" "%OUT%\bin\" >nul || goto :fail
 copy /y "%DL%\dxvk_d3d9.dll" "%OUT%\bin\" >nul || goto :fail
 copy /y "%DL%\openvr_api.dll" "%OUT%\bin\" >nul || goto :fail
-copy /y "%ROOT%\config\infravr.ini" "%OUT%\bin\infravr\" >nul || goto :fail
-copy /y "%ROOT%\config\dxvk.conf" "%OUT%\bin\infravr\" >nul || goto :fail
-copy /y "%ROOT%\config\actions\*.json" "%OUT%\bin\infravr\actions\" >nul || goto :fail
-copy /y "%ROOT%\assets\hands\*.glb" "%OUT%\bin\infravr\hands\" >nul || goto :fail
-copy /y "%ROOT%\assets\hands\*.png" "%OUT%\bin\infravr\hands\" >nul || goto :fail
-copy /y "%ROOT%\build-vs-xr\Release\infravr_openxr.exe" "%OUT%\bin\infravr\openxr\" >nul || goto :fail
-copy /y "%DL%\openxr_loader.dll" "%OUT%\bin\infravr\openxr\" >nul || goto :fail
+rem The repository's infravr\ folder is the mod folder as installed (cfg, cfg\steamvr, models).
+xcopy /e /i /q /y "%ROOT%\infravr" "%OUT%\infravr" >nul || goto :fail
+copy /y "%ROOT%\build-vs-xr\Release\infravr_openxr.exe" "%OUT%\infravr\bin\" >nul || goto :fail
+copy /y "%DL%\openxr_loader.dll" "%OUT%\infravr\bin\" >nul || goto :fail
 copy /y "%ROOT%\licenses\*.txt" "%OUT%\licenses\" >nul
 
 echo.

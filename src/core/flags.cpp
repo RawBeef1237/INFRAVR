@@ -17,8 +17,8 @@ const char *volatile g_stage = "loading";
 LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter = nullptr;
 volatile LONG g_crashed = 0;
 
-std::string SkipFile() { return GameDir() + "infravr_skip.txt"; }
-std::string FlagFile(const std::string &name) { return GameDir() + "infravr_in_" + name + ".flag"; }
+std::string SkipFile() { return ModDir() + "infravr_skip.txt"; }
+std::string FlagFile(const std::string &name) { return ModDir() + "infravr_in_" + name + ".flag"; }
 
 void AppendSkip(const std::string &name, const char *reason)
 {
@@ -54,7 +54,7 @@ void Init()
     }
     // Leftover in-progress flags: INFRA closed while that mechanism was running.
     WIN32_FIND_DATAA fd;
-    std::string pattern = GameDir() + "infravr_in_*.flag";
+    std::string pattern = ModDir() + "infravr_in_*.flag";
     HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
     if (h != INVALID_HANDLE_VALUE)
     {
@@ -62,7 +62,7 @@ void Init()
         {
             std::string file = fd.cFileName;
             std::string name = file.substr(11, file.size() - 11 - 5); // infravr_in_<name>.flag
-            DeleteFileA((GameDir() + file).c_str());
+            DeleteFileA((ModDir() + file).c_str());
             if (g_skipped.insert(name).second)
             {
                 AppendSkip(name, "INFRA closed or crashed while it was running");

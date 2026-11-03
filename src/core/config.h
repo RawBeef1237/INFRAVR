@@ -1,4 +1,4 @@
-// INFRA VR - user settings (INFRA\bin\infravr\infravr.ini).
+// INFRA VR - user settings (INFRA\infravr\cfg\infravr.ini).
 #pragma once
 #include "common.h"
 #include "mathlib.h"
@@ -103,6 +103,7 @@ struct Config
     int cameraScreenEvery = 2;    // ... every Nth frame (the extra view costs GPU time)
     // The mod's own camera model (glTF, with the hand holding it), drawn instead of INFRA's camera
     // and moved by INFRA's camera animations. Empty = INFRA's camera model.
+    // Model and texture paths are relative to INFRA\infravr\models\.
     std::string cameraModel = "hands\\camera_hand.glb";
     // The same for the flashlight (v_light.mdl's bones). Empty = INFRA's flashlight model.
     std::string flashlightModel = "hands\\flashlight_hand.glb";
@@ -130,7 +131,7 @@ struct Config
     // [hands]
     bool handsTracked = true;  // move the viewmodel's other arm to the other controller
     bool handsHideUpperArm = true; // collapse shoulders, upper arms and spine of the viewmodel
-    // "glb" = the mod draws its own hand models (bin\infravr\hands\*.glb) on both controllers and
+    // "glb" = the mod draws its own hand models (infravr\models\hands\*.glb) on both controllers and
     // hides INFRA's arms; "infra" = INFRA's own viewmodel arms follow the controllers.
     std::string handsModel = "glb";
     std::string handsLeftFile = "hands\\vr_hand_left.glb", handsRightFile = "hands\\vr_hand_right.glb";

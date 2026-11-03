@@ -97,7 +97,7 @@ Vector Ini::GetVector(const std::string &key, const Vector &def) const
 void LoadConfig()
 {
     Ini ini;
-    std::string path = ModuleDir() + "infravr\\infravr.ini";
+    std::string path = ModDir() + "cfg\\infravr.ini";
     if (!ini.Load(path))
     {
         IVR_LOG("No %s - using defaults", path.c_str());

@@ -38,7 +38,7 @@ void Stop(Link *link)
 
 Link *Start(double timeoutSeconds)
 {
-    std::string exe = ModuleDir() + "infravr\\openxr\\infravr_openxr.exe";
+    std::string exe = ModDir() + "bin\\infravr_openxr.exe";
     if (GetFileAttributesA(exe.c_str()) == INVALID_FILE_ATTRIBUTES)
     {
         IVR_ERR("OpenXR: %s is missing", exe.c_str());
@@ -70,7 +70,7 @@ Link *Start(double timeoutSeconds)
     STARTUPINFOA si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    std::string dir = ModuleDir() + "infravr\\openxr";
+    std::string dir = ModDir() + "bin";
     if (!CreateProcessA(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, dir.c_str(), &si, &pi))
     {
         IVR_ERR("OpenXR: could not start %s (error %lu)", exe.c_str(), GetLastError());

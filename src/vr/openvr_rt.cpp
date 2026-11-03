@@ -200,7 +200,7 @@ bool VrRuntime::InitOpenVR()
     // --- input ------------------------------------------------------------------------
     if (m_vrInput)
     {
-        std::string manifest = ModuleDir() + "infravr\\actions\\action_manifest.json";
+        std::string manifest = ModDir() + "cfg\\steamvr\\action_manifest.json";
         vr::EVRInputError ie = m_vrInput->SetActionManifestPath(manifest.c_str());
         if (ie != vr::VRInputError_None)
             IVR_ERR("SetActionManifestPath(%s) failed: %d", manifest.c_str(), (int)ie);
