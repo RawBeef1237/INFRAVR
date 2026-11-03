@@ -140,6 +140,18 @@ bool VrRuntime::InitOpenXR()
     s->renderFov[1] = tanX;
     s->renderFov[2] = tanY;
     s->renderFov[3] = -tanY;
+    if (g_Config.offCenterEyes)
+    {
+        offCenter = true;
+        eyeFracW = std::max(bounds[0].uMax - bounds[0].uMin, bounds[1].uMax - bounds[1].uMin);
+        eyeFracH = std::max(bounds[0].vMax - bounds[0].vMin, bounds[1].vMax - bounds[1].vMin);
+        for (int e = 0; e < 2; ++e)
+            EyeTangents(e, s->renderFovEye[e]);
+        s->perEyeFov = 1;
+        IVR_LOG("Off-center eyes: each eye drawn at %ux%u with its own field of view (L %.3f %.3f %.3f %.3f)",
+                ViewW(), ViewH(), s->renderFovEye[0][0], s->renderFovEye[0][1], s->renderFovEye[0][2],
+                s->renderFovEye[0][3]);
+    }
     m_overlays = MakeOpenXROverlays(m_xr);
     m_backend = Backend::OpenXR;
     return true;

@@ -8,6 +8,8 @@
 #include "mathlib.h"
 #include "vfunc.h"
 
+#include <string>
+
 namespace ivr {
 
 // --- CViewSetup (Alien Swarm / Portal 2 layout, 0xF4 bytes) ---------------------------
@@ -33,6 +35,19 @@ static_assert(sizeof(CViewSetup) == 0xF4, "CViewSetup size");
 static_assert(offsetof(CViewSetup, fov) == 0x58, "fov");
 static_assert(offsetof(CViewSetup, origin) == 0x60, "origin");
 static_assert(offsetof(CViewSetup, m_flAspectRatio) == 0x88, "aspect");
+
+// Off-center projection (Alien Swarm layout): the view draws only part of the frustum given by fov
+// and aspect - top, bottom, left, right as 0..1 across it - when bit 0 of the flag byte is set.
+inline float *OffCenterTBLR(CViewSetup &v) { return reinterpret_cast<float *>(&v.rest[0xE0 - 0x8C]); }
+inline const float *OffCenterTBLR(const CViewSetup &v) { return reinterpret_cast<const float *>(&v.rest[0xE0 - 0x8C]); }
+inline bool IsOffCenter(const CViewSetup &v) { return (v.rest[0xF0 - 0x8C] & 1u) != 0; }
+inline void SetOffCenter(CViewSetup &v, bool on)
+{
+    if (on)
+        v.rest[0xF0 - 0x8C] |= 1u;
+    else
+        v.rest[0xF0 - 0x8C] &= ~1u;
+}
 
 // --- CUserCmd ------------------------------------------------------------------------
 struct CUserCmd
@@ -109,6 +124,11 @@ constexpr int BeginRenderTargetAllocation = 91;
 constexpr int EndRenderTargetAllocation = 92;
 constexpr int CreateNamedRenderTargetTextureEx = 96;
 constexpr int GetRenderContext = 112;
+constexpr int FindMaterial = 81; // IMaterial* (const char *name, const char *group, bool complain, const char *prefix)
+// IMaterial / IMaterialVar
+constexpr int MAT_GetName = 0;
+constexpr int MAT_FindVar = 11;         // IMaterialVar* (const char *name, bool *found, bool complain)
+constexpr int MV_GetTextureValue = 0;   // ITexture*
 // IMatRenderContext
 constexpr int RC_Release = 1;
 constexpr int RC_SetRenderTarget = 6;
@@ -119,14 +139,21 @@ constexpr int RC_PopRenderTargetAndViewport = 111;
 constexpr int RC_OverrideAlphaWriteEnable = 184;
 constexpr int RC_GetCallQueue = 141; // ICallQueue* (null unless mat_queue_mode is queued)
 // ITexture
+constexpr int TEX_GetName = 0;
 constexpr int TEX_GetActualWidth = 3;
 constexpr int TEX_GetActualHeight = 4;
 constexpr int TEX_IncrementReferenceCount = 10;
+// IMatRenderContext::GetToneMappingScaleLinear: returns a Vector (MSVC: hidden result pointer, ret 4)
+constexpr int RC_GetToneMappingScaleLinear = 145;
+// IVModelRender (CModelRender, "VEngineModel016")
+constexpr int ComputeLightingState = 26;
 // IVRenderView ("VEngineRenderView013")
 constexpr int VGui_Paint = 38;
 // ISurface ("VGUI_Surface031")
 constexpr int IsCursorVisible = 56;
 constexpr int IsCursorLocked = 107;
+// IMatSystemSurface::DrawPanelIn3DSpace(VPANEL, const VMatrix &, int, int, float, float), same vtable
+constexpr int DrawPanelIn3DSpace = 164;
 // vgui::IInputInternal (vgui2.dll VGUI_InputInternal001, checked against CInputWin32's vtable)
 constexpr int InternalKeyCodePressed = 74;
 constexpr int InternalKeyCodeReleased = 77;
@@ -135,6 +162,44 @@ constexpr int GetActiveWeapon = 243;
 // IINFRAScreenClicker (client.dll, the mouse/controller cursor on INFRA's in-world menu screens)
 constexpr int SetControllerMovesCursor = 4;
 } // namespace vidx
+
+// World lighting at a point, as the engine lights a model there (IVModelRender::ComputeLightingState).
+// Alien Swarm / Portal 2 layouts, checked in INFRA's engine.dll and engine.dylib (see OFFSETS.md).
+struct LightingQuery_t
+{
+    Vector origin;                  // 0x00
+    unsigned short instance = 0xFFFF; // 0x0C ModelInstanceHandle_t (none)
+    bool ambientBoost = false;      // 0x0E
+};
+static_assert(sizeof(LightingQuery_t) == 0x10, "LightingQuery_t");
+
+struct LightDesc_t
+{
+    int type;              // 0x00 0 off, 1 point, 2 directional, 3 spot
+    Vector color;          // 0x04 linear
+    Vector position;       // 0x10
+    Vector direction;      // 0x1C the way the light travels
+    float range;           // 0x28 0 = unlimited
+    float falloff;         // 0x2C spot falloff exponent
+    float attenuation0;    // 0x30 constant
+    float attenuation1;    // 0x34 linear
+    float attenuation2;    // 0x38 quadratic
+    float theta, phi;      // 0x3C / 0x40 spot inner / outer angles
+    float thetaDot, phiDot; // 0x44 / 0x48 their cosines
+    float oneOverThetaDotMinusPhiDot; // 0x4C
+    uint32_t flags;        // 0x50
+    float rangeSquared;    // 0x54
+};
+static_assert(sizeof(LightDesc_t) == 0x58, "LightDesc_t");
+
+struct MaterialLightingState_t
+{
+    Vector ambientCube[6]; // 0x00 +x -x +y -y +z -z, linear
+    Vector lightingOrigin; // 0x48
+    int localLightCount;   // 0x54
+    LightDesc_t localLights[4]; // 0x58
+};
+static_assert(sizeof(MaterialLightingState_t) == 0x1B8, "MaterialLightingState_t");
 
 struct Game
 {
@@ -146,6 +211,7 @@ struct Game
     void *surface = nullptr;
     void *screenClicker = nullptr; // INFRA's IINFRAScreenClicker (main menu screen cursor)
     void *vguiInput = nullptr; // vgui::IInputInternal
+    void *modelRender = nullptr; // IVModelRender ("VEngineModel016"), for world lighting
     size_t matGameStartedFlag = 0; // CMaterialSystem byte that blocks late RT allocation
 
     // functions (hook targets)
@@ -212,6 +278,13 @@ struct Game
     void ApplyVRSettings() const;
 
     void *RenderContext() const { return VCall<void *>(materials, vidx::GetRenderContext); }
+    // Main thread, during rendering: how the engine would light a model at `origin` (ambient cube
+    // and up to 4 local lights). False if the interface is missing.
+    bool LightingAt(const Vector &origin, MaterialLightingState_t &out) const;
+    // HDR exposure the game's shaders multiply by (1 1 1 without HDR).
+    Vector ToneMapScale() const;
+    // The texture a material's texture variable points at now (e.g. "$basetexture"), "" if unknown.
+    std::string MaterialTexture(const char *material, const char *var) const;
     static void ReleaseContext(void *ctx) { VCall<int>(ctx, vidx::RC_Release); }
     void BackBufferSize(int &w, int &h) const
     {

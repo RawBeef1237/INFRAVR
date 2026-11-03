@@ -38,6 +38,7 @@ struct Config
     bool mirrorToDesktop = true;
     bool mirrorFill = true; // crop the eye to the window shape (16:9) instead of letterboxing
     int antialiasing = 4;   // MSAA samples for the eye images: 0 (off), 2, 4 or 8
+    bool offCenterEyes = true; // OpenXR: draw each eye with only its own field of view (off-center)
     bool multicore = false; // let the engine render on its own thread (mat_queue_mode 2)
     std::string dxvk = "stock"; // stock = dxvk_d3d9.dll (DXVK 2.7.1), gplall = dxvk_d3d9_gplall.dll
     // VR runtime: "openvr" (SteamVR, in this process) or "openxr" (the 64-bit infravr_openxr.exe
@@ -99,6 +100,23 @@ struct Config
     // [camera]
     bool cameraScreenView = true; // draw the camera screen from the lens in your hand
     int cameraScreenEvery = 2;    // ... every Nth frame (the extra view costs GPU time)
+    // The mod's own camera model (glTF, with the hand holding it), drawn instead of INFRA's camera
+    // and moved by INFRA's camera animations. Empty = INFRA's camera model.
+    std::string cameraModel = "hands\\camera_hand.glb";
+    // The same for the flashlight (v_light.mdl's bones). Empty = INFRA's flashlight model.
+    std::string flashlightModel = "hands\\flashlight_hand.glb";
+    // The same for the phone (v_phone.mdl's bones): drawn in the phone menu and when INFRA takes the
+    // phone out. Its screen (left top right bottom in its texture, 0..1) carries the phone menu,
+    // and call_texture replaces the phone's texture while INFRA shows its call screen.
+    std::string phoneModel = "hands\\phone_hand.glb";
+    float phoneScreenUV[4] = {0.041f, 0.133f, 0.480f, 0.879f};
+    std::string phoneCallTexture = "hands\\phone_hand_call.png";
+    // Where the screen and the lens are in the model's base colour texture (0..1): the screen
+    // rectangle (left top right bottom) shows the lens view; the lens circle (u v radius) is where
+    // that view is taken from.
+    float cameraScreenUV[4] = {0.113f, 0.134f, 0.486f, 0.404f};
+    float cameraLensUV[3] = {0.891f, 0.716f, 0.044f};
+    float cameraScreenBrightness = 1.0f;
 
     // [viewmodel]  offsets in game units: forward, left, up (in the hand's frame)
     Vector vmOffsetCamera{-14.0f, 2.0f, 5.0f};
@@ -122,7 +140,15 @@ struct Config
     Vector handsAngles{0.0f, 180.0f, -90.0f};   // pitch yaw roll, degrees, in the controller's frame
     float handsScale = 1.0f;
     float handsBrightness = 1.0f;
+    // world = lit like the game lights its models there (ambient light and nearby lights, with
+    // the models' normal maps); simple = a fixed light from the viewer (the old look).
+    std::string handsLighting = "world";
+    bool handsNormalMaps = true;
+    float handsNormalMapGreen = 1.0f; // +1: the normal maps' green channel points up (glTF), -1: down
     bool handsDepthTest = true; // hide the hands behind walls/props in front of them
+    // Draw the hands with INFRA's viewmodels, before the engine's post-processing (bloom, tone
+    // mapping, colour correction), instead of on top of the finished picture.
+    bool handsPostProcessing = true;
     bool handsFingers = true;   // bend the fingers from SteamVR's finger tracking
     float handsCurlMax = 75.0f; // degrees each finger joint bends at full curl
 

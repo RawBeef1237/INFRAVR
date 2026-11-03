@@ -15,6 +15,7 @@ std::set<std::string> g_skipped;
 std::set<std::string> g_active;
 const char *volatile g_stage = "loading";
 LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter = nullptr;
+volatile LONG g_crashed = 0;
 
 std::string SkipFile() { return GameDir() + "infravr_skip.txt"; }
 std::string FlagFile(const std::string &name) { return GameDir() + "infravr_in_" + name + ".flag"; }
@@ -124,6 +125,7 @@ const char *Stage() { return g_stage; }
 static LONG WINAPI CrashFilter(EXCEPTION_POINTERS *ep)
 {
     static volatile LONG s_once = 0;
+    InterlockedExchange(&g_crashed, 1);
     if (InterlockedExchange(&s_once, 1) == 0 && ep && ep->ExceptionRecord)
     {
         HMODULE mod = nullptr;
@@ -140,7 +142,25 @@ static LONG WINAPI CrashFilter(EXCEPTION_POINTERS *ep)
     return g_prevFilter ? g_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
 }
 
-void InstallCrashLogger() { g_prevFilter = SetUnhandledExceptionFilter(&CrashFilter); }
+void InstallCrashLogger()
+{
+    LPTOP_LEVEL_EXCEPTION_FILTER prev = SetUnhandledExceptionFilter(&CrashFilter);
+    if (prev != &CrashFilter) // installed again after the engine set its own: chain to that one
+        g_prevFilter = prev;
+}
+
+void OnProcessExit()
+{
+    if (g_crashed)
+        return;
+    std::lock_guard<std::mutex> lock(g_lock);
+    for (const std::string &name : g_active)
+    {
+        DeleteFileA(FlagFile(name).c_str());
+        IVR_LOG("Flags: INFRA closed normally while \"%s\" was still on trial - it stays on", name.c_str());
+    }
+    g_active.clear();
+}
 
 } // namespace flags
 } // namespace ivr

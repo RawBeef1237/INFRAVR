@@ -68,6 +68,7 @@ copy /y "%HERE%bin\infravr\actions\*.json" "%BIN%\infravr\actions\" >nul && echo
 copy /y "%HERE%bin\infravr\dxvk.conf" "%BIN%\infravr\" >nul && echo   copied bin\infravr\dxvk.conf
 if not exist "%BIN%\infravr\hands" mkdir "%BIN%\infravr\hands"
 copy /y "%HERE%bin\infravr\hands\*.glb" "%BIN%\infravr\hands\" >nul && echo   copied bin\infravr\hands (VR hand models)
+if exist "%HERE%bin\infravr\hands\*.png" copy /y "%HERE%bin\infravr\hands\*.png" "%BIN%\infravr\hands\" >nul
 if exist "%HERE%bin\infravr\openxr\infravr_openxr.exe" (
     if not exist "%BIN%\infravr\openxr" mkdir "%BIN%\infravr\openxr"
     copy /y "%HERE%bin\infravr\openxr\*.*" "%BIN%\infravr\openxr\" >nul && echo   copied bin\infravr\openxr ^(OpenXR helper^)

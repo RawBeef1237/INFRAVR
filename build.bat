@@ -80,6 +80,7 @@ copy /y "%ROOT%\config\infravr.ini" "%OUT%\bin\infravr\" >nul || goto :fail
 copy /y "%ROOT%\config\dxvk.conf" "%OUT%\bin\infravr\" >nul || goto :fail
 copy /y "%ROOT%\config\actions\*.json" "%OUT%\bin\infravr\actions\" >nul || goto :fail
 copy /y "%ROOT%\assets\hands\*.glb" "%OUT%\bin\infravr\hands\" >nul || goto :fail
+copy /y "%ROOT%\assets\hands\*.png" "%OUT%\bin\infravr\hands\" >nul || goto :fail
 copy /y "%ROOT%\build-vs-xr\Release\infravr_openxr.exe" "%OUT%\bin\infravr\openxr\" >nul || goto :fail
 copy /y "%DL%\openxr_loader.dll" "%OUT%\bin\infravr\openxr\" >nul || goto :fail
 copy /y "%ROOT%\licenses\*.txt" "%OUT%\licenses\" >nul

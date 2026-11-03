@@ -76,9 +76,12 @@ finger curls, haptics and overlays are the same either way.
 Risky mechanisms write `infravr_in_<name>.flag` next to `infra.exe` before they start and remove
 it once they have run for a while. A flag left behind means INFRA stopped while that mechanism
 was running: on the next start it is added to `infravr_skip.txt` and stays off. Current names:
-`world_eye_size`, `glb_hands`, `openxr_start`. `[debug] retry_skipped = true` (or deleting the
-line) tries again; the installer clears the skip file on upgrade. An unhandled-exception filter
-logs the crash address as module + offset together with the mod's current stage.
+`world_eye_size`, `glb_hands`, `openxr_start`, `openxr_interop`. `[debug] retry_skipped = true`
+(or deleting the line) tries again; the installer clears the skip file on upgrade. An
+unhandled-exception filter logs the crash address as module + offset together with the mod's
+current stage; it is installed again once the engine is up, so it runs before the engine's own
+handler. Quitting INFRA normally (process exit without that filter having seen a crash) removes
+the flags still on trial, so closing the game early does not switch anything off.
 
 Only one copy of the mod is active per process (a named mutex); a second load just forwards to
 DXVK.
