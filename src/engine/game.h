@@ -152,6 +152,8 @@ constexpr int VGui_Paint = 38;
 // ISurface ("VGUI_Surface031")
 constexpr int IsCursorVisible = 56;
 constexpr int IsCursorLocked = 107;
+// IMatSystemSurface::DrawPanelIn3DSpace(VPANEL, const VMatrix &, int, int, float, float), same vtable
+constexpr int DrawPanelIn3DSpace = 164;
 // vgui::IInputInternal (vgui2.dll VGUI_InputInternal001, checked against CInputWin32's vtable)
 constexpr int InternalKeyCodePressed = 74;
 constexpr int InternalKeyCodeReleased = 77;

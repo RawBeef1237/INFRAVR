@@ -1645,7 +1645,7 @@ bool PhoneScreen(Pose &out, float &width, float &height)
     return true;
 }
 
-bool ItemPanel(int item, const char *bone, const Vector &centre, const Mat3 &frame, Pose &out)
+bool ItemPanel(int item, const char *bone, const Vector &centre, const Mat3 &frame, Pose &out, float &scale)
 {
     if (item < 0 || item >= ITEM_COUNT || g_items[item].state <= 0 || !bone)
         return false;
@@ -1668,6 +1668,7 @@ bool ItemPanel(int item, const char *bone, const Vector &centre, const Mat3 &fra
         p.rot.SetCol(2, z);
     }
     g_items[item].panelFrame = g_eyeFrame.load();
+    scale = b.scale;
     out = p;
     return true;
 }

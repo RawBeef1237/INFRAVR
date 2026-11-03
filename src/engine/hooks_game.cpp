@@ -3,6 +3,7 @@
 #include "config.h"
 #include "glb_model.h"
 #include "hands_renderer.h"
+#include "flags.h"
 #include "world_size.h"
 #include "d3d_vr.h"
 #include "game.h"
@@ -27,6 +28,7 @@ using CalcViewModelViewFn = void(IVR_FASTCALL *)(void *, void *, const Vector *,
 using UpdateLightFn = void(IVR_FASTCALL *)(void *, void *, int, const Vector *, const Vector *, const Vector *,
                                            const Vector *, float, float, float, bool, const char *);
 using InfraFlashlightFn = void(IVR_FASTCALL *)(void *, void *, float, float, float, float, float, float, float);
+using DrawPanelIn3DSpaceFn = void(IVR_FASTCALL *)(void *, void *, unsigned, const float *, int, int, float, float);
 using BuildTransformationsFn = void(IVR_FASTCALL *)(void *, void *, void *, void *, void *, const void *, int, void *);
 // ---- server ------------------------------------------------------------------------------
 using UpdateObjectFn = bool(IVR_FASTCALL *)(void *, void *, void *, float, bool);
@@ -41,6 +43,7 @@ Hook<CreateMoveFn> hkCreateMove;
 Hook<CalcViewModelViewFn> hkCalcViewModelView;
 Hook<UpdateLightFn> hkUpdateLight;
 Hook<BuildTransformationsFn> hkBuildTransformations;
+Hook<DrawPanelIn3DSpaceFn> hkDrawPanelIn3DSpace;
 Hook<InfraFlashlightFn> hkInfraFlashlight;
 Hook<UpdateObjectFn> hkUpdateObject;
 Hook<UpdateObjectVMFn> hkUpdateObjectVM;
@@ -712,6 +715,42 @@ int CaptureItemBones(const uint8_t *studio, const matrix3x4_t *bones, int count)
     return item;
 }
 
+// The last screen panel put on an item model (main thread): DrawPanelIn3DSpaceDetour scales it.
+struct PanelTarget
+{
+    bool valid = false;
+    Vector upperLeft, normal;
+    float width = 0, height = 0, scale = 1;
+    double at = 0;
+};
+PanelTarget g_panelTarget;
+constexpr const char *kPanelScaleFlag = "panel_scale";
+
+// IMatSystemSurface::DrawPanelIn3DSpace (C_VGuiScreen::DrawModel): the matrix's origin is the
+// panel's upper left corner, its columns the panel's axes (x along its width, z out of it).
+// INFRA's panel on the mod's phone / camera model is drawn `scale` times bigger, matching the
+// model the way it matches INFRA's own viewmodel. Recognised by its corner, facing and size.
+void IVR_FASTCALL DrawPanelIn3DSpaceDetour(void *self, void *edx, unsigned panel, const float *m, int pw, int ph,
+                                           float w, float h)
+{
+    const PanelTarget &t = g_panelTarget;
+    if (t.valid && m && NowSeconds() - t.at < 0.5 && std::fabs(w - t.width) < 0.01f && std::fabs(h - t.height) < 0.01f)
+    {
+        Vector origin(m[3], m[7], m[11]), z(m[2], m[6], m[10]);
+        if ((origin - t.upperLeft).Length() < 0.5f && Dot(z.Normalized(), t.normal) > 0.98f)
+        {
+            static int s_draws = 0;
+            if (s_draws == 0)
+                IVR_LOG("Screen panel: drawn %.2f times INFRA's size on the mod's model", t.scale);
+            if (++s_draws == 600)
+                flags::End(kPanelScaleFlag);
+            w *= t.scale;
+            h *= t.scale;
+        }
+    }
+    hkDrawPanelIn3DSpace.original(self, edx, panel, m, pw, ph, w, h);
+}
+
 // INFRA's screen panels: C_VGuiScreen entities parented to the viewmodel's controlpanel%d_ll
 // attachment, sized from the _ll -> _ur attachments (its menu on v_phone, the viewfinder on
 // v_camera). Attachments are worked out from the bones after BuildTransformations, so the bones
@@ -792,10 +831,16 @@ int PlaceScreenPanel(const uint8_t *studio, int item, matrix3x4_t *bones, int co
     const uint8_t *b = studio + index + sp.bone * kStudioBoneSize;
     const char *boneName = reinterpret_cast<const char *>(b + *reinterpret_cast<const int *>(b));
     Pose panel;
-    if (!hands::ItemPanel(item, boneName, sp.centre, sp.frame, panel))
+    float scale = 1.0f;
+    if (!hands::ItemPanel(item, boneName, sp.centre, sp.frame, panel, scale))
         return -1;
-    // The panel keeps INFRA's size: centre it on the model's screen.
-    Vector corner = panel.pos - panel.rot.Col(0) * (sp.width * 0.5f) - panel.rot.Col(1) * (sp.height * 0.5f);
+    // INFRA sizes the panel for its own (smaller) viewmodel; DrawPanelIn3DSpaceDetour scales it up
+    // by the model's scale from its upper left corner (the engine draws from there: the lower left
+    // corner plus INFRA's height), so the corner is set for the scaled panel to sit centred.
+    Vector x = panel.rot.Col(0), y = panel.rot.Col(1);
+    Vector upperLeft = panel.pos - x * (sp.width * scale * 0.5f) + y * (sp.height * scale * 0.5f);
+    Vector corner = upperLeft - y * sp.height;
+    g_panelTarget = {true, upperLeft, panel.rot.Col(2), sp.width, sp.height, scale, NowSeconds()};
     // bone * attachment = (corner, panel axes): bone axes = panel axes * frame^T.
     Mat3 rot = panel.rot * sp.frame.Transposed();
     Vector t = corner - rot * sp.ll;
@@ -1036,6 +1081,11 @@ bool InstallClientHooks()
     if (g_Game.fnRenderCameraWeapon)
         hkRenderCameraWeapon.Install("CViewRender::RenderCameraWeapon", g_Game.fnRenderCameraWeapon,
                                      (void *)&RenderCameraWeaponDetour);
+    if (g_Game.surface && flags::Begin(kPanelScaleFlag)) // ended after 600 scaled panels
+    {
+        void *fn = (*static_cast<void ***>(g_Game.surface))[vidx::DrawPanelIn3DSpace];
+        hkDrawPanelIn3DSpace.Install("IMatSystemSurface::DrawPanelIn3DSpace", fn, (void *)&DrawPanelIn3DSpaceDetour);
+    }
     if (g_Game.fnCalcViewModelView)
         hkCalcViewModelView.Install("C_BasePlayer::CalcViewModelView", g_Game.fnCalcViewModelView,
                                     (void *)&CalcViewModelViewDetour);
