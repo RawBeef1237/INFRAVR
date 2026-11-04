@@ -503,7 +503,7 @@ void BuildBatches(ModelData &md, bool camera)
 
 bool LoadModel(int id, const std::string &file)
 {
-    std::string path = ModuleDir() + "infravr\\" + file, err;
+    std::string path = ModDir() + "models\\" + file, err;
     ModelData &md = g_model[id];
     if (!md.glb.Load(path, &err))
     {
@@ -801,7 +801,7 @@ bool TryLoadItem(int item)
         ModelData &pm = g_model[im.model];
         FindPhoneScreen(pm);
         GlbImage call;
-        std::string callFile = ModuleDir() + "infravr\\" + g_Config.phoneCallTexture;
+        std::string callFile = ModDir() + "models\\" + g_Config.phoneCallTexture;
         if (!g_Config.phoneCallTexture.empty() && pm.itemMaterial >= 0 && GlbModel::LoadImageFile(callFile, call))
         {
             pm.glb.images.push_back(std::move(call));

@@ -100,7 +100,7 @@ void D3DVR::OnDeviceCreated(IDirect3DDevice9 *dev)
         g_VR.m_system->GetOutputDevice(&want, vr::TextureType_Vulkan, reinterpret_cast<VkInstance_T *>(m_instance));
         if (want && want != (uint64_t)(uintptr_t)m_physDev)
             IVR_ERR("DXVK is rendering on a different GPU than SteamVR - this can crash or show nothing. Put the "
-                    "headset GPU's name in INFRA\\bin\\infravr\\dxvk.conf as dxvk.deviceFilter");
+                    "headset GPU's name in INFRA\\infravr\\cfg\\dxvk.conf as dxvk.deviceFilter");
     }
 }
 

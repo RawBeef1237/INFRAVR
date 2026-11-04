@@ -1,9 +1,9 @@
 // INFRA VR - crash-sticky experiment flags (the approach Black Mesa VR uses).
 //
 // A risky mechanism calls Begin("name") before it first runs and End("name") once it has run
-// long enough to be trusted. Begin writes INFRA\infravr_in_<name>.flag; End deletes it. If the
+// long enough to be trusted. Begin writes INFRA\infravr\infravr_in_<name>.flag; End deletes it. If the
 // game dies in between, the flag is still there on the next launch: that mechanism is added to
-// INFRA\infravr_skip.txt and stays off until the user deletes the line (or sets
+// INFRA\infravr\infravr_skip.txt and stays off until the user deletes the line (or sets
 // [debug] retry_skipped = true). Everything else keeps working.
 #pragma once
 #include "common.h"

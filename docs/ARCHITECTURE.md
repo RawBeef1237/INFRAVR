@@ -13,6 +13,23 @@ infra.exe -> shaderapidx9.dll -> bin\d3d9.dll (INFRA VR) -> bin\dxvk_d3d9.dll (D
            client.dll / engine.dll / server.dll / materialsystem.dll (hooks)
 ```
 
+## Installed layout
+
+The same split as Half-Life 2 VR (`bin\` + `hlvr\`) and Black Mesa VR: only what the engine has to
+load from `bin\` lives there, and the rest is one mod folder next to INFRA's `infra\`. The code
+reaches it through `ModDir()` (`INFRA\infravr\`, from `src/core/common.h`); `ModuleDir()`
+(`INFRA\bin\`) is used only for the DLLs next to the mod.
+
+| Path | What |
+|---|---|
+| `bin\d3d9.dll`, `bin\dxvk_d3d9.dll`, `bin\openvr_api.dll` | the mod, DXVK, OpenVR |
+| `infravr\cfg\infravr.ini`, `infravr\cfg\dxvk.conf` | settings (`DXVK_CONFIG_FILE`) |
+| `infravr\cfg\steamvr\` | `action_manifest.json` + `bindings_*.json` |
+| `infravr\models\` | GLB models and textures; ini model paths are relative to this |
+| `infravr\bin\` | `infravr_openxr.exe` + `openxr_loader.dll` |
+| `infravr\` | `infravr.log`, `infravr_openxr.log`, `infra_d3d9.log` (`DXVK_LOG_PATH`), crash flags |
+| `infravr.bat` | launcher with the VR launch options |
+
 ## Modules
 
 | Folder | What lives there | May depend on |
@@ -73,7 +90,7 @@ finger curls, haptics and overlays are the same either way.
 
 ## Crash-sticky mechanisms
 
-Risky mechanisms write `infravr_in_<name>.flag` next to `infra.exe` before they start and remove
+Risky mechanisms write `infravr_in_<name>.flag` in the mod folder (`INFRA\infravr\`) before they start and remove
 it once they have run for a while. A flag left behind means INFRA stopped while that mechanism
 was running: on the next start it is added to `infravr_skip.txt` and stays off. Current names:
 `world_eye_size`, `glb_hands`, `openxr_start`, `openxr_interop`. `[debug] retry_skipped = true`

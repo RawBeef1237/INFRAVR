@@ -6,9 +6,11 @@ if "%GAME%"=="" if exist "C:\Program Files (x86)\Steam\steamapps\common\infra\in
 if "%GAME%"=="" set /p "GAME=Paste the folder that contains infra.exe: "
 set "GAME=%GAME:"=%"
 if not exist "%GAME%\infra.exe" (echo infra.exe not found in "%GAME%" & pause & exit /b 1)
-for %%f in (bin\d3d9.dll bin\dxvk_d3d9.dll bin\openvr_api.dll bin\infravr.ini) do (
+for %%f in (bin\d3d9.dll bin\dxvk_d3d9.dll bin\openvr_api.dll bin\infravr.ini infravr.bat) do (
     if exist "%GAME%\%%f" del /q "%GAME%\%%f" && echo   removed %%f
 )
+rem The mod folder (settings, bindings, hand models, logs) and the older bin\infravr\ layout.
+if exist "%GAME%\infravr" rmdir /s /q "%GAME%\infravr" && echo   removed infravr\
 if exist "%GAME%\bin\infravr" rmdir /s /q "%GAME%\bin\infravr" && echo   removed bin\infravr\
 if exist "%GAME%\bin\d3d9.dll.before-infravr" (
     ren "%GAME%\bin\d3d9.dll.before-infravr" d3d9.dll && echo   restored your previous bin\d3d9.dll
@@ -16,6 +18,7 @@ if exist "%GAME%\bin\d3d9.dll.before-infravr" (
 if exist "%GAME%\infra.exe.before-infravr-4gb" (
     copy /y "%GAME%\infra.exe.before-infravr-4gb" "%GAME%\infra.exe" >nul && del /q "%GAME%\infra.exe.before-infravr-4gb" && echo   removed the 4GB patch from infra.exe
 )
-for %%f in (infravr_skip.txt infravr_in_*.flag) do if exist "%GAME%\%%f" del /q "%GAME%\%%f"
-echo INFRA is back to normal (infravr.log is left in the INFRA folder).
+for %%f in (infravr.log infravr_openxr.log infravr_skip.txt) do if exist "%GAME%\%%f" del /q "%GAME%\%%f"
+if exist "%GAME%\infravr_in_*.flag" del /q "%GAME%\infravr_in_*.flag"
+echo INFRA is back to normal.
 pause

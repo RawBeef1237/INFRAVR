@@ -1,4 +1,4 @@
-// INFRA VR - the mod's own VR hands: the GLB models from bin\infravr\hands drawn on both
+// INFRA VR - the mod's own VR hands: the GLB models from infravr\models\hands drawn on both
 // controllers in each eye, fingers bent from SteamVR finger tracking (or grip/trigger), INFRA's
 // viewmodel arms hidden ([hands] model = glb). Same split as Black Mesa VR (custom hand models
 // drawn by the mod) with Half-Life 2 VR's behaviour (always visible, finger curl).

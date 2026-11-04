@@ -1,6 +1,6 @@
 // Loads the bundled GLB hands, checks the skeleton is recognised and that bending the fingers
 // moves the finger tips towards the palm. Writes <name>_rest.obj / <name>_fist.obj for a look.
-// Usage: glb_test <assets/hands folder> [out folder]
+// Usage: glb_test <infravr/models/hands folder> [out folder]
 #include "glb_model.h"
 
 #include <cmath>
@@ -210,7 +210,7 @@ static int TestCamera(const std::string &path, const std::string &out)
 
 int main(int argc, char **argv)
 {
-    std::string dir = argc > 1 ? argv[1] : "assets/hands";
+    std::string dir = argc > 1 ? argv[1] : "infravr/models/hands";
     std::string out = argc > 2 ? argv[2] : ".";
     int failures = 0;
     for (const char *name : {"vr_hand_left", "vr_hand_right"})

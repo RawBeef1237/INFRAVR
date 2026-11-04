@@ -16,7 +16,7 @@ struct Link
     bool Alive() const; // helper still running and not failed
 };
 
-// Creates the shared memory, starts bin\infravr\openxr\infravr_openxr.exe and waits until it
+// Creates the shared memory, starts infravr\bin\infravr_openxr.exe and waits until it
 // reports the headset (or fails / times out). nullptr on failure, with the reason logged.
 Link *Start(double timeoutSeconds);
 void Stop(Link *link);

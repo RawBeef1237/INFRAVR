@@ -344,7 +344,7 @@ void InitVROnce()
     InstallGamepadHooks(); // before the engine's input system looks for controllers
 
     // DXVK options for VR (no vsync against the monitor, low latency) unless the user has their own.
-    std::string conf = ModuleDir() + "infravr\\dxvk.conf";
+    std::string conf = ModDir() + "cfg\\dxvk.conf";
     char existing[8];
     if (!GetEnvironmentVariableA("DXVK_CONFIG_FILE", existing, sizeof(existing)) &&
         GetFileAttributesA(conf.c_str()) != INVALID_FILE_ATTRIBUTES)
@@ -716,7 +716,13 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
             g_active = false; // another copy runs VR; this one only forwards to DXVK
             return TRUE;
         }
-        LogInit((GameDir() + "infravr.log").c_str());
+        // Everything the mod writes goes in its own folder, INFRA\infravr\ (made here if it is missing).
+        CreateDirectoryA(ModDir().c_str(), nullptr);
+        LogInit((ModDir() + "infravr.log").c_str());
+        // DXVK's own log (infra_d3d9.log) goes next to ours unless the user points it elsewhere.
+        char dxvkLog[8];
+        if (!GetEnvironmentVariableA("DXVK_LOG_PATH", dxvkLog, sizeof(dxvkLog)))
+            SetEnvironmentVariableA("DXVK_LOG_PATH", ModDir().c_str());
         IVR_LOG("INFRA VR %s loaded from %s", INFRAVR_VERSION, ModuleDir().c_str());
         LoadConfig();
         flags::Init();
