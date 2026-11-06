@@ -429,19 +429,36 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
     Defer([] { g_D3D.blockCameraCopy = false; });
     SetRenderTarget(nullptr);
 
-    bool hud = false;
+    bool hud = false, subs = false;
+    // Subtitles get a panel of their own: the in-game HUD is painted on its own first and the
+    // subtitle region copied out of it, then (phone menu) the pause menu is painted for the phone.
+    bool subsLayer = g_hudRT && g_Mod.SubtitleLayer();
     if (g_hudRT && g_Mod.phoneMenu)
     {
-        PaintHud(hudView, PAINT_UIPANELS | PAINT_INGAMEPANELS); // the pause menu, for the phone panel
+        if (subsLayer)
+        {
+            PaintHud(hudView, PAINT_INGAMEPANELS);
+            Defer([] { g_D3D.CopySubtitles(); });
+            subs = true;
+            PaintHud(hudView, g_Config.subtitlesOnPhone ? (PAINT_UIPANELS | PAINT_INGAMEPANELS) : PAINT_UIPANELS);
+        }
+        else
+            PaintHud(hudView, PAINT_UIPANELS | PAINT_INGAMEPANELS); // the pause menu, for the phone panel
         hud = true;
     }
     else if (g_Config.hudMode == HudMode::Overlay && g_hudRT && (whatToDraw & RENDERVIEW_DRAWHUD))
     {
         PaintHud(hudView, PAINT_INGAMEPANELS);
-        hud = true;
+        if (subsLayer)
+        {
+            Defer([] { g_D3D.CopySubtitles(); });
+            subs = true;
+        }
+        hud = !subsLayer || g_Config.subtitlesHudPanel;
     }
     vr::HmdMatrix34_t pose = g_VR.Head().raw; // what this frame was drawn for
-    Defer([hud, pose] {
+    Defer([hud, subs, pose] {
+        g_Mod.subsPainted = subs;
         g_D3D.SetRenderPose(pose);
         world::OnStereoFrame();
         g_Mod.eyesRendered = true;

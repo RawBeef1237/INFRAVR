@@ -36,7 +36,7 @@ reaches it through `ModDir()` (`INFRA\infravr\`, from `src/core/common.h`); `Mod
 |---|---|---|
 | `src/core` | logging, `infravr.ini`, crash-sticky flags and the skip file, crash logger | nothing |
 | `src/engine` | Source structures, interface/signature resolution, engine detours (`hooks_game.cpp`) | core, and the render/gameplay entry points it drives |
-| `src/render` | the d3d9 proxy, DXVK interop and frame submission, eye-size render targets, OpenXR texture publishing, the GLB hand renderer | core, engine types, vr |
+| `src/render` | the d3d9 proxy, DXVK interop and frame submission, eye-size render targets, OpenXR texture publishing, the GLB hand renderer, the subtitle panel | core, engine types, vr |
 | `src/vr` | `VrRuntime` (OpenVR and OpenXR backends), the overlay API, the shared-memory bridge | core |
 | `src/gameplay` | `VRMod`: locomotion, turning, holsters, grabbing, menus, the console command queue | core, engine, vr |
 | `src/ui` | the phone-menu gamepad emulation | core, vr, gameplay |
