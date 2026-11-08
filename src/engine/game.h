@@ -154,6 +154,20 @@ constexpr int IsCursorVisible = 56;
 constexpr int IsCursorLocked = 107;
 // IMatSystemSurface::DrawPanelIn3DSpace(VPANEL, const VMatrix &, int, int, float, float), same vtable
 constexpr int DrawPanelIn3DSpace = 164;
+// ISurface::GetEmbeddedPanel() (root VPANEL; `mov eax, [ecx+0x254]`) and
+// PaintTraverseEx(VPANEL, bool paintPopups) (`ret 8`), checked against CMatSystemSurface's vtable
+// in vguimatsurface.dll and the macOS dylib's symbols (same index: no virtual destructor first)
+constexpr int GetEmbeddedPanel = 9;
+constexpr int PaintTraverseEx = 118;
+// vgui::IPanel (vgui2.dll "VGUI_Panel009", VPanelWrapper). The dylib's indices are one higher
+// (GCC's two destructors); the dll's slots were matched by their `ret` sizes.
+constexpr int Panel_GetSize = 5;
+constexpr int Panel_GetAbsPos = 10;
+constexpr int Panel_SetVisible = 14;
+constexpr int Panel_IsVisible = 15;
+constexpr int Panel_GetChildCount = 17;
+constexpr int Panel_GetChild = 18;
+constexpr int Panel_GetName = 36;
 // vgui::IInputInternal (vgui2.dll VGUI_InputInternal001, checked against CInputWin32's vtable)
 constexpr int InternalKeyCodePressed = 74;
 constexpr int InternalKeyCodeReleased = 77;
@@ -211,6 +225,7 @@ struct Game
     void *surface = nullptr;
     void *screenClicker = nullptr; // INFRA's IINFRAScreenClicker (main menu screen cursor)
     void *vguiInput = nullptr; // vgui::IInputInternal
+    void *vguiPanel = nullptr; // vgui::IPanel (optional: subtitles panel)
     void *modelRender = nullptr; // IVModelRender ("VEngineModel016"), for world lighting
     size_t matGameStartedFlag = 0; // CMaterialSystem byte that blocks late RT allocation
 

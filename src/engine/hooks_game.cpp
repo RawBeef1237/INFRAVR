@@ -265,6 +265,120 @@ void PaintHud(const CViewSetup *hudView, int paintMode)
     Game::ReleaseContext(ctx);
 }
 
+// --- subtitle panels -------------------------------------------------------------------------
+// INFRA (Portal 2 branch) parents its subtitle panels, "HudCloseCaption" and "HudSubtitles", to
+// the fullscreen viewport, which is painted with the UI panels (PAINT_UIPANELS) so subtitles show
+// over the pause menu - not with the in-game HUD. They are found by name in the vgui tree and
+// painted on their own (ISurface::PaintTraverseEx) for the subtitle panel, and hidden while the
+// pause menu is painted for the phone screen.
+struct CaptionPanels
+{
+    unsigned int panel[4] = {};
+    int count = 0;
+    int levelLoads = -1;
+    double nextSearch = 0;
+    bool logged = false;
+} g_captions;
+
+std::string PanelName(unsigned int p)
+{
+    const char *n = VCall<const char *, unsigned int>(g_Game.vguiPanel, vidx::Panel_GetName, p);
+    return n ? n : "";
+}
+
+void FindCaptionPanels(unsigned int p, int depth, std::string path)
+{
+    if (!p || depth > 12 || g_captions.count >= 4)
+        return;
+    std::string name = PanelName(p);
+    path += "/" + name;
+    if (name == "HudCloseCaption" || name == "HudSubtitles")
+    {
+        g_captions.panel[g_captions.count++] = p;
+        if (!g_captions.logged)
+        {
+            int x = 0, y = 0, w = 0, h = 0;
+            VCall<void, unsigned int, int &, int &>(g_Game.vguiPanel, vidx::Panel_GetAbsPos, p, x, y);
+            VCall<void, unsigned int, int &, int &>(g_Game.vguiPanel, vidx::Panel_GetSize, p, w, h);
+            bool vis = VCall<bool, unsigned int>(g_Game.vguiPanel, vidx::Panel_IsVisible, p);
+            IVR_LOG("Subtitles: vgui panel %s at %d,%d size %dx%d%s", path.c_str(), x, y, w, h, vis ? "" : " (hidden)");
+        }
+        return;
+    }
+    int n = VCall<int, unsigned int>(g_Game.vguiPanel, vidx::Panel_GetChildCount, p);
+    for (int i = 0; i < n && i < 512; ++i)
+        FindCaptionPanels(VCall<unsigned int, unsigned int, int>(g_Game.vguiPanel, vidx::Panel_GetChild, p, i),
+                          depth + 1, path);
+}
+
+// The subtitle panels (searched again after each level load, and every few seconds until found).
+int CaptionPanelCount()
+{
+    if (!g_Game.vguiPanel || !g_Game.surface)
+        return 0;
+    double now = NowSeconds();
+    if (g_captions.levelLoads != g_Mod.m_levelLoads || (g_captions.count == 0 && now > g_captions.nextSearch))
+    {
+        g_captions.levelLoads = g_Mod.m_levelLoads;
+        g_captions.nextSearch = now + 5.0;
+        g_captions.count = 0;
+        FindCaptionPanels(VCall<unsigned int>(g_Game.surface, vidx::GetEmbeddedPanel), 0, "");
+        if (!g_captions.logged)
+        {
+            if (!g_captions.count)
+                IVR_LOG("Subtitles: no HudCloseCaption/HudSubtitles panel found yet - the subtitle panel shows "
+                        "the UI layer's subtitle region instead");
+            g_captions.logged = g_captions.count > 0;
+        }
+    }
+    return g_captions.count;
+}
+
+void SetCaptionsVisible(bool on, bool saved[4])
+{
+    for (int i = 0; i < g_captions.count; ++i)
+    {
+        unsigned int p = g_captions.panel[i];
+        if (on)
+        {
+            if (saved[i])
+                VCall<void, unsigned int, bool>(g_Game.vguiPanel, vidx::Panel_SetVisible, p, true);
+        }
+        else
+        {
+            saved[i] = VCall<bool, unsigned int>(g_Game.vguiPanel, vidx::Panel_IsVisible, p);
+            if (saved[i])
+                VCall<void, unsigned int, bool>(g_Game.vguiPanel, vidx::Panel_SetVisible, p, false);
+        }
+    }
+}
+
+// Paints only the subtitles into the HUD render target (falls back to the whole UI layer while
+// the panels are not found; the subtitle region is cut out of it either way).
+void PaintSubtitles(const CViewSetup *hudView)
+{
+    if (CaptionPanelCount() == 0)
+    {
+        PaintHud(hudView, PAINT_UIPANELS | PAINT_INGAMEPANELS);
+        return;
+    }
+    void *ctx = g_Game.RenderContext();
+    CViewSetup hv = *hudView;
+    hv.x = hv.y = 0;
+    hv.width = g_hudW;
+    hv.height = g_hudH;
+    alignas(16) uint8_t frustum[512] = {};
+    VCall<void, void *, CViewSetup *, int, void *, void *>(g_Game.renderView, 41, ctx, &hv, 0, g_hudRT, frustum);
+    VCall<void, bool, bool>(ctx, vidx::RC_OverrideAlphaWriteEnable, true, true);
+    VCall<void, unsigned char, unsigned char, unsigned char, unsigned char>(ctx, vidx::RC_ClearColor4ub, 0, 0, 0, 0);
+    VCall<void, bool, bool, bool>(ctx, vidx::RC_ClearBuffers, true, false, false);
+    for (int i = 0; i < g_captions.count; ++i)
+        VCall<void, unsigned int, bool>(g_Game.surface, vidx::PaintTraverseEx, g_captions.panel[i], false);
+    VCall<void, bool, bool>(ctx, vidx::RC_OverrideAlphaWriteEnable, false, true);
+    VCall<void, void *, void *>(g_Game.renderView, 42, ctx, frustum); // PopView(ctx, frustum)
+    Game::ReleaseContext(ctx);
+}
+
 bool g_lensPass = false;
 
 // The camera weapon's screen shows _rt_CameraWeapon, which DrawViewModels fills with a copy of the
@@ -437,10 +551,17 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
     {
         if (subsLayer)
         {
-            PaintHud(hudView, PAINT_INGAMEPANELS);
+            PaintSubtitles(hudView);
             Defer([] { g_D3D.CopySubtitles(); });
             subs = true;
-            PaintHud(hudView, g_Config.subtitlesOnPhone ? (PAINT_UIPANELS | PAINT_INGAMEPANELS) : PAINT_UIPANELS);
+            // The pause menu for the phone screen, without the subtitles (they are UI panels too).
+            bool saved[4] = {};
+            bool hide = !g_Config.subtitlesOnPhone && CaptionPanelCount() > 0;
+            if (hide)
+                SetCaptionsVisible(false, saved);
+            PaintHud(hudView, PAINT_UIPANELS | PAINT_INGAMEPANELS);
+            if (hide)
+                SetCaptionsVisible(true, saved);
         }
         else
             PaintHud(hudView, PAINT_UIPANELS | PAINT_INGAMEPANELS); // the pause menu, for the phone panel
@@ -448,13 +569,15 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
     }
     else if (g_Config.hudMode == HudMode::Overlay && g_hudRT && (whatToDraw & RENDERVIEW_DRAWHUD))
     {
-        PaintHud(hudView, PAINT_INGAMEPANELS);
         if (subsLayer)
         {
+            PaintSubtitles(hudView);
             Defer([] { g_D3D.CopySubtitles(); });
             subs = true;
         }
         hud = !subsLayer || g_Config.subtitlesHudPanel;
+        if (hud)
+            PaintHud(hudView, PAINT_INGAMEPANELS);
     }
     vr::HmdMatrix34_t pose = g_VR.Head().raw; // what this frame was drawn for
     Defer([hud, subs, pose] {
