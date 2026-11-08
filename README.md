@@ -118,9 +118,13 @@ playing; use it if a menu shows up in 3D without a pointer.
 
 You can remap everything in SteamVR -> Settings -> Controllers -> Manage controller bindings -> INFRA.
 
-**Grabbing:** squeeze the grip while your hand points at a prop to pick it up; it is held in front
-of that hand and follows it. Let go of the grip to drop it, or let go while swinging to throw it.
-**Buttons/doors/levers:** point with a hand and pull the trigger ("use" is aimed along your hand).
+**Grabbing:** squeeze the grip while your hand touches or points at a prop to pick it up; it moves
+into that hand and turns with it, and the hand model is hidden while you hold it (like Half-Life 2:
+VR). Let go of the grip to drop it; let go while swinging to throw it. `[aim] hold_in_hand = false`
+holds it in front of the hand instead.
+**Buttons/doors/levers:** touch or point with a hand and pull the trigger. "Use" and INFRA's white
+selection outline both search from your hand along where it points, never from your eyes
+(`[aim] hand_use`).
 
 ### Holsters
 
@@ -179,8 +183,11 @@ infra.exe -> shaderapidx9.dll -> bin\d3d9.dll (INFRA VR) -> bin\dxvk_d3d9.dll (D
   with SteamVR's laser pointer.
 - **Input** - `ClientModeShared::CreateMove`: stick locomotion, room-scale (your body follows your
   head), snap turn, and "use"/attack aimed along the controller or the camera lens.
+- **Use** - `FindUseEntity` on the server (what "use" acts on) and on the client (what INFRA's
+  selection outline marks): while it runs, the player's eye position and angles are the hand's.
 - **Grab** - server `CGrabController::UpdateObject`: while a held object is updated, the player's
-  eye angles/shoot position are replaced by the controller's, so objects follow your hand.
+  eye angles/shoot position are replaced by the controller's, and `SetTargetPosition` puts the
+  grabbed point in the hand, turned with it.
 - **Viewmodel / flashlight / camera** - `C_BasePlayer::CalcViewModelView`,
   `CFlashlightEffect::UpdateLight` and INFRA's camera viewfinder pass are moved to your hands.
 

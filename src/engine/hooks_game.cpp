@@ -10,6 +10,7 @@
 #include "hooks.h"
 #include "mod.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -36,6 +37,8 @@ using UpdateObjectVMFn = bool(IVR_FASTCALL *)(void *, void *, void *, float);
 using ComputeErrorFn = float(IVR_FASTCALL *)(void *, void *);
 using EyeAnglesFn = const QAngle *(IVR_FASTCALL *)(void *, void *);
 using ShootPositionFn = Vector *(IVR_FASTCALL *)(void *, void *, Vector *);
+using FindUseEntityFn = void *(IVR_FASTCALL *)(void *, void *);
+using GrabSetTargetFn = void(IVR_FASTCALL *)(void *, void *, const Vector *, const QAngle *, bool);
 
 Hook<RenderViewFn> hkRenderView;
 Hook<RenderCameraWeaponFn> hkRenderCameraWeapon;
@@ -50,6 +53,12 @@ Hook<UpdateObjectVMFn> hkUpdateObjectVM;
 Hook<ComputeErrorFn> hkComputeError;
 Hook<EyeAnglesFn> hkEyeAngles;
 Hook<ShootPositionFn> hkShootPosition;
+Hook<FindUseEntityFn> hkFindUseEntity;        // server
+Hook<ShootPositionFn> hkEyePosition;          // server
+Hook<GrabSetTargetFn> hkGrabSetTarget;        // server
+Hook<FindUseEntityFn> hkClientFindUseEntity;
+Hook<ShootPositionFn> hkClientEyePosition;
+Hook<EyeAnglesFn> hkClientEyeAngles;
 
 void *g_eyeRT[2] = {nullptr, nullptr};
 void *g_hudRT = nullptr;
@@ -1057,8 +1066,145 @@ float IVR_FASTCALL ComputeErrorDetour(void *self, void *edx)
     return r;
 }
 
+// ---- hand-based "use": the game's use search starts at the hand -----------------------------
+// INFRA's FindUseEntity (server: what "use" acts on; client: what the selection outline marks)
+// traces from EyePosition() along EyeVectors() (= EyeAngles()), then looks around that point.
+// While it runs for the player, both answer with the hand instead.
+void *g_usePlayer = nullptr; // server player whose FindUseEntity is running with the hand
+Vector g_useStart;
+QAngle g_useAngles;
+void *g_clUsePlayer = nullptr; // the same on the client
+Vector g_clUseStart;
+QAngle g_clUseAngles;
+constexpr const char *kHandUseFlag = "hand_use";
+constexpr const char *kHoldInHandFlag = "hold_in_hand";
+
+void *IVR_FASTCALL FindUseEntityDetour(void *self, void *edx)
+{
+    if (g_usePlayer || !g_Mod.Active() || g_Mod.menuMode || !g_Mod.HandUseActive())
+        return hkFindUseEntity.original(self, edx);
+    g_usePlayer = self;
+    g_useStart = g_Mod.useStart;
+    g_useAngles = g_Mod.useAngles;
+    void *r = hkFindUseEntity.original(self, edx);
+    g_usePlayer = nullptr;
+    static int s_logs = 0;
+    if (s_logs < 8)
+    {
+        ++s_logs;
+        IVR_LOG("Hand use (%s hand) from (%.0f %.0f %.0f) aim %.0f %.0f: %s", g_Mod.interactHand ? "right" : "left",
+                g_useStart.x, g_useStart.y, g_useStart.z, g_useAngles.x, g_useAngles.y,
+                r ? (RttiName(r)[0] ? RttiName(r) : "an entity") : "nothing usable");
+    }
+    return r;
+}
+
+Vector *IVR_FASTCALL EyePositionDetour(void *self, void *edx, Vector *out)
+{
+    Vector *r = hkEyePosition.original(self, edx, out);
+    if (g_usePlayer && self == g_usePlayer && r)
+        *r = g_useStart;
+    return r;
+}
+
+void *IVR_FASTCALL ClientFindUseEntityDetour(void *self, void *edx)
+{
+    if (g_clUsePlayer || !g_Mod.Active() || g_Mod.menuMode || !g_Config.handUse || !g_Mod.handUseClient)
+        return hkClientFindUseEntity.original(self, edx);
+    // The outline marks what either hand points at: the hand that used something last first.
+    int order[2] = {g_Mod.interactHand, 1 - g_Mod.interactHand};
+    void *r = nullptr;
+    bool any = false;
+    for (int h : order)
+    {
+        if (!g_Mod.HandValid(h) || h == g_Mod.HeldObjectHand())
+            continue;
+        any = true;
+        g_Mod.UseRay(h, g_clUseStart, g_clUseAngles);
+        g_clUsePlayer = self;
+        r = hkClientFindUseEntity.original(self, edx);
+        g_clUsePlayer = nullptr;
+        if (r)
+            break;
+    }
+    if (!any)
+        return g_Mod.HeldObjectHand() >= 0 ? nullptr : hkClientFindUseEntity.original(self, edx);
+    static int s_calls = 0;
+    if (++s_calls == 600)
+    {
+        flags::End(kHandUseFlag);
+        IVR_LOG("Hand use: the selection outline has followed the hands for 600 frames");
+    }
+    return r;
+}
+
+Vector *IVR_FASTCALL ClientEyePositionDetour(void *self, void *edx, Vector *out)
+{
+    Vector *r = hkClientEyePosition.original(self, edx, out);
+    if (g_clUsePlayer && self == g_clUsePlayer && r)
+        *r = g_clUseStart;
+    return r;
+}
+
+const QAngle *IVR_FASTCALL ClientEyeAnglesDetour(void *self, void *edx)
+{
+    if (g_clUsePlayer && self == g_clUsePlayer)
+        return &g_clUseAngles;
+    return hkClientEyeAngles.original(self, edx);
+}
+
+// ---- held objects go to the hand ----------------------------------------------------------------
+// CGrabController (Portal 2 branch, read from UpdateObject / SetTargetPosition in INFRA's
+// server.dll): m_attachedEntity handle at +0x2054, m_attachedPositionObjectSpace (the grabbed
+// point in the object's space) at +0x2078. UpdateObject ends with
+// SetTargetPosition(end - R * m_attachedPositionObjectSpace, R): the grabbed point at `end`.
+constexpr size_t kGrabAttachedEntity = 0x2054;
+constexpr size_t kGrabAttachedPosition = 0x2078;
+struct HoldState
+{
+    uint32_t handle = 0xFFFFFFFFu;
+    int hand = -1;
+    Mat3 rel; // object rotation in the hand's frame, captured when it was picked up
+    int frames = 0;
+} g_hold;
+
+void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *target, const QAngle *angles, bool teleport)
+{
+    const uint8_t *c = static_cast<const uint8_t *>(self);
+    if (g_grabOverride <= 0 || !g_Mod.Active() || g_Mod.menuMode || !g_Config.holdInHand || !target || !angles ||
+        !g_Mod.HandValid(g_Mod.interactHand) || !IsReadable(c + kGrabAttachedEntity, 0x30))
+        return hkGrabSetTarget.original(self, edx, target, angles, teleport);
+    uint32_t handle = *reinterpret_cast<const uint32_t *>(c + kGrabAttachedEntity);
+    Vector local = *reinterpret_cast<const Vector *>(c + kGrabAttachedPosition);
+    if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) || local.Length() > 512.0f)
+        local = Vector(0, 0, 0);
+    Mat3 game = AnglesToMatrix(*angles);
+    if (handle != g_hold.handle || g_Mod.interactHand != g_hold.hand)
+    {
+        // Picked up (or passed to the other hand): keep the way it is turned now, relative to the hand.
+        g_hold.handle = handle;
+        g_hold.hand = g_Mod.interactHand;
+        g_hold.rel = g_Mod.holdRot.Transposed() * game;
+        Vector d = *target + game * local - g_Mod.holdPos;
+        IVR_LOG("Hold in hand: object %08x in the %s hand (grab point %.0f %.0f %.0f in the object, the game held "
+                "it %.0f units from the hand)",
+                handle, g_hold.hand ? "right" : "left", local.x, local.y, local.z, d.Length());
+    }
+    Mat3 R = g_Mod.holdRot * g_hold.rel;
+    QAngle a = MatrixToAngles(R);
+    Vector t = g_Mod.holdPos - R * local;
+    hkGrabSetTarget.original(self, edx, &t, &a, teleport);
+    if (++g_hold.frames == 300)
+    {
+        flags::End(kHoldInHandFlag);
+        IVR_LOG("Hold in hand: 300 updates without trouble");
+    }
+}
+
 const QAngle *IVR_FASTCALL EyeAnglesDetour(void *self, void *edx)
 {
+    if (g_usePlayer && self == g_usePlayer)
+        return &g_useAngles;
     if (g_grabOverride > 0 && g_Mod.Active() && !g_Mod.menuMode)
         return &g_Mod.grabHandAngles;
     return hkEyeAngles.original(self, edx);
@@ -1099,6 +1245,17 @@ bool InstallClientHooks()
     if (g_Game.fnFlashlightUpdate)
         hkUpdateLight.Install("CFlashlightEffect::UpdateLight", g_Game.fnFlashlightUpdate,
                               (void *)&UpdateLightDetour);
+    if (g_Config.handUse && g_Game.fnClientFindUseEntity && g_Game.fnClientEyePosition && g_Game.fnClientEyeAngles &&
+        flags::Begin(kHandUseFlag)) // ended after 600 outline searches from the hands
+    {
+        g_Mod.handUseClient =
+            hkClientEyePosition.Install("C_INFRA_Player::EyePosition", g_Game.fnClientEyePosition,
+                                        (void *)&ClientEyePositionDetour) &&
+            hkClientEyeAngles.Install("C_INFRA_Player::EyeAngles", g_Game.fnClientEyeAngles,
+                                      (void *)&ClientEyeAnglesDetour) &&
+            hkClientFindUseEntity.Install("C_INFRA_Player::FindUseEntity", g_Game.fnClientFindUseEntity,
+                                          (void *)&ClientFindUseEntityDetour);
+    }
     return ok;
 }
 
@@ -1116,6 +1273,16 @@ bool InstallServerHooks()
     hkEyeAngles.Install("CBasePlayer::EyeAngles", g_Game.fnPlayerEyeAngles, (void *)&EyeAnglesDetour);
     hkShootPosition.Install("CBasePlayer::Weapon_ShootPosition", g_Game.fnPlayerShootPosition,
                             (void *)&ShootPositionDetour);
+    if (g_Game.fnPlayerFindUseEntity && g_Game.fnPlayerEyePosition)
+        g_Mod.handUseServer = hkEyePosition.Install("CINFRA_Player::EyePosition", g_Game.fnPlayerEyePosition,
+                                                    (void *)&EyePositionDetour) &&
+                              hkFindUseEntity.Install("CINFRA_Player::FindUseEntity", g_Game.fnPlayerFindUseEntity,
+                                                      (void *)&FindUseEntityDetour);
+    if (g_Game.fnGrabSetTarget && flags::Begin(kHoldInHandFlag)) // ended after 300 held updates
+        g_Mod.holdInHandReady = hkGrabSetTarget.Install("CGrabController::SetTargetPosition", g_Game.fnGrabSetTarget,
+                                                        (void *)&GrabSetTargetDetour);
+    IVR_LOG("Hand use: server %s, outline %s; hold in hand %s", g_Mod.handUseServer ? "on" : "off",
+            g_Mod.handUseClient ? "on" : "off", g_Mod.holdInHandReady ? "on" : "off");
     return true;
 }
 

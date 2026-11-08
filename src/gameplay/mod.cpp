@@ -98,6 +98,23 @@ int VRMod::Dominant() const { return g_Config.leftHanded ? HAND_LEFT : HAND_RIGH
 
 bool VRMod::IsHoldingObject() const { return lastGrabUpdate > 0 && NowSeconds() - lastGrabUpdate < 0.25; }
 
+bool VRMod::HandUseActive() const { return g_Config.handUse && handUseServer; }
+
+void VRMod::UseRay(int hand, Vector &start, QAngle &angles) const
+{
+    constexpr float kBehind = 4.0f; // game units behind the controller
+    Pose p = AimWorld(hand);
+    start = p.pos - p.rot.Forward() * kBehind;
+    angles = p.Angles();
+}
+
+int VRMod::HeldObjectHand() const
+{
+    if (!g_Config.holdInHand || !holdInHandReady || menuMode || !IsHoldingObject())
+        return -1;
+    return HandValid(interactHand) ? interactHand : -1;
+}
+
 // --- tracking -> world -----------------------------------------------------------------
 Pose VRMod::HeadWorld() const
 {
@@ -139,13 +156,16 @@ Pose VRMod::AimWorld(int hand) const
     return p;
 }
 
-// "Use" is traced by the game from the player's eye, not from the hand. Aiming that trace along
-// the hand's direction misses small things like keycard readers by the hand-to-eye offset, so
-// aim it from the eye at a point on the hand's ray, about where the hand is pointing.
+// With hand_use the game's use search itself starts at the hand (FindUseEntity hooks), so the
+// command just points where the hand points. Without those hooks "use" is traced from the
+// player's eye: aiming that trace along the hand's direction misses small things like keycard
+// readers by the hand-to-eye offset, so it is aimed from the eye at a point on the hand's ray.
 QAngle VRMod::UseAimAngles(int hand) const
 {
     constexpr float kReach = 48.0f; // units past the hand, about the game's use distance
     Pose p = AimWorld(hand);
+    if (HandUseActive())
+        return p.Angles();
     Vector target = p.pos + p.rot * Vector(kReach, 0, 0);
     Vector d = target - m_anchor;
     if (d.Length() < 1.0f)
@@ -387,11 +407,19 @@ void VRMod::OnCreateMove(CUserCmd *cmd)
         Pose hand = AimWorld(interactHand);
         grabHandPos = hand.pos;
         grabHandAngles = hand.Angles();
+        UseRay(interactHand, useStart, useAngles);
+        Pose grip = HandWorld(interactHand);
+        holdRot = grip.rot;
+        holdPos = grip.pos + grip.rot * Vector(g_Config.holdOffset * m_scale, 0, 0);
     }
     else
     {
         grabHandPos = headW.pos;
         grabHandAngles = headAngles;
+        useStart = headW.pos;
+        useAngles = headAngles;
+        holdPos = headW.pos;
+        holdRot = headW.rot;
     }
     if (g_Config.logInput && (cmd->buttons & (IN_USE | IN_ATTACK)))
         IVR_LOG("cmd %d buttons %x aim %.1f %.1f move %.0f %.0f", cmd->command_number, cmd->buttons, aim.x, aim.y,
@@ -744,7 +772,10 @@ void VRMod::ProcessGameInput(double now, double dt)
             {
                 interactHand = h;
                 float speed = g_VR.HandPose(h).velocity.Length();
-                if (speed > 2.5f)
+                // Held in the hand, the object already moves with it: just letting go keeps that
+                // swing (the game only clears the velocity of an object touching something), so
+                // a fast release throws it where the hand was going instead of where you look.
+                if (HeldObjectHand() < 0 && speed > 2.5f)
                 {
                     m_attackTicks = 2; // throw
                     m_dropCheckAt = now + 0.3;

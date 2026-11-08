@@ -69,6 +69,21 @@ public:
     bool IsHoldingObject() const;
     Vector grabHandPos;           // world, written by OnCreateMove
     QAngle grabHandAngles;
+    // Hand-based "use": the hooks on FindUseEntity (server: what "use" acts on; client: what INFRA's
+    // selection outline marks) make it search from the hand instead of the eyes.
+    bool handUseServer = false;   // server FindUseEntity + EyePosition hooks installed
+    bool handUseClient = false;   // client FindUseEntity + EyePosition + EyeAngles hooks installed
+    bool holdInHandReady = false; // server SetTargetPosition hook installed
+    Vector useStart;              // server use search for interactHand (written by OnCreateMove)
+    QAngle useAngles;
+    Vector holdPos;               // where a held object's grab point goes (interactHand)
+    Mat3 holdRot;                 // that hand's rotation
+    bool HandUseActive() const;
+    // The use search for one hand: starts a little behind the controller (so something the hand
+    // is already touching is found too) and goes along where the hand points.
+    void UseRay(int hand, Vector &start, QAngle &angles) const;
+    // The hand that holds a physics object and is hidden for it, or -1.
+    int HeldObjectHand() const;
     Vector lensPos;
     QAngle lensAngles;
 

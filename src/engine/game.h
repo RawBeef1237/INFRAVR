@@ -228,6 +228,12 @@ struct Game
     void *fnGrabComputeError = nullptr;    // CGrabController::ComputeError (server)
     void *fnPlayerEyeAngles = nullptr;     // CBasePlayer::EyeAngles (server)
     void *fnPlayerShootPosition = nullptr; // CBasePlayer::Weapon_ShootPosition (server)
+    void *fnGrabSetTarget = nullptr;       // CGrabController::SetTargetPosition (server)
+    void *fnPlayerFindUseEntity = nullptr; // CINFRA_Player::FindUseEntity (server)
+    void *fnPlayerEyePosition = nullptr;   // CINFRA_Player::EyePosition (server)
+    void *fnClientFindUseEntity = nullptr; // C_INFRA_Player::FindUseEntity (client, selection outline)
+    void *fnClientEyePosition = nullptr;   // C_INFRA_Player::EyePosition (client)
+    void *fnClientEyeAngles = nullptr;     // C_INFRA_Player::EyeAngles (client)
 
     bool ready = false;
 

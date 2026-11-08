@@ -1210,9 +1210,10 @@ std::shared_ptr<Frame> BuildFrame(const CViewSetup &v)
         }
     }
 
+    const int heldHand = g_Mod.HeldObjectHand(); // holds a physics object: hidden, like Half-Life 2: VR
     for (int h = 0; h < 2; ++h)
     {
-        if (!g_Mod.HandValid(h) || handTaken[h])
+        if (!g_Mod.HandValid(h) || handTaken[h] || h == heldHand)
             continue;
         const ModelData &md = g_model[h];
         md.glb.Skin(g_curl[h], g_Config.handsCurlMax, pos, nrm, &tan);

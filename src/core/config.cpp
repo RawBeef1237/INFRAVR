@@ -148,6 +148,9 @@ void LoadConfig()
     c.stickDeadzone = ini.GetFloat("movement.stick_deadzone", c.stickDeadzone);
 
     c.aimPitch = ini.GetFloat("aim.aim_pitch", c.aimPitch);
+    c.handUse = ini.GetBool("aim.hand_use", c.handUse);
+    c.holdInHand = ini.GetBool("aim.hold_in_hand", c.holdInHand);
+    c.holdOffset = ini.GetFloat("aim.hold_offset", c.holdOffset);
 
     c.holsters = ini.GetBool("holsters.enabled", c.holsters);
     c.hipHeight = ini.GetFloat("holsters.hip_height", c.hipHeight);

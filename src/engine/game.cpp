@@ -58,6 +58,13 @@ const FnSpec kEyeAngles = {"CBasePlayer::EyeAngles", "server.dll", 0x0d78f0,
 const FnSpec kShootPosition = {"CBasePlayer::Weapon_ShootPosition", "server.dll", 0x34bbc0,
                                "55 8B EC 8B 01 8B 90 00 02 00 00 56 8B 75 08 56 FF D2 8B C6 5E 5D C2 04 00"};
 
+// CGrabController::SetTargetPosition(const Vector &, const QAngle &, bool teleport): stores
+// m_shadow.targetPosition (+0x04) and targetRotation (+0x10). Not virtual; called at the end of
+// UpdateObject / UpdateObjectVM with the hold point the game worked out.
+const FnSpec kGrabSetTarget = {"CGrabController::SetTargetPosition", "server.dll", 0x3a7610,
+                               "55 8B EC 80 7D 10 00 8B 45 0C 56 8B F1 57 8B 7D 08 D9 07 D9 5E 04 D9 47 04 D9 5E 08 "
+                               "D9 47 08 D9 5E 0C D9 00 D9 5E 10"};
+
 void *Resolve(const FnSpec &s) { return ResolveFunction(s.what, s.module, s.rva, s.pattern); }
 
 void *Require(const char *module, const char *name)
@@ -107,6 +114,13 @@ bool Game::Init()
     {
         if (vt[248] != fnCalcViewModelView)
             IVR_LOG("C_INFRA_Player vtable[248] = %p (signature gave %p)", vt[248], fnCalcViewModelView);
+        // FindUseEntity (260) is what INFRA's selection outline asks every frame; it searches from
+        // EyePosition (159) along EyeVectors, which reads EyeAngles (160).
+        fnClientFindUseEntity = vt[260];
+        fnClientEyePosition = vt[159];
+        fnClientEyeAngles = vt[160];
+        IVR_LOG("client: FindUseEntity %p, EyePosition %p, EyeAngles %p", fnClientFindUseEntity, fnClientEyePosition,
+                fnClientEyeAngles);
     }
     fnInfraFlashlightUpdate = Resolve(kInfraFlashlightUpdate);
     fnBuildTransformations = Resolve(kBuildTransformations);
@@ -207,14 +221,21 @@ bool Game::InitServer()
     {
         fnPlayerEyeAngles = vt[129];
         fnPlayerShootPosition = vt[290];
+        // FindUseEntity (439) searches from EyePosition (128, what Weapon_ShootPosition returns)
+        // along EyeVectors, which reads EyeAngles (129).
+        fnPlayerFindUseEntity = vt[439];
+        fnPlayerEyePosition = vt[128];
     }
     else
     {
         fnPlayerEyeAngles = Resolve(kEyeAngles);
         fnPlayerShootPosition = Resolve(kShootPosition);
     }
+    fnGrabSetTarget = Resolve(kGrabSetTarget);
     IVR_LOG("server: UpdateObject %p, UpdateObjectVM %p, ComputeError %p, EyeAngles %p, Weapon_ShootPosition %p",
             fnGrabUpdateObject, fnGrabUpdateObjectVM, fnGrabComputeError, fnPlayerEyeAngles, fnPlayerShootPosition);
+    IVR_LOG("server: SetTargetPosition %p, FindUseEntity %p, EyePosition %p", fnGrabSetTarget, fnPlayerFindUseEntity,
+            fnPlayerEyePosition);
     return fnGrabUpdateObject && fnPlayerEyeAngles && fnPlayerShootPosition;
 }
 

@@ -85,6 +85,13 @@ struct Config
 
     // [aim]
     float aimPitch = 0.0f;   // extra pitch applied to the controller aim ray (degrees, + = down)
+    // "Use" (buttons, doors, pick-ups) and INFRA's selection outline search from the hand along
+    // where it points, never from the eyes.
+    bool handUse = true;
+    // Held physics objects go to the hand that holds them and turn with it, and that hand is hidden
+    // (Half-Life 2: VR's way). false = held in front of the hand at the game's own distance.
+    bool holdInHand = true;
+    float holdOffset = 0.04f; // metres in front of the controller where the held point sits
 
     // [holsters]
     bool holsters = true;

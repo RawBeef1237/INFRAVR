@@ -56,6 +56,9 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 | C_BasePlayer::CalcViewModelView | 0x1ea9e0 | wine, headset |
 | CFlashlightEffect::UpdateLight | 0xcb160 | wine, headset |
 | C_INFRA_Player vtable / slot 243 | 0x4e0b2c / 0x52fa0 | wine |
+| C_INFRA_Player::FindUseEntity, vtable slot 260 (INFRA's override: point_viewproxy / point_viewcontrol cases, then a 16384-unit trace from EyePosition along EyeVectors, then a sphere search). INFRA's selection outline (`CINFRAUseSelectionOutline::Update`, 0x1b80a0) calls it every frame through slot 260 on the local player | 0x1c9430 | static |
+| C_INFRA_Player::EyePosition, slot 159 (Vector returned through a hidden pointer) | 0x2154f0 | static |
+| C_INFRA_Player::EyeAngles, slot 160 (EyeVectors 0x12be0 calls it through slot 160 when not in a vehicle) | 0x1e46c0 | static |
 | C_BaseAnimating bone array | +0xB10 | wine, headset |
 | mstudiobone_t size (MDL v49) | 216 | headset |
 | CViewSetup size / fov / origin / aspect | 0xF4 / 0x58 / 0x60 / 0x88 | static asserts, headset |
@@ -71,6 +74,10 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 | CGrabController::ComputeError | 0x3a7740 | wine |
 | CBasePlayer::EyeAngles | 0xd78f0 | wine, headset |
 | Weapon_ShootPosition | 0x34bbc0 | wine, headset |
+| CINFRA_Player::FindUseEntity, vtable slot 439 (same shape as the client's; found through the `sv_debug_player_use` ConVar at 0x1071ede8, which only it and CBasePlayer's 0x3511b0 read; CPortal_Player's slot 439 is 0xd8c20). Uses EyePosition (slot 128 through `[vt+0x200]`) as the search centre and EyeVectors (0xd7060, EyeAngles through `[vt+0x204]`) | 0x2bf390 | static |
+| CINFRA_Player::EyePosition, slot 128 (Weapon_ShootPosition returns it) | 0x34d7e0 | static |
+| CGrabController::SetTargetPosition(const Vector &, const QAngle &, bool), not virtual, signature unique: writes m_shadow.targetPosition +0x04 / targetRotation +0x10; called by UpdateObject at 0x3aae2c / 0x3aafa8 and by UpdateObjectVM | 0x3a7610 | static |
+| CGrabController m_attachedEntity (handle) / m_attachedPositionObjectSpace | +0x2054 / +0x2078 | static: UpdateObject reads the handle first, rotates +0x2078 by the hold angles (VectorRotate at 0x40f6c0) and subtracts it from the hold point before SetTargetPosition |
 
 ## engine.dll / vguimatsurface.dll
 
