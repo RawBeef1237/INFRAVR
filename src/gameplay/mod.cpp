@@ -89,6 +89,23 @@ bool VRMod::Init()
             ov->SetOverlayTransformHeadRelative(hudOverlay, m);
             ov->SetOverlaySortOrder(hudOverlay, 1);
         }
+        if (SubtitleLayer())
+        {
+            if (ov->CreateOverlay("infravr.subtitles", "INFRA subtitles", &subsOverlay) != vr::VROverlayError_None)
+                IVR_ERR("CreateOverlay(subtitles) failed - subtitles stay on the HUD panel");
+            else
+            {
+                ov->SetOverlayWidthInMeters(subsOverlay, g_Config.subtitlesWidth);
+                vr::HmdMatrix34_t m = {
+                    {{1, 0, 0, 0}, {0, 1, 0, -g_Config.subtitlesDown}, {0, 0, 1, -g_Config.subtitlesDistance}}};
+                ov->SetOverlayTransformHeadRelative(subsOverlay, m);
+                ov->SetOverlaySortOrder(subsOverlay, 1);
+                IVR_LOG("Subtitles: own panel, %.2f m wide, %.2f m away, %.2f m down", g_Config.subtitlesWidth,
+                        g_Config.subtitlesDistance, g_Config.subtitlesDown);
+            }
+        }
+        else if (g_Config.subtitles)
+            IVR_LOG("Subtitles: no panel of their own (needs hud_mode = overlay and the OpenVR backend)");
     }
     m_active = true;
     return true;
@@ -796,6 +813,26 @@ void VRMod::ProcessGameInput(double now, double dt)
 }
 
 // --- overlays / menus ----------------------------------------------------------------------
+// The subtitle panel needs our own D3D pass and an OpenVR overlay texture: the OpenXR helper
+// has a fixed set of layers (openxr_bridge.h), so there it stays on the HUD panel as before.
+bool VRMod::SubtitleLayer() const
+{
+    return g_Config.subtitles && g_Config.hudMode == HudMode::Overlay && !g_VR.IsOpenXR() &&
+           (subsOverlay != vr::k_ulOverlayHandleInvalid || !m_active);
+}
+
+void VRMod::ShowSubtitles(bool on)
+{
+    OverlayApi *ov = g_VR.Overlays();
+    if (!ov || subsOverlay == vr::k_ulOverlayHandleInvalid || on == m_subsShown)
+        return;
+    if (on)
+        ov->ShowOverlay(subsOverlay);
+    else
+        ov->HideOverlay(subsOverlay);
+    m_subsShown = on;
+}
+
 void VRMod::UpdateOverlays(bool showMenu, bool showHud, int menuWidth, int menuHeight)
 {
     OverlayApi *ov = g_VR.Overlays();

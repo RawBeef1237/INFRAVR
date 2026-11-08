@@ -25,7 +25,7 @@ set(INFRAVR_SOURCES
     src/core/log.cpp src/core/config.cpp src/core/flags.cpp
     src/engine/mathlib.cpp src/engine/hooks.cpp src/engine/game.cpp src/engine/hooks_game.cpp
     src/render/d3d9_proxy.cpp src/render/d3d_vr.cpp src/render/xr_publish.cpp src/render/world_size.cpp
-    src/render/glb_model.cpp src/render/hands_renderer.cpp
+    src/render/glb_model.cpp src/render/hands_renderer.cpp src/render/subtitles.cpp
     src/vr/openvr_rt.cpp src/vr/openxr_rt.cpp src/vr/overlay_api.cpp
     src/gameplay/mod.cpp
     src/ui/gamepad.cpp)
@@ -71,4 +71,6 @@ if(INFRAVR_TESTS)
     target_link_libraries(resolve_test PRIVATE minhook psapi)
     infravr_test(dll_smoke tests/dll_smoke.cpp)
     infravr_test(shader_test tests/shader_test.cpp)
+    infravr_test(subtitle_test tests/subtitle_test.cpp)
+    target_link_libraries(subtitle_test PRIVATE d3d9)
 endif()

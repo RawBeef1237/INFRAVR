@@ -52,6 +52,7 @@ public:
     bool menuMode = true;        // flat menu on a virtual screen, eyes blank
     bool eyesRendered = false;   // stereo views rendered this frame
     bool hudPainted = false;
+    bool subsPainted = false;    // the subtitle region was copied out of the HUD this frame
     bool phoneMenu = false;
     double firstLevelAt = -1; // when the first map (normally INFRA's main menu) finished loading
     bool mainMenu = false;        // the level loaded is INFRA's main menu background
@@ -78,6 +79,10 @@ public:
     vr::VROverlayHandle_t cursorOverlay = vr::k_ulOverlayHandleInvalid; // dot where the pointer hits the menu
     vr::VROverlayHandle_t beamOverlay = vr::k_ulOverlayHandleInvalid;   // short pointer beam from the hand
     void UpdateOverlays(bool showMenu, bool showHud, int menuWidth, int menuHeight);
+    // Subtitles on their own head-locked panel (see Config::subtitles).
+    vr::VROverlayHandle_t subsOverlay = vr::k_ulOverlayHandleInvalid;
+    bool SubtitleLayer() const;
+    void ShowSubtitles(bool on);
     HWND gameWindow = nullptr;
 
 private:
@@ -176,6 +181,7 @@ private:
     double m_pauseHeldSince = -1.0; // pause button: tap = pause menu, hold = screen mode on/off
     bool m_pauseTap = false;
     bool m_forceScreen = false;     // show the flat game on the virtual screen even in game
+    bool m_subsShown = false;
     bool m_hudAtHand = false;     // the HUD panel is placed for the phone menu, not head-locked
     bool m_phoneWorldPlaced = false;
     bool PhoneScreenPanel(float aspect, vr::HmdMatrix34_t &xf, float &width) const;

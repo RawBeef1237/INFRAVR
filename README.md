@@ -32,7 +32,8 @@ the frames go to SteamVR through OpenVR (or, experimentally, to the headset's ow
 - **Menus on a big virtual screen** with a laser pointer (point and pull the trigger), plus stick
   navigation like INFRA's gamepad support. Hold pause for **screen mode** (the flat game on the
   virtual screen) at any time.
-- **Floating HUD panel** for subtitles and hints.
+- **Subtitles on their own panel** below your view, readable in normal play and in the phone
+  menu (size and position under `[subtitles]` in `infravr.ini`).
 - **Remappable controls** through SteamVR's binding editor, defaults for Index, Touch, Cosmos,
   Reverb G2 and Vive wands.
 - **One-click install and uninstall**, with DXVK and OpenVR included.
@@ -154,6 +155,7 @@ Everything is logged to **`INFRA\infravr\infravr.log`** (DXVK writes `infra_d3d9
 |---|---|
 | Game starts flat, nothing in the headset | `SteamVR is not available` - start SteamVR first. `openvr_api.dll` missing -> reinstall |
 | Headset shows only a grey/black void in menus | the menu screen is placed where you were looking when it opened - look around; `D3D9 device is not DXVK` = `bin\dxvk_d3d9.dll` missing |
+| No subtitles in the headset | they need `hud_mode = overlay` and the OpenVR backend; the log says `Subtitles: own panel ...` at start and `probe: subtitle panel ...` while playing. Too small or in the way: change `width` / `distance` / `down` under `[subtitles]`. Phone menu screen empty: set `[subtitles] on_phone = true` |
 | In-game view black | look at the `probe:` lines - `eye brightness avg 0 max 0` means the game drew nothing into the headset images; `HUD panel ... opaque` means the subtitle panel was covering the view (it switches itself off). The desktop window mirrors the left eye. Send the log |
 | Stutters | lower `render_scale`; make sure `mat_queue_mode 0` is in the launch options; turn off MSAA in video options |
 | Something stopped working after a crash | `Flags: ... stays off` - that mechanism crashed INFRA once and is listed in `infravr_skip.txt`; delete its line (or set `retry_skipped = true`) to try again |

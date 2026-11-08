@@ -80,6 +80,7 @@ bool Game::Init()
     materials = Require("materialsystem.dll", "VMaterialSystem080");
     surface = Require("vguimatsurface.dll", "VGUI_Surface031");
     vguiInput = Require("vgui2.dll", "VGUI_InputInternal001");
+    vguiPanel = Require("vgui2.dll", "VGUI_Panel009");
     modelRender = Require("engine.dll", "VEngineModel016");
     if (!engineClient || !renderView || !entityList || !materials)
         return false;
