@@ -818,12 +818,46 @@ vr::VRVulkanTextureData_t D3DVR::VulkanData(const VrTexture &t) const
 
 static const VkImageSubresourceRange kColorRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
+// DXVK (2.5 and later) defragments video memory: it may move a texture into new memory, which gives
+// it a new VkImage and destroys the old one once the GPU is done with it. The D3D9 interop does not
+// pin the images it hands out, so a VkImage remembered at Attach can be a dead one minutes later,
+// typically right after a level load frees a lot of memory. SteamVR given a dead image crashes
+// inside NVIDIA's Vulkan driver (crash dump: IVROverlay::SetOverlayTexture for the subtitle panel,
+// null read in nvoglv32.dll). Defragmentation is turned off at startup (DXVK_CONFIG, d3d9_proxy.cpp);
+// this asks DXVK for each image's current handle before every hand-over in case it moved anyway.
+void D3DVR::RefreshImages(VrTexture *const *textures, int count)
+{
+    static int s_moves = 0;
+    for (int i = 0; i < count; ++i)
+    {
+        VrTexture &t = *textures[i];
+        if (!t.interop)
+            continue;
+        VkImage img = VK_NULL_HANDLE;
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (FAILED(t.interop->GetVulkanImageInfo(&img, &layout, nullptr)) || !img)
+            continue;
+        if (img != t.image)
+        {
+            if (s_moves < 20)
+            {
+                ++s_moves;
+                IVR_LOG("VR texture %p: DXVK moved it, VkImage %llx -> %llx", t.d3d,
+                        (unsigned long long)(uintptr_t)t.image, (unsigned long long)(uintptr_t)img);
+            }
+            t.image = img;
+            t.layout = layout;
+        }
+    }
+}
+
 void D3DVR::BeginVulkanAccess(VrTexture *const *textures, int count)
 {
     for (int i = 0; i < count; ++i)
         m_interop->TransitionTextureLayout(textures[i]->interop, &kColorRange, textures[i]->layout,
                                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    m_interop->FlushRenderingCommands();
+    m_interop->FlushRenderingCommands(); // also waits for DXVK's worker, so no move is half done
+    RefreshImages(textures, count);
     m_interop->LockSubmissionQueue();
 }
 

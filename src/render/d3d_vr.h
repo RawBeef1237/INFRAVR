@@ -135,6 +135,7 @@ private:
     void MakeOpaque(const VrTexture &t);
     void ReleaseHelpers();
     bool EnsureOwnTextures();
+    void RefreshImages(VrTexture *const *textures, int count); // DXVK may move images
     void BeginVulkanAccess(VrTexture *const *textures, int count);
     void EndVulkanAccess(VrTexture *const *textures, int count);
     vr::VRVulkanTextureData_t VulkanData(const VrTexture &t) const;

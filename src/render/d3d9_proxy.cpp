@@ -336,6 +336,52 @@ void PickHeadsetGpu(const std::string &conf)
     IVR_LOG("GPU: DXVK will render on \"%s\", the GPU SteamVR uses", chosen.c_str());
 }
 
+// DXVK's memory defragmentation moves textures to new VkImages and destroys the old ones. The
+// images handed to SteamVR (eyes, HUD, menu, subtitle panel) are remembered by handle, and SteamVR
+// given a destroyed one crashes in the GPU driver - it happened right after loading a save from
+// another map, when a lot of memory is freed at once. Turned off through DXVK_CONFIG (read after
+// dxvk.conf, so it wins) unless dxvk.conf or DXVK_CONFIG already says what to do.
+void KeepDxvkImagesInPlace()
+{
+    static const char kKey[] = "dxvk.enableMemoryDefrag";
+    char env[1024] = {};
+    DWORD n = GetEnvironmentVariableA("DXVK_CONFIG", env, sizeof(env));
+    if (n >= sizeof(env))
+        return; // too long to edit safely: leave it alone
+    if (strstr(env, kKey))
+    {
+        IVR_LOG("DXVK: memory defragmentation left as DXVK_CONFIG says (%s)", env);
+        return;
+    }
+    char path[MAX_PATH] = {};
+    if (GetEnvironmentVariableA("DXVK_CONFIG_FILE", path, sizeof(path)) && path[0])
+    {
+        if (FILE *f = fopen(path, "r"))
+        {
+            char line[512];
+            bool set = false;
+            while (!set && fgets(line, sizeof(line), f))
+            {
+                const char *p = line;
+                while (*p == ' ' || *p == '\t')
+                    ++p;
+                set = *p != '#' && strstr(p, kKey) != nullptr;
+            }
+            fclose(f);
+            if (set)
+            {
+                IVR_LOG("DXVK: memory defragmentation left as %s says", path);
+                return;
+            }
+        }
+    }
+    std::string value = std::string(kKey) + " = False";
+    if (n)
+        value = std::string(env) + ";" + value;
+    SetEnvironmentVariableA("DXVK_CONFIG", value.c_str());
+    IVR_LOG("DXVK: memory defragmentation off (textures shown in the headset must keep their VkImage)");
+}
+
 void InitVROnce()
 {
     if (g_vrInitDone || !g_active)
@@ -349,6 +395,7 @@ void InitVROnce()
     if (!GetEnvironmentVariableA("DXVK_CONFIG_FILE", existing, sizeof(existing)) &&
         GetFileAttributesA(conf.c_str()) != INVALID_FILE_ATTRIBUTES)
         SetEnvironmentVariableA("DXVK_CONFIG_FILE", conf.c_str());
+    KeepDxvkImagesInPlace();
 
     flags::SetStage("VR runtime start");
     if (g_VR.Init())

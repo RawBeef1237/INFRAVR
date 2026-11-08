@@ -54,6 +54,7 @@ A change moves a line up only with evidence: a log excerpt, a test output or a s
 | DXVK D3D9 shared textures for OpenXR | verified-fail | headset (Virtual Desktop OpenXR, RTX 4070 SUPER): DXVK warns "Failed to write shared resource info", the helper's `OpenSharedResource` fails with 0x80070057, the headset stays black |
 | OpenXR off-center eyes (each eye drawn with its own field of view, `vr.offcenter_eyes`) | unverified | builds; log line "Off-center eyes: each eye drawn at ..."; if the picture looks stretched or shifted, the engine ignores the off-center fields: set `offcenter_eyes = false` |
 | OpenXR handoff through D3D11 shared textures imported into Vulkan | unverified | builds; replaces the line above. Crash-sticky flag `openxr_interop`; log lines "OpenXR: shared textures are made on ..." and, in `infravr_openxr.log`, "Opened shared texture" |
+| DXVK memory defragmentation off (`DXVK_CONFIG` "dxvk.enableMemoryDefrag = False", set at startup unless dxvk.conf or DXVK_CONFIG names it) and each VR texture's VkImage asked from DXVK again before every hand-over to SteamVR | unverified | crash dump of a save loaded from another map: `IVROverlay::SetOverlayTexture` for the subtitle panel crashed in nvoglv32.dll reading a null field of that panel's VkImage object; DXVK 2.5+ moves D3D9 textures to new VkImages when it defragments and its D3D9 interop does not pin them. Log "DXVK: memory defragmentation off" at startup, "VR texture ...: DXVK moved it" if a move still happens. Builds |
 
 ## Logs
 
