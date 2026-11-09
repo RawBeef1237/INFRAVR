@@ -151,8 +151,8 @@ void LoadConfig()
     c.handUse = ini.GetBool("aim.hand_use", c.handUse);
     c.holdInHand = ini.GetBool("aim.hold_in_hand", c.holdInHand);
     {
-        std::string r = Lower(ini.GetString("aim.hold_rotation", c.holdTurnWithHand ? "hand" : "keep"));
-        c.holdTurnWithHand = r != "keep";
+        std::string r = Lower(ini.GetString("aim.hold_rotation", "upright"));
+        c.holdRotation = r == "keep" ? Config::HoldKeep : r == "hand" ? Config::HoldHand : Config::HoldUpright;
     }
     c.holdOffset = ini.GetFloat("aim.hold_offset", c.holdOffset);
     c.handoffRadius = ini.GetFloat("aim.handoff_radius", c.handoffRadius);

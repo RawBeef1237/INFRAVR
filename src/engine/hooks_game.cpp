@@ -1233,10 +1233,23 @@ struct HoldState
     int hand = -1;
     Mat3 rel;   // object rotation in the hand's frame, captured when it was picked up
     Mat3 world; // object rotation in the world when it was picked up (hold_rotation = keep)
+    float yaw = 0; // which way it faced around the hand's up axis when picked up (hold_rotation = upright)
     int frames = 0;
     int logs = 0;
     bool onTrial = false;
 } g_hold;
+
+// The object's heading (degrees) around the hand's up axis, given its rotation in the hand's frame:
+// its forward axis flattened onto the hand's forward/left plane, or its left axis when it points
+// along the hand's up.
+float UprightYaw(const Mat3 &rel)
+{
+    Vector f = rel.Forward();
+    if (f.x * f.x + f.y * f.y > 0.04f)
+        return std::atan2(f.y, f.x) * 57.29578f;
+    Vector l = rel.Left();
+    return std::atan2(l.y, l.x) * 57.29578f - 90.0f;
+}
 
 void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *target, const QAngle *angles, bool teleport)
 {
@@ -1277,12 +1290,15 @@ void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *targe
         }
         g_hold.world = now;
         g_hold.rel = g_Mod.holdRot.Transposed() * now;
+        g_hold.yaw = UprightYaw(g_hold.rel);
         Vector d = *target + game * local - g_Mod.holdPos;
         IVR_LOG("Hold in hand: object %08x in the %s hand (grab point %.0f %.0f %.0f in the object, the game held "
                 "it %.0f units from the hand)",
                 handle, g_hold.hand ? "right" : "left", local.x, local.y, local.z, d.Length());
     }
-    Mat3 R = g_Config.holdTurnWithHand ? g_Mod.holdRot * g_hold.rel : g_hold.world;
+    Mat3 R = g_Config.holdRotation == Config::HoldKeep   ? g_hold.world
+             : g_Config.holdRotation == Config::HoldHand ? g_Mod.holdRot * g_hold.rel
+                                                         : g_Mod.holdRot * AnglesToMatrix(QAngle(0, g_hold.yaw, 0));
     QAngle a = MatrixToAngles(R);
     // The hold point relative to the player's eye on the server this tick: the client's view origin
     // is interpolated and lags the server while moving, which made held objects hitch.
