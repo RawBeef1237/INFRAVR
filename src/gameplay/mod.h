@@ -77,6 +77,10 @@ public:
     Vector useStart;              // server use search for interactHand (written by OnCreateMove)
     QAngle useAngles;
     Vector holdPos;               // where a held object's grab point goes (interactHand)
+    Vector holdRel;               // holdPos relative to the engine's view origin (the server adds
+                                  // it to the player's own eye position, so moving doesn't hitch)
+    Vector handPos[2];            // each controller in the world, this tick
+    Mat3 handRot[2];
     Mat3 holdRot;                 // that hand's rotation
     bool HandUseActive() const;
     // The use search for one hand: starts a little behind the controller (so something the hand

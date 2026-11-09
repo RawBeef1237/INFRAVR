@@ -1040,8 +1040,38 @@ void IVR_FASTCALL InfraFlashlightDetour(void *self, void *edx, float ox, float o
 }
 
 // ---- server: hold grabbed objects in front of the hand instead of the eyes -----------------
+// CBaseEntity::m_vecAbsOrigin (server): read by FindUseEntity / UpdateObject at +0x1cc after
+// CalcAbsolutePosition when the dirty bit (0x800 in +0xc8) is set.
+constexpr size_t kEntAbsOrigin = 0x1cc;
+void *g_grabPlayer = nullptr; // the player whose held object is being updated
+
+// The server's entity list (CGlobalEntityList entries of 24 bytes: entity at +4, serial at +8),
+// read from UpdateObject's own "mov edx, [g_pEntityList]" at +0x47 (8B 15 imm32).
+void *ServerEntity(uint32_t handle)
+{
+    static const uint8_t *s_list = nullptr;
+    static bool s_tried = false;
+    if (!s_tried)
+    {
+        s_tried = true;
+        const uint8_t *p = static_cast<const uint8_t *>(g_Game.fnGrabUpdateObject);
+        if (p && IsReadable(p + 0x47, 6) && p[0x47] == 0x8B && p[0x48] == 0x15)
+            s_list = *reinterpret_cast<const uint8_t *const *>(p + 0x49);
+        IVR_LOG("Hold in hand: server entity list %s", s_list ? "found" : "not found (no object diagnostics)");
+    }
+    if (!s_list || handle == 0xFFFFFFFFu || !IsReadable(s_list, 4))
+        return nullptr;
+    const uint8_t *base = *reinterpret_cast<const uint8_t *const *>(s_list);
+    const uint8_t *e = base + (handle & 0xFFFF) * 24 + 4;
+    if (!IsReadable(e, 8) || *reinterpret_cast<const uint32_t *>(e + 4) != (handle >> 16))
+        return nullptr;
+    void *ent = *reinterpret_cast<void *const *>(e);
+    return IsReadable(static_cast<uint8_t *>(ent) + kEntAbsOrigin, 12) ? ent : nullptr;
+}
+
 bool IVR_FASTCALL UpdateObjectDetour(void *self, void *edx, void *player, float error, bool teleport)
 {
+    g_grabPlayer = player;
     g_Mod.lastGrabUpdate = NowSeconds();
     ++g_grabOverride;
     bool r = hkUpdateObject.original(self, edx, player, error, teleport);
@@ -1051,6 +1081,7 @@ bool IVR_FASTCALL UpdateObjectDetour(void *self, void *edx, void *player, float 
 
 bool IVR_FASTCALL UpdateObjectVMDetour(void *self, void *edx, void *player, float error)
 {
+    g_grabPlayer = player;
     g_Mod.lastGrabUpdate = NowSeconds();
     ++g_grabOverride;
     bool r = hkUpdateObjectVM.original(self, edx, player, error);
@@ -1083,11 +1114,42 @@ void *IVR_FASTCALL FindUseEntityDetour(void *self, void *edx)
 {
     if (g_usePlayer || !g_Mod.Active() || g_Mod.menuMode || !g_Mod.HandUseActive())
         return hkFindUseEntity.original(self, edx);
-    g_usePlayer = self;
-    g_useStart = g_Mod.useStart;
-    g_useAngles = g_Mod.useAngles;
-    void *r = hkFindUseEntity.original(self, edx);
-    g_usePlayer = nullptr;
+    // First what the hand is right at: short searches through the hand in several directions
+    // (along it, down, and across the palm both ways), kept only if the entity's origin is within
+    // grab_reach of the hand. Then where the hand points.
+    void *r = nullptr;
+    const int hand = g_Mod.interactHand;
+    if (g_Mod.HandValid(hand) && g_Config.grabReach > 0.0f)
+    {
+        const Vector P = g_Mod.handPos[hand];
+        const Mat3 &R = g_Mod.handRot[hand];
+        const Vector dirs[6] = {R.Forward(), Vector(0, 0, -1), R.Up() * -1.0f, R.Left(), R.Left() * -1.0f, R.Up()};
+        const float reach = g_Config.grabReach * g_Mod.UnitsPerMetre();
+        for (const Vector &d : dirs)
+        {
+            g_usePlayer = self;
+            g_useStart = P - d * 12.0f;
+            g_useAngles = VectorAngles(d);
+            void *e = hkFindUseEntity.original(self, edx);
+            g_usePlayer = nullptr;
+            if (!e || !IsReadable(static_cast<uint8_t *>(e) + kEntAbsOrigin, 12))
+                continue;
+            Vector o = *reinterpret_cast<const Vector *>(static_cast<uint8_t *>(e) + kEntAbsOrigin);
+            if ((o - P).Length() <= reach)
+            {
+                r = e;
+                break;
+            }
+        }
+    }
+    if (!r)
+    {
+        g_usePlayer = self;
+        g_useStart = g_Mod.useStart;
+        g_useAngles = g_Mod.useAngles;
+        r = hkFindUseEntity.original(self, edx);
+        g_usePlayer = nullptr;
+    }
     static int s_logs = 0;
     if (s_logs < 8)
     {
@@ -1166,6 +1228,7 @@ struct HoldState
     int hand = -1;
     Mat3 rel; // object rotation in the hand's frame, captured when it was picked up
     int frames = 0;
+    int logs = 0;
     bool onTrial = false;
 } g_hold;
 
@@ -1201,7 +1264,31 @@ void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *targe
     }
     Mat3 R = g_Mod.holdRot * g_hold.rel;
     QAngle a = MatrixToAngles(R);
-    Vector t = g_Mod.holdPos - R * local;
+    // The hold point relative to the player's eye on the server this tick: the client's view origin
+    // is interpolated and lags the server while moving, which made held objects hitch.
+    Vector hold = g_Mod.holdPos;
+    if (g_grabPlayer && hkEyePosition.Installed())
+    {
+        Vector eye;
+        Vector *pe = hkEyePosition.original(g_grabPlayer, nullptr, &eye);
+        if (pe && std::isfinite(pe->x) && (*pe + g_Mod.holdRel - g_Mod.holdPos).Length() < 64.0f)
+            hold = *pe + g_Mod.holdRel;
+    }
+    Vector t = hold - R * local;
+    // Diagnostics: how far the object really is from where it is being held.
+    if (g_grabPlayer && (g_hold.frames % 45) == 0 && g_hold.logs < 40)
+    {
+        Vector eye;
+        Vector *pe = hkEyePosition.original(g_grabPlayer, nullptr, &eye);
+        Vector rel = pe ? hold - *pe : Vector(0, 0, 0);
+        float off = -1.0f;
+        if (const uint8_t *ent = static_cast<const uint8_t *>(ServerEntity(handle)))
+            off = (*reinterpret_cast<const Vector *>(ent + kEntAbsOrigin) - t).Length();
+        ++g_hold.logs;
+        IVR_LOG("Hold in hand: hold point %.0f units from the eye (%.0f %.0f %.0f), object %.1f units from its "
+                "target",
+                rel.Length(), rel.x, rel.y, rel.z, off);
+    }
     hkGrabSetTarget.original(self, edx, &t, &a, teleport);
     if (++g_hold.frames == 300)
     {

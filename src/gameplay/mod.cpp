@@ -411,6 +411,7 @@ void VRMod::OnCreateMove(CUserCmd *cmd)
         Pose grip = HandWorld(interactHand);
         holdRot = grip.rot;
         holdPos = grip.pos + grip.rot * Vector(g_Config.holdOffset * m_scale, 0, 0);
+        holdRel = holdPos - m_anchor;
     }
     else
     {
@@ -420,6 +421,13 @@ void VRMod::OnCreateMove(CUserCmd *cmd)
         useAngles = headAngles;
         holdPos = headW.pos;
         holdRot = headW.rot;
+        holdRel = holdPos - m_anchor;
+    }
+    for (int h = 0; h < 2; ++h)
+    {
+        Pose p = HandWorld(h);
+        handPos[h] = p.pos;
+        handRot[h] = p.rot;
     }
     if (g_Config.logInput && (cmd->buttons & (IN_USE | IN_ATTACK)))
         IVR_LOG("cmd %d buttons %x aim %.1f %.1f move %.0f %.0f", cmd->command_number, cmd->buttons, aim.x, aim.y,
@@ -757,6 +765,21 @@ void VRMod::ProcessGameInput(double now, double dt)
     // Grip = grab / hold: press "use" aimed from that hand; releasing drops (or throws).
     for (int h = 0; h < 2; ++h)
     {
+        if (grips[h]->pressed && !consumed[h] && HandValid(h) && m_grabbingHand >= 0 && m_grabbingHand != h &&
+            HeldObjectHand() == m_grabbingHand)
+        {
+            // Grip with the other hand near the held object: it passes to that hand.
+            Pose other = HandWorld(h);
+            float d = (other.pos - holdPos).Length() / m_scale;
+            if (d < g_Config.handoffRadius)
+            {
+                IVR_LOG("Hold in hand: passed from the %s hand to the %s hand (%.2f m apart)",
+                        m_grabbingHand ? "right" : "left", h ? "right" : "left", d);
+                interactHand = h;
+                m_grabbingHand = h;
+                continue;
+            }
+        }
         if (grips[h]->pressed && !consumed[h] && HandValid(h))
         {
             interactHand = h;
