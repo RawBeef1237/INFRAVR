@@ -1166,6 +1166,7 @@ struct HoldState
     int hand = -1;
     Mat3 rel; // object rotation in the hand's frame, captured when it was picked up
     int frames = 0;
+    bool onTrial = false;
 } g_hold;
 
 void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *target, const QAngle *angles, bool teleport)
@@ -1178,6 +1179,14 @@ void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *targe
     Vector local = *reinterpret_cast<const Vector *>(c + kGrabAttachedPosition);
     if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) || local.Length() > 512.0f)
         local = Vector(0, 0, 0);
+    // On trial only while it actually moves objects, so a crash somewhere else in a session where
+    // nothing was held does not switch it off.
+    if (!g_hold.onTrial && g_hold.frames < 300)
+    {
+        if (!flags::Begin(kHoldInHandFlag))
+            return hkGrabSetTarget.original(self, edx, target, angles, teleport);
+        g_hold.onTrial = true;
+    }
     Mat3 game = AnglesToMatrix(*angles);
     if (handle != g_hold.handle || g_Mod.interactHand != g_hold.hand)
     {
@@ -1196,6 +1205,7 @@ void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *targe
     hkGrabSetTarget.original(self, edx, &t, &a, teleport);
     if (++g_hold.frames == 300)
     {
+        g_hold.onTrial = false;
         flags::End(kHoldInHandFlag);
         IVR_LOG("Hold in hand: 300 updates without trouble");
     }
@@ -1278,7 +1288,7 @@ bool InstallServerHooks()
                                                     (void *)&EyePositionDetour) &&
                               hkFindUseEntity.Install("CINFRA_Player::FindUseEntity", g_Game.fnPlayerFindUseEntity,
                                                       (void *)&FindUseEntityDetour);
-    if (g_Game.fnGrabSetTarget && flags::Begin(kHoldInHandFlag)) // ended after 300 held updates
+    if (g_Game.fnGrabSetTarget && flags::Allowed(kHoldInHandFlag)) // on trial from the first held update to the 300th
         g_Mod.holdInHandReady = hkGrabSetTarget.Install("CGrabController::SetTargetPosition", g_Game.fnGrabSetTarget,
                                                         (void *)&GrabSetTargetDetour);
     IVR_LOG("Hand use: server %s, outline %s; hold in hand %s", g_Mod.handUseServer ? "on" : "off",
