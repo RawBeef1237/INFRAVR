@@ -91,6 +91,8 @@ struct Config
     // Held physics objects go to the hand that holds them and turn with it, and that hand is hidden
     // (Half-Life 2: VR's way). false = held in front of the hand at the game's own distance.
     bool holdInHand = true;
+    // true = a held object turns with the hand; false = it keeps the way it was turned when picked up.
+    bool holdTurnWithHand = true;
     float holdOffset = 0.04f; // metres in front of the controller where the held point sits
     float handoffRadius = 0.30f; // grip with the other hand this close (metres) to take a held object
     float grabReach = 0.35f; // metres around the hand searched when the hand is right at an object

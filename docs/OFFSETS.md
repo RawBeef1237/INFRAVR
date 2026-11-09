@@ -78,6 +78,7 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 | CINFRA_Player::EyePosition, slot 128 (Weapon_ShootPosition returns it) | 0x34d7e0 | static |
 | CGrabController::SetTargetPosition(const Vector &, const QAngle &, bool), not virtual, signature unique: writes m_shadow.targetPosition +0x04 / targetRotation +0x10; called by UpdateObject at 0x3aae2c / 0x3aafa8 and by UpdateObjectVM | 0x3a7610 | static |
 | CGrabController m_attachedEntity (handle) / m_attachedPositionObjectSpace | +0x2054 / +0x2078 | static: UpdateObject reads the handle first, rotates +0x2078 by the hold angles (VectorRotate at 0x40f6c0) and subtracts it from the hold point before SetTargetPosition |
+| CBaseEntity m_vecAbsOrigin / m_angAbsRotation (server) | +0x1cc / +0x1d8 | static: datadesc entries for "m_vecAbsOrigin" (0x5184e8) and "m_angAbsRotation" (0x51847c) |
 
 ## engine.dll / vguimatsurface.dll
 

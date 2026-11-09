@@ -150,6 +150,10 @@ void LoadConfig()
     c.aimPitch = ini.GetFloat("aim.aim_pitch", c.aimPitch);
     c.handUse = ini.GetBool("aim.hand_use", c.handUse);
     c.holdInHand = ini.GetBool("aim.hold_in_hand", c.holdInHand);
+    {
+        std::string r = Lower(ini.GetString("aim.hold_rotation", c.holdTurnWithHand ? "hand" : "keep"));
+        c.holdTurnWithHand = r != "keep";
+    }
     c.holdOffset = ini.GetFloat("aim.hold_offset", c.holdOffset);
     c.handoffRadius = ini.GetFloat("aim.handoff_radius", c.handoffRadius);
     c.grabReach = ini.GetFloat("aim.grab_reach", c.grabReach);

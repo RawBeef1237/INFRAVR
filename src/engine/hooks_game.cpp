@@ -1043,6 +1043,7 @@ void IVR_FASTCALL InfraFlashlightDetour(void *self, void *edx, float ox, float o
 // CBaseEntity::m_vecAbsOrigin (server): read by FindUseEntity / UpdateObject at +0x1cc after
 // CalcAbsolutePosition when the dirty bit (0x800 in +0xc8) is set.
 constexpr size_t kEntAbsOrigin = 0x1cc;
+constexpr size_t kEntAbsAngles = 0x1d8; // CBaseEntity::m_angAbsRotation (datadesc)
 void *g_grabPlayer = nullptr; // the player whose held object is being updated
 
 // The server's entity list (CGlobalEntityList entries of 24 bytes: entity at +4, serial at +8),
@@ -1230,7 +1231,8 @@ struct HoldState
 {
     uint32_t handle = 0xFFFFFFFFu;
     int hand = -1;
-    Mat3 rel; // object rotation in the hand's frame, captured when it was picked up
+    Mat3 rel;   // object rotation in the hand's frame, captured when it was picked up
+    Mat3 world; // object rotation in the world when it was picked up (hold_rotation = keep)
     int frames = 0;
     int logs = 0;
     bool onTrial = false;
@@ -1261,13 +1263,26 @@ void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *targe
         // Picked up (or passed to the other hand): keep the way it is turned now, relative to the hand.
         g_hold.handle = handle;
         g_hold.hand = g_Mod.interactHand;
-        g_hold.rel = g_Mod.holdRot.Transposed() * game;
+        // Start from how the object is really turned, not the angles the game asks for: INFRA's
+        // grab controller snaps props to its preferred carry angles, which turned them on pickup.
+        Mat3 now = game;
+        if (const uint8_t *ent = static_cast<const uint8_t *>(ServerEntity(handle)))
+        {
+            if (IsReadable(ent + kEntAbsAngles, sizeof(QAngle)))
+            {
+                QAngle real = *reinterpret_cast<const QAngle *>(ent + kEntAbsAngles);
+                if (std::isfinite(real.x) && std::isfinite(real.y) && std::isfinite(real.z))
+                    now = AnglesToMatrix(real);
+            }
+        }
+        g_hold.world = now;
+        g_hold.rel = g_Mod.holdRot.Transposed() * now;
         Vector d = *target + game * local - g_Mod.holdPos;
         IVR_LOG("Hold in hand: object %08x in the %s hand (grab point %.0f %.0f %.0f in the object, the game held "
                 "it %.0f units from the hand)",
                 handle, g_hold.hand ? "right" : "left", local.x, local.y, local.z, d.Length());
     }
-    Mat3 R = g_Mod.holdRot * g_hold.rel;
+    Mat3 R = g_Config.holdTurnWithHand ? g_Mod.holdRot * g_hold.rel : g_hold.world;
     QAngle a = MatrixToAngles(R);
     // The hold point relative to the player's eye on the server this tick: the client's view origin
     // is interpolated and lags the server while moving, which made held objects hitch.
