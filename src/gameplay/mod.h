@@ -79,6 +79,7 @@ public:
     Vector holdPos;               // where a held object's grab point goes (interactHand)
     Vector holdRel;               // holdPos relative to the engine's view origin (the server adds
                                   // it to the player's own eye position, so moving doesn't hitch)
+    int heldEntIndex = -1;        // entity index of the object held in the hand (server handle & 0xFFFF)
     Vector handPos[2];            // each controller in the world, this tick
     Mat3 handRot[2];
     Mat3 holdRot;                 // that hand's rotation

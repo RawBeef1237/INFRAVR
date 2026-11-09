@@ -1186,6 +1186,10 @@ void *IVR_FASTCALL ClientFindUseEntityDetour(void *self, void *edx)
         g_clUsePlayer = self;
         r = hkClientFindUseEntity.original(self, edx);
         g_clUsePlayer = nullptr;
+        // No outline on the object you are holding.
+        if (r && g_Mod.HeldObjectHand() >= 0 && g_Mod.heldEntIndex > 0 && g_Game.entityList &&
+            VCall<void *, int>(g_Game.entityList, vidx::GetClientEntity, g_Mod.heldEntIndex) == r)
+            r = nullptr;
         if (r)
             break;
     }
@@ -1239,6 +1243,7 @@ void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *targe
         !g_Mod.HandValid(g_Mod.interactHand) || !IsReadable(c + kGrabAttachedEntity, 0x30))
         return hkGrabSetTarget.original(self, edx, target, angles, teleport);
     uint32_t handle = *reinterpret_cast<const uint32_t *>(c + kGrabAttachedEntity);
+    g_Mod.heldEntIndex = handle == 0xFFFFFFFFu ? -1 : (int)(handle & 0xFFFF);
     Vector local = *reinterpret_cast<const Vector *>(c + kGrabAttachedPosition);
     if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) || local.Length() > 512.0f)
         local = Vector(0, 0, 0);
