@@ -65,6 +65,19 @@ const FnSpec kGrabSetTarget = {"CGrabController::SetTargetPosition", "server.dll
                                "55 8B EC 80 7D 10 00 8B 45 0C 56 8B F1 57 8B 7D 08 D9 07 D9 5E 04 D9 47 04 D9 5E 08 "
                                "D9 47 08 D9 5E 0C D9 00 D9 5E 10"};
 
+// CBaseEntity::SetCollisionGroup(int): "if (m_CollisionGroup (+0x148) != group) { ...; CollisionRulesChanged(); }".
+const FnSpec kSetCollisionGroup = {"CBaseEntity::SetCollisionGroup", "server.dll", 0xcba40,
+                                   "55 8B EC 53 56 57 8B 7D 08 8B D9 39 BB 48 01 00 00 74"};
+
+// The target of a rel32 call (E8) at `at`, if there is one there.
+void *CallTarget(const void *at)
+{
+    const uint8_t *p = static_cast<const uint8_t *>(at);
+    if (!p || !IsReadable(p, 5) || p[0] != 0xE8)
+        return nullptr;
+    return const_cast<uint8_t *>(p + 5 + *reinterpret_cast<const int32_t *>(p + 1));
+}
+
 void *Resolve(const FnSpec &s) { return ResolveFunction(s.what, s.module, s.rva, s.pattern); }
 
 void *Require(const char *module, const char *name)
@@ -232,10 +245,30 @@ bool Game::InitServer()
         fnPlayerShootPosition = Resolve(kShootPosition);
     }
     fnGrabSetTarget = Resolve(kGrabSetTarget);
+    fnSetCollisionGroup = Resolve(kSetCollisionGroup);
+    if (void **vt = FindVTable("server.dll", ".?AVCGrabController@@"))
+        fnGrabDetach = vt[3];
+    // FindUseEntity checks each candidate with "push entity; mov ecx, edi; call CanUse" at +0x2e2;
+    // the check starts with INFRA's aligned-stack prologue (53 8B DC).
+    if (fnPlayerFindUseEntity)
+    {
+        void *t = CallTarget(static_cast<uint8_t *>(fnPlayerFindUseEntity) + 0x2e2);
+        if (t && IsReadable(t, 3) && memcmp(t, "\x53\x8B\xDC", 3) == 0)
+            fnPlayerCanUse = t;
+    }
+    // ComputeError reads player_held_object_collide_with_player with "mov eax, [cvar]" (A1) at +0x5db.
+    if (fnGrabComputeError)
+    {
+        const uint8_t *p = static_cast<const uint8_t *>(fnGrabComputeError) + 0x5db;
+        if (IsReadable(p, 5) && p[0] == 0xA1)
+            heldCollideCvar = *reinterpret_cast<void *const *>(p + 1);
+    }
     IVR_LOG("server: UpdateObject %p, UpdateObjectVM %p, ComputeError %p, EyeAngles %p, Weapon_ShootPosition %p",
             fnGrabUpdateObject, fnGrabUpdateObjectVM, fnGrabComputeError, fnPlayerEyeAngles, fnPlayerShootPosition);
     IVR_LOG("server: SetTargetPosition %p, FindUseEntity %p, EyePosition %p", fnGrabSetTarget, fnPlayerFindUseEntity,
             fnPlayerEyePosition);
+    IVR_LOG("server: CanUse %p, SetCollisionGroup %p, DetachEntity %p, held-object collide cvar %p", fnPlayerCanUse,
+            fnSetCollisionGroup, fnGrabDetach, heldCollideCvar);
     return fnGrabUpdateObject && fnPlayerEyeAngles && fnPlayerShootPosition;
 }
 

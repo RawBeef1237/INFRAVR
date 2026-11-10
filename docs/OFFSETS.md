@@ -79,6 +79,11 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 | CGrabController::SetTargetPosition(const Vector &, const QAngle &, bool), not virtual, signature unique: writes m_shadow.targetPosition +0x04 / targetRotation +0x10; called by UpdateObject at 0x3aae2c / 0x3aafa8 and by UpdateObjectVM | 0x3a7610 | static |
 | CGrabController m_attachedEntity (handle) / m_attachedPositionObjectSpace | +0x2054 / +0x2078 | static: UpdateObject reads the handle first, rotates +0x2078 by the hold angles (VectorRotate at 0x40f6c0) and subtracts it from the hold point before SetTargetPosition |
 | CBaseEntity m_vecAbsOrigin / m_angAbsRotation (server) | +0x1cc / +0x1d8 | static: datadesc entries for "m_vecAbsOrigin" (0x5184e8) and "m_angAbsRotation" (0x51847c) |
+| CBaseEntity m_Collision (CCollisionProperty) / m_CollisionGroup (server) | +0xe8 (mins +0x08, maxs +0x14, solid type +0x22) / +0x148 | static: datadesc "m_Collision" 0xe8, CCollisionProperty datadesc m_vecMins 8 / m_vecMaxs 0x14 / m_nSolidType 0x22, "m_CollisionGroup" 0x148 |
+| CBaseEntity::SetCollisionGroup(int) | 0xcba40 | wine: signature unique |
+| CINFRA_Player can-use check (entity) | 0x2be9e0 | wine: the call at FindUseEntity+0x2e2 |
+| CGrabController::DetachEntity(bool) | vtable 3 = 0x3ad220 | wine; restores the group AttachEntity saved at +0x20a8 |
+| ConVar player_held_object_collide_with_player (default "0") | 0x7f84c8 | wine: "mov eax, [cvar]" at ComputeError+0x5db; AttachEntity sets COLLISION_GROUP_PLAYER_HELD (23) when it is 0, which CGameRules::ShouldCollide (0x14dfa0) keeps apart from groups 5 and 8 |
 
 ## engine.dll / vguimatsurface.dll
 

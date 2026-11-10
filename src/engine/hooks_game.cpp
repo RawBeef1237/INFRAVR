@@ -56,6 +56,8 @@ Hook<ShootPositionFn> hkShootPosition;
 Hook<FindUseEntityFn> hkFindUseEntity;        // server
 Hook<ShootPositionFn> hkEyePosition;          // server
 Hook<GrabSetTargetFn> hkGrabSetTarget;        // server
+using GrabDetachFn = void(IVR_FASTCALL *)(void *, void *, bool);
+Hook<GrabDetachFn> hkGrabDetach;              // server
 Hook<FindUseEntityFn> hkClientFindUseEntity;
 Hook<ShootPositionFn> hkClientEyePosition;
 Hook<EyeAnglesFn> hkClientEyeAngles;
@@ -1048,7 +1050,7 @@ void *g_grabPlayer = nullptr; // the player whose held object is being updated
 
 // The server's entity list (CGlobalEntityList entries of 24 bytes: entity at +4, serial at +8),
 // read from UpdateObject's own "mov edx, [g_pEntityList]" at +0x47 (8B 15 imm32).
-void *ServerEntity(uint32_t handle)
+const uint8_t *ServerEntityArray()
 {
     static const uint8_t *s_list = nullptr;
     static bool s_tried = false;
@@ -1058,11 +1060,18 @@ void *ServerEntity(uint32_t handle)
         const uint8_t *p = static_cast<const uint8_t *>(g_Game.fnGrabUpdateObject);
         if (p && IsReadable(p + 0x47, 6) && p[0x47] == 0x8B && p[0x48] == 0x15)
             s_list = *reinterpret_cast<const uint8_t *const *>(p + 0x49);
-        IVR_LOG("Hold in hand: server entity list %s", s_list ? "found" : "not found (no object diagnostics)");
+        IVR_LOG("Server entity list %s", s_list ? "found" : "not found (no touch use, no object diagnostics)");
     }
-    if (!s_list || handle == 0xFFFFFFFFu || !IsReadable(s_list, 4))
+    if (!s_list || !IsReadable(s_list, 4))
         return nullptr;
-    const uint8_t *base = *reinterpret_cast<const uint8_t *const *>(s_list);
+    return *reinterpret_cast<const uint8_t *const *>(s_list);
+}
+
+void *ServerEntity(uint32_t handle)
+{
+    const uint8_t *base = ServerEntityArray();
+    if (!base || handle == 0xFFFFFFFFu)
+        return nullptr;
     const uint8_t *e = base + (handle & 0xFFFF) * 24 + 4;
     if (!IsReadable(e, 8) || *reinterpret_cast<const uint32_t *>(e + 4) != (handle >> 16))
         return nullptr;
@@ -1111,6 +1120,79 @@ QAngle g_clUseAngles;
 constexpr const char *kHandUseFlag = "hand_use";
 constexpr const char *kHoldInHandFlag = "hold_in_hand";
 
+// CBaseEntity::m_Collision (CCollisionProperty, datadesc +0xe8): m_vecMins +0x08, m_vecMaxs +0x14 (in
+// the entity's space, or world-aligned for SOLID_BBOX), m_nSolidType byte +0x22.
+constexpr size_t kEntCollision = 0xe8;
+constexpr size_t kEntCollisionGroup = 0x148; // CBaseEntity::m_CollisionGroup (datadesc)
+constexpr int kSolidBBox = 2;
+using CanUseFn = bool(IVR_FASTCALL *)(void *, void *, void *);
+
+// Distance (game units) from P to the entity's collision box; < 0 if it has no usable box.
+float DistanceToBox(const uint8_t *ent, const Vector &P, float *volume)
+{
+    if (!IsReadable(ent + kEntCollision, 0x24) || !IsReadable(ent + kEntAbsOrigin, 24))
+        return -1.0f;
+    const Vector o = *reinterpret_cast<const Vector *>(ent + kEntAbsOrigin);
+    const QAngle a = *reinterpret_cast<const QAngle *>(ent + kEntAbsAngles);
+    const Vector mn = *reinterpret_cast<const Vector *>(ent + kEntCollision + 0x08);
+    const Vector mx = *reinterpret_cast<const Vector *>(ent + kEntCollision + 0x14);
+    const uint8_t solid = ent[kEntCollision + 0x22];
+    const float v[] = {o.x, o.y, o.z, a.x, a.y, a.z, mn.x, mn.y, mn.z, mx.x, mx.y, mx.z};
+    for (float f : v)
+        if (!std::isfinite(f))
+            return -1.0f;
+    if (mx.x < mn.x || mx.y < mn.y || mx.z < mn.z || (mx - mn).Length() > 1024.0f)
+        return -1.0f;
+    Vector d = P - o;
+    if (solid != kSolidBBox)
+        d = AnglesToMatrix(a).Transposed() * d;
+    Vector c(std::clamp(d.x, mn.x, mx.x), std::clamp(d.y, mn.y, mx.y), std::clamp(d.z, mn.z, mx.z));
+    *volume = (mx.x - mn.x) * (mx.y - mn.y) * (mx.z - mn.z);
+    return (d - c).Length();
+}
+
+// What the hand is touching: the nearest entity the game would let you use whose collision box
+// is within touch_reach of the hand (the grip, or just in front of it). Small things are hard to
+// hit with the game's traces and cone; this goes by the box instead. Smaller boxes win ties, so a
+// note on a usable desk is picked over the desk.
+void *TouchUseEntity(void *player, int hand)
+{
+    const uint8_t *base = ServerEntityArray();
+    if (!base || !g_Game.fnPlayerCanUse || !g_Mod.HandValid(hand) || g_Config.touchReach <= 0.0f)
+        return nullptr;
+    const float upm = g_Mod.UnitsPerMetre();
+    const float reach = g_Config.touchReach * upm;
+    const Vector P0 = g_Mod.handPos[hand];
+    const Vector P1 = P0 + g_Mod.handRot[hand].Forward() * (0.08f * upm);
+    void *best = nullptr;
+    float bestD = 1e9f, bestV = 1e9f;
+    for (int i = 1; i < 2048; ++i)
+    {
+        const uint8_t *e = base + i * 24 + 4;
+        if (!IsReadable(e, 4))
+            break;
+        const uint8_t *ent = *reinterpret_cast<const uint8_t *const *>(e);
+        if (!ent || ent == player || !IsReadable(ent + kEntAbsOrigin, 12))
+            continue;
+        const Vector o = *reinterpret_cast<const Vector *>(ent + kEntAbsOrigin);
+        if ((o - P0).Length() > 256.0f)
+            continue;
+        float v0 = 0, v1 = 0;
+        float d0 = DistanceToBox(ent, P0, &v0), d1 = DistanceToBox(ent, P1, &v1);
+        if (d0 < 0.0f)
+            continue;
+        float d = std::min(d0, d1);
+        if (d > reach || d > bestD + 0.5f || (d >= bestD - 0.5f && v0 >= bestV))
+            continue;
+        if (!reinterpret_cast<CanUseFn>(g_Game.fnPlayerCanUse)(player, nullptr, const_cast<uint8_t *>(ent)))
+            continue;
+        best = const_cast<uint8_t *>(ent);
+        bestD = d;
+        bestV = v0;
+    }
+    return best;
+}
+
 void *IVR_FASTCALL FindUseEntityDetour(void *self, void *edx)
 {
     if (g_usePlayer || !g_Mod.Active() || g_Mod.menuMode || !g_Mod.HandUseActive())
@@ -1118,9 +1200,10 @@ void *IVR_FASTCALL FindUseEntityDetour(void *self, void *edx)
     // First what the hand is right at: short searches through the hand in several directions
     // (along it, down, and across the palm both ways), kept only if the entity's origin is within
     // grab_reach of the hand. Then where the hand points.
-    void *r = nullptr;
     const int hand = g_Mod.interactHand;
-    if (g_Mod.HandValid(hand) && g_Config.grabReach > 0.0f)
+    void *r = TouchUseEntity(self, hand);
+    bool touched = r != nullptr;
+    if (!r && g_Mod.HandValid(hand) && g_Config.grabReach > 0.0f)
     {
         const Vector P = g_Mod.handPos[hand];
         const Mat3 &R = g_Mod.handRot[hand];
@@ -1152,12 +1235,13 @@ void *IVR_FASTCALL FindUseEntityDetour(void *self, void *edx)
         g_usePlayer = nullptr;
     }
     static int s_logs = 0;
-    if (s_logs < 8)
+    if (s_logs < 16)
     {
         ++s_logs;
-        IVR_LOG("Hand use (%s hand) from (%.0f %.0f %.0f) aim %.0f %.0f: %s", g_Mod.interactHand ? "right" : "left",
-                g_useStart.x, g_useStart.y, g_useStart.z, g_useAngles.x, g_useAngles.y,
-                r ? (RttiName(r)[0] ? RttiName(r) : "an entity") : "nothing usable");
+        IVR_LOG("Hand use (%s hand) %s (%.0f %.0f %.0f) aim %.0f %.0f: %s", g_Mod.interactHand ? "right" : "left",
+                touched ? "touching, at" : "from", touched ? g_Mod.handPos[hand].x : g_useStart.x,
+                touched ? g_Mod.handPos[hand].y : g_useStart.y, touched ? g_Mod.handPos[hand].z : g_useStart.z,
+                g_useAngles.x, g_useAngles.y, r ? (RttiName(r)[0] ? RttiName(r) : "an entity") : "nothing usable");
     }
     return r;
 }
@@ -1251,6 +1335,61 @@ float UprightYaw(const Mat3 &rel)
     return std::atan2(l.y, l.x) * 57.29578f - 90.0f;
 }
 
+// Held objects must not collide with the player. INFRA's AttachEntity already moves the object to
+// COLLISION_GROUP_PLAYER_HELD (23, which the game rules keep apart from the player and the player's
+// movement) unless player_held_object_collide_with_player is set; make sure it is, and put the old
+// group back when the object is let go if it was this code that changed it.
+constexpr int kGroupPlayerHeld = 23;
+struct NoCollideState
+{
+    uint32_t handle = 0xFFFFFFFFu; // the object this code moved to the held group
+    int saved = -1;                // its group before
+} g_noCollide;
+using SetCollisionGroupFn = void(IVR_FASTCALL *)(void *, void *, int);
+
+void RestoreHeldCollision()
+{
+    if (g_noCollide.handle == 0xFFFFFFFFu)
+        return;
+    uint8_t *ent = static_cast<uint8_t *>(ServerEntity(g_noCollide.handle));
+    if (ent && g_Game.fnSetCollisionGroup && IsReadable(ent + kEntCollisionGroup, 4) &&
+        *reinterpret_cast<int *>(ent + kEntCollisionGroup) == kGroupPlayerHeld)
+        reinterpret_cast<SetCollisionGroupFn>(g_Game.fnSetCollisionGroup)(ent, nullptr, g_noCollide.saved);
+    g_noCollide = NoCollideState();
+}
+
+void HeldNoCollide(uint32_t handle)
+{
+    RestoreHeldCollision();
+    uint8_t *ent = static_cast<uint8_t *>(ServerEntity(handle));
+    if (!ent || !IsReadable(ent + kEntCollisionGroup, 4))
+        return;
+    int group = *reinterpret_cast<int *>(ent + kEntCollisionGroup);
+    int cvar = -1;
+    if (g_Game.heldCollideCvar && IsReadable(g_Game.heldCollideCvar, 4))
+        cvar = VCall<int>(g_Game.heldCollideCvar, 13); // ConVar::GetInt
+    int playerGroup = -1;
+    if (g_grabPlayer && IsReadable(static_cast<uint8_t *>(g_grabPlayer) + kEntCollisionGroup, 4))
+        playerGroup = *reinterpret_cast<int *>(static_cast<uint8_t *>(g_grabPlayer) + kEntCollisionGroup);
+    bool forced = false;
+    if (g_Config.heldNoCollide && group != kGroupPlayerHeld && g_Game.fnSetCollisionGroup)
+    {
+        reinterpret_cast<SetCollisionGroupFn>(g_Game.fnSetCollisionGroup)(ent, nullptr, kGroupPlayerHeld);
+        g_noCollide.handle = handle;
+        g_noCollide.saved = group;
+        forced = true;
+    }
+    IVR_LOG("Hold in hand: object collision group %d%s (player %d, player_held_object_collide_with_player %d)",
+            group, forced ? ", moved to 23 so it passes through you" : "", playerGroup, cvar);
+}
+
+void IVR_FASTCALL GrabDetachDetour(void *self, void *edx, bool clearVelocity)
+{
+    hkGrabDetach.original(self, edx, clearVelocity);
+    RestoreHeldCollision();
+    g_hold.handle = 0xFFFFFFFFu;
+}
+
 void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *target, const QAngle *angles, bool teleport)
 {
     const uint8_t *c = static_cast<const uint8_t *>(self);
@@ -1271,6 +1410,8 @@ void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *targe
         g_hold.onTrial = true;
     }
     Mat3 game = AnglesToMatrix(*angles);
+    if (handle != g_hold.handle)
+        HeldNoCollide(handle);
     if (handle != g_hold.handle || g_Mod.interactHand != g_hold.hand)
     {
         // Picked up (or passed to the other hand): keep the way it is turned now, relative to the hand.
@@ -1414,6 +1555,8 @@ bool InstallServerHooks()
     if (g_Game.fnGrabSetTarget && flags::Allowed(kHoldInHandFlag)) // on trial from the first held update to the 300th
         g_Mod.holdInHandReady = hkGrabSetTarget.Install("CGrabController::SetTargetPosition", g_Game.fnGrabSetTarget,
                                                         (void *)&GrabSetTargetDetour);
+    if (g_Mod.holdInHandReady && g_Game.fnGrabDetach)
+        hkGrabDetach.Install("CGrabController::DetachEntity", g_Game.fnGrabDetach, (void *)&GrabDetachDetour);
     IVR_LOG("Hand use: server %s, outline %s; hold in hand %s", g_Mod.handUseServer ? "on" : "off",
             g_Mod.handUseClient ? "on" : "off", g_Mod.holdInHandReady ? "on" : "off");
     return true;

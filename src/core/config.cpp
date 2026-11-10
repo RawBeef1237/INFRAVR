@@ -157,6 +157,8 @@ void LoadConfig()
     c.holdOffset = ini.GetFloat("aim.hold_offset", c.holdOffset);
     c.handoffRadius = ini.GetFloat("aim.handoff_radius", c.handoffRadius);
     c.grabReach = ini.GetFloat("aim.grab_reach", c.grabReach);
+    c.touchReach = ini.GetFloat("aim.touch_reach", c.touchReach);
+    c.heldNoCollide = ini.GetBool("aim.held_no_collide", c.heldNoCollide);
 
     c.holsters = ini.GetBool("holsters.enabled", c.holsters);
     c.hipHeight = ini.GetFloat("holsters.hip_height", c.hipHeight);

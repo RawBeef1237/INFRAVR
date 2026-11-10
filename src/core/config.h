@@ -98,6 +98,8 @@ struct Config
     int holdRotation = HoldUpright;
     float holdOffset = 0.04f; // metres in front of the controller where the held point sits
     float handoffRadius = 0.30f; // grip with the other hand this close (metres) to take a held object
+    float touchReach = 0.06f; // metres from the hand to an item's box that counts as touching it (0 = off)
+    bool heldNoCollide = true; // held physics objects pass through the player
     float grabReach = 0.35f; // metres around the hand searched when the hand is right at an object
 
     // [holsters]
