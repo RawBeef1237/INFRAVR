@@ -159,6 +159,12 @@ void LoadConfig()
     c.grabReach = ini.GetFloat("aim.grab_reach", c.grabReach);
     c.touchReach = ini.GetFloat("aim.touch_reach", c.touchReach);
     c.heldNoCollide = ini.GetBool("aim.held_no_collide", c.heldNoCollide);
+    c.pointerTouch = ini.GetBool("aim.pointer_touch", c.pointerTouch);
+    c.pointerReach = ini.GetFloat("aim.pointer_reach", c.pointerReach);
+    c.pointerTipForward = ini.GetFloat("aim.pointer_tip_forward", c.pointerTipForward);
+    c.pointerTipUp = ini.GetFloat("aim.pointer_tip_up", c.pointerTipUp);
+    c.pointerIndexCurl = ini.GetFloat("aim.pointer_index_curl", c.pointerIndexCurl);
+    c.pointerOtherCurl = ini.GetFloat("aim.pointer_other_curl", c.pointerOtherCurl);
 
     c.holsters = ini.GetBool("holsters.enabled", c.holsters);
     c.hipHeight = ini.GetFloat("holsters.hip_height", c.hipHeight);

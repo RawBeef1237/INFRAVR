@@ -83,6 +83,14 @@ public:
     Vector handPos[2];            // each controller in the world, this tick
     Mat3 handRot[2];
     Mat3 holdRot;                 // that hand's rotation
+    // Pointer finger: a hand with only the index finger out touches things with its tip.
+    bool IsPointing(int hand) const;
+    Vector PointerTip(int hand) const; // the index fingertip in the world
+    bool pointerTouching[2] = {false, false}; // the tip is on something usable (client outline search)
+    bool pointerPress[2] = {false, false};    // just touched it: OnCreateMove presses "use"
+    double pointerUseUntil = -1.0;            // the server's use search is the fingertip's until then
+    int pointerHand = -1;
+    bool PointerUseActive() const;
     bool HandUseActive() const;
     // The use search for one hand: starts a little behind the controller (so something the hand
     // is already touching is found too) and goes along where the hand points.

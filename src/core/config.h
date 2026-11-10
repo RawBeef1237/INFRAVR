@@ -99,7 +99,14 @@ struct Config
     float holdOffset = 0.04f; // metres in front of the controller where the held point sits
     float handoffRadius = 0.30f; // grip with the other hand this close (metres) to take a held object
     float touchReach = 0.06f; // metres from the hand to an item's box that counts as touching it (0 = off)
-    bool heldNoCollide = true; // held physics objects pass through the player
+    bool heldNoCollide = true;
+    // Pointer finger: only the index finger out (finger tracking) and its tip touching an item uses it.
+    bool pointerTouch = true;
+    float pointerReach = 0.02f;     // metres from the fingertip to the item's box
+    float pointerTipForward = 0.10f; // fingertip: metres in front of the controller...
+    float pointerTipUp = 0.0f;       // ...and above it
+    float pointerIndexCurl = 0.35f;  // index finger curl below this = out
+    float pointerOtherCurl = 0.55f;  // middle, ring and pinky curl above this = closed // held physics objects pass through the player
     float grabReach = 0.35f; // metres around the hand searched when the hand is right at an object
 
     // [holsters]

@@ -108,6 +108,23 @@ void VRMod::UseRay(int hand, Vector &start, QAngle &angles) const
     angles = p.Angles();
 }
 
+bool VRMod::IsPointing(int hand) const
+{
+    if (!g_Config.pointerTouch || hand < 0 || hand > 1 || !HandValid(hand))
+        return false;
+    const float *c = g_VR.fingerCurl[hand];
+    return c[1] < g_Config.pointerIndexCurl && c[2] > g_Config.pointerOtherCurl &&
+           c[3] > g_Config.pointerOtherCurl && c[4] > g_Config.pointerOtherCurl;
+}
+
+Vector VRMod::PointerTip(int hand) const
+{
+    return handPos[hand] + handRot[hand] * Vector(g_Config.pointerTipForward * m_scale, 0,
+                                                  g_Config.pointerTipUp * m_scale);
+}
+
+bool VRMod::PointerUseActive() const { return pointerHand >= 0 && NowSeconds() < pointerUseUntil; }
+
 int VRMod::HeldObjectHand() const
 {
     if (!g_Config.holdInHand || !holdInHandReady || menuMode || !IsHoldingObject())
@@ -780,6 +797,13 @@ void VRMod::ProcessGameInput(double now, double dt)
                 continue;
             }
         }
+        if (grips[h]->pressed && !consumed[h] && HandValid(h) && m_grabbingHand >= 0 && m_grabbingHand != h &&
+            IsHoldingObject())
+        {
+            // The other hand already carries something and this one is not near it: INFRA holds one
+            // object at a time, and a second "use" while carrying crashed in the physics code.
+            continue;
+        }
         if (grips[h]->pressed && !consumed[h] && HandValid(h))
         {
             interactHand = h;
@@ -821,6 +845,24 @@ void VRMod::ProcessGameInput(double now, double dt)
             m_useTicks = 2; // attack did not throw it: just let go
             m_freeDropUntil = now + 0.6;
         }
+    }
+
+    // Pointer finger touched something usable (found by the outline search from the fingertip):
+    // press "use" once from that hand, searched from the fingertip only.
+    for (int h = 0; h < 2; ++h)
+    {
+        if (!pointerPress[h])
+            continue;
+        pointerPress[h] = false;
+        if (m_grabbingHand >= 0 || IsHoldingObject() || m_useTicks > 0)
+            continue;
+        interactHand = h;
+        pointerHand = h;
+        pointerUseUntil = now + 0.25;
+        m_useTicks = 2;
+        m_aimTicks = 2;
+        m_aimSource = 0;
+        g_VR.Haptic(h, 0.02f, 160.0f, 0.4f);
     }
 
     // Triggers = "use" (buttons, doors, pick-ups) from that hand, or the camera shutter.

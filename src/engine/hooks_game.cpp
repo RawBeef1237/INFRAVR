@@ -1127,16 +1127,11 @@ constexpr size_t kEntCollisionGroup = 0x148; // CBaseEntity::m_CollisionGroup (d
 constexpr int kSolidBBox = 2;
 using CanUseFn = bool(IVR_FASTCALL *)(void *, void *, void *);
 
-// Distance (game units) from P to the entity's collision box; < 0 if it has no usable box.
-float DistanceToBox(const uint8_t *ent, const Vector &P, float *volume)
+// Distance (game units) from P to a collision box (mins/maxs in the entity's space, or
+// world-aligned for SOLID_BBOX); < 0 if the numbers make no sense.
+float BoxDistance(const Vector &o, const QAngle &a, const Vector &mn, const Vector &mx, int solid, const Vector &P,
+                  float *volume)
 {
-    if (!IsReadable(ent + kEntCollision, 0x24) || !IsReadable(ent + kEntAbsOrigin, 24))
-        return -1.0f;
-    const Vector o = *reinterpret_cast<const Vector *>(ent + kEntAbsOrigin);
-    const QAngle a = *reinterpret_cast<const QAngle *>(ent + kEntAbsAngles);
-    const Vector mn = *reinterpret_cast<const Vector *>(ent + kEntCollision + 0x08);
-    const Vector mx = *reinterpret_cast<const Vector *>(ent + kEntCollision + 0x14);
-    const uint8_t solid = ent[kEntCollision + 0x22];
     const float v[] = {o.x, o.y, o.z, a.x, a.y, a.z, mn.x, mn.y, mn.z, mx.x, mx.y, mx.z};
     for (float f : v)
         if (!std::isfinite(f))
@@ -1147,49 +1142,100 @@ float DistanceToBox(const uint8_t *ent, const Vector &P, float *volume)
     if (solid != kSolidBBox)
         d = AnglesToMatrix(a).Transposed() * d;
     Vector c(std::clamp(d.x, mn.x, mx.x), std::clamp(d.y, mn.y, mx.y), std::clamp(d.z, mn.z, mx.z));
-    *volume = (mx.x - mn.x) * (mx.y - mn.y) * (mx.z - mn.z);
+    if (volume)
+        *volume = (mx.x - mn.x) * (mx.y - mn.y) * (mx.z - mn.z);
     return (d - c).Length();
 }
 
-// What the hand is touching: the nearest entity the game would let you use whose collision box
-// is within touch_reach of the hand (the grip, or just in front of it). Small things are hard to
-// hit with the game's traces and cone; this goes by the box instead. Smaller boxes win ties, so a
-// note on a usable desk is picked over the desk.
-void *TouchUseEntity(void *player, int hand)
+// Server entity (from the game's own list, so live): its collision box.
+float DistanceToBox(const uint8_t *ent, const Vector &P, float *volume)
 {
+    return BoxDistance(*reinterpret_cast<const Vector *>(ent + kEntAbsOrigin),
+                       *reinterpret_cast<const QAngle *>(ent + kEntAbsAngles),
+                       *reinterpret_cast<const Vector *>(ent + kEntCollision + 0x08),
+                       *reinterpret_cast<const Vector *>(ent + kEntCollision + 0x14), ent[kEntCollision + 0x22], P,
+                       volume);
+}
+
+// Doors and valves (momentary_rot_button / func_rot_button: CMomentaryRotButton, CRotButton and
+// their client classes) are left to the grip and the trigger: the fingertip skips them.
+bool IsDoor(const void *ent)
+{
+    const char *n = ent ? RttiName(ent) : "";
+    return n && (strstr(n, "Door") || strstr(n, "RotButton"));
+}
+
+// What a hand (or fingertip) is touching: the nearest entity the game would let you use whose
+// collision box is within `reach` of one of the points. Small things are hard to hit with the
+// game's traces and cone; this goes by the box instead. Smaller boxes win ties, so a note on a
+// usable desk is picked over the desk.
+// Runs every tick while "use" is held, so it stays cheap: the list is checked readable once (the
+// entities in it are live) and the answer is kept for 0.1 s while the hand stays put.
+void *TouchUseEntity(void *player, const Vector *points, int count, float reach, bool noDoors)
+{
+    static const uint8_t *s_checked = nullptr;
     const uint8_t *base = ServerEntityArray();
-    if (!base || !g_Game.fnPlayerCanUse || !g_Mod.HandValid(hand) || g_Config.touchReach <= 0.0f)
+    if (!base || !g_Game.fnPlayerCanUse || count <= 0 || reach <= 0.0f)
         return nullptr;
-    const float upm = g_Mod.UnitsPerMetre();
-    const float reach = g_Config.touchReach * upm;
-    const Vector P0 = g_Mod.handPos[hand];
-    const Vector P1 = P0 + g_Mod.handRot[hand].Forward() * (0.08f * upm);
+    if (base != s_checked)
+    {
+        if (!IsReadable(base, 2048 * 24))
+            return nullptr;
+        s_checked = base;
+    }
+    static double s_at = -1.0;
+    static Vector s_point;
+    static void *s_result = nullptr;
+    static uint32_t s_serial = 0;
+    static int s_index = -1;
+    static bool s_noDoors = false;
+    const double now = NowSeconds();
+    if (now - s_at < 0.1 && (points[0] - s_point).Length() < 1.0f && noDoors == s_noDoors)
+    {
+        if (!s_result)
+            return nullptr;
+        const uint8_t *e = base + s_index * 24 + 4;
+        if (*reinterpret_cast<void *const *>(e) == s_result && *reinterpret_cast<const uint32_t *>(e + 4) == s_serial)
+            return s_result;
+    }
     void *best = nullptr;
+    int bestIndex = -1;
     float bestD = 1e9f, bestV = 1e9f;
     for (int i = 1; i < 2048; ++i)
     {
-        const uint8_t *e = base + i * 24 + 4;
-        if (!IsReadable(e, 4))
-            break;
-        const uint8_t *ent = *reinterpret_cast<const uint8_t *const *>(e);
-        if (!ent || ent == player || !IsReadable(ent + kEntAbsOrigin, 12))
+        const uint8_t *ent = *reinterpret_cast<const uint8_t *const *>(base + i * 24 + 4);
+        if (!ent || ent == player)
             continue;
         const Vector o = *reinterpret_cast<const Vector *>(ent + kEntAbsOrigin);
-        if ((o - P0).Length() > 256.0f)
+        if (!std::isfinite(o.x) || (o - points[0]).Length() > 256.0f)
             continue;
-        float v0 = 0, v1 = 0;
-        float d0 = DistanceToBox(ent, P0, &v0), d1 = DistanceToBox(ent, P1, &v1);
-        if (d0 < 0.0f)
-            continue;
-        float d = std::min(d0, d1);
-        if (d > reach || d > bestD + 0.5f || (d >= bestD - 0.5f && v0 >= bestV))
+        float d = 1e9f, v = 0;
+        for (int k = 0; k < count; ++k)
+        {
+            float vk = 0, dk = DistanceToBox(ent, points[k], &vk);
+            if (dk >= 0.0f && dk < d)
+            {
+                d = dk;
+                v = vk;
+            }
+        }
+        if (d > reach || d > bestD + 0.5f || (d >= bestD - 0.5f && v >= bestV))
             continue;
         if (!reinterpret_cast<CanUseFn>(g_Game.fnPlayerCanUse)(player, nullptr, const_cast<uint8_t *>(ent)))
             continue;
+        if (noDoors && IsDoor(ent))
+            continue;
         best = const_cast<uint8_t *>(ent);
+        bestIndex = i;
         bestD = d;
-        bestV = v0;
+        bestV = v;
     }
+    s_at = now;
+    s_point = points[0];
+    s_noDoors = noDoors;
+    s_result = best;
+    s_index = bestIndex;
+    s_serial = best ? *reinterpret_cast<const uint32_t *>(base + bestIndex * 24 + 8) : 0;
     return best;
 }
 
@@ -1201,7 +1247,27 @@ void *IVR_FASTCALL FindUseEntityDetour(void *self, void *edx)
     // (along it, down, and across the palm both ways), kept only if the entity's origin is within
     // grab_reach of the hand. Then where the hand points.
     const int hand = g_Mod.interactHand;
-    void *r = TouchUseEntity(self, hand);
+    const float upm = g_Mod.UnitsPerMetre();
+    if (g_Mod.PointerUseActive())
+    {
+        // The fingertip touched something: use only what it touches, never a door or valve.
+        Vector tip = g_Mod.PointerTip(g_Mod.pointerHand);
+        void *t = TouchUseEntity(self, &tip, 1, (g_Config.pointerReach + 0.03f) * upm, true);
+        static int s_tipLogs = 0;
+        if (s_tipLogs < 16)
+        {
+            ++s_tipLogs;
+            IVR_LOG("Pointer touch (%s hand) at (%.0f %.0f %.0f): %s", g_Mod.pointerHand ? "right" : "left", tip.x,
+                    tip.y, tip.z, t ? (RttiName(t)[0] ? RttiName(t) : "an entity") : "nothing usable");
+        }
+        return t;
+    }
+    void *r = nullptr;
+    if (g_Mod.HandValid(hand) && g_Config.touchReach > 0.0f)
+    {
+        const Vector pts[2] = {g_Mod.handPos[hand], g_Mod.handPos[hand] + g_Mod.handRot[hand].Forward() * (0.08f * upm)};
+        r = TouchUseEntity(self, pts, 2, g_Config.touchReach * upm, false);
+    }
     bool touched = r != nullptr;
     if (!r && g_Mod.HandValid(hand) && g_Config.grabReach > 0.0f)
     {
@@ -1235,9 +1301,11 @@ void *IVR_FASTCALL FindUseEntityDetour(void *self, void *edx)
         g_usePlayer = nullptr;
     }
     static int s_logs = 0;
-    if (s_logs < 16)
+    static void *s_last = nullptr;
+    if (s_logs < 16 && (r != s_last || !r))
     {
         ++s_logs;
+        s_last = r;
         IVR_LOG("Hand use (%s hand) %s (%.0f %.0f %.0f) aim %.0f %.0f: %s", g_Mod.interactHand ? "right" : "left",
                 touched ? "touching, at" : "from", touched ? g_Mod.handPos[hand].x : g_useStart.x,
                 touched ? g_Mod.handPos[hand].y : g_useStart.y, touched ? g_Mod.handPos[hand].z : g_useStart.z,
@@ -1254,10 +1322,68 @@ Vector *IVR_FASTCALL EyePositionDetour(void *self, void *edx, Vector *out)
     return r;
 }
 
+// Client entity: IClientUnknown::GetCollideable (vtable 3) -> ICollideable OBBMins (1), OBBMaxs (2),
+// GetCollisionOrigin (8), GetCollisionAngles (9), GetSolid (11); read from INFRA's client.dll
+// (C_BaseEntity vt[3] = this + 0x410, CCollisionProperty's vtable).
+float ClientDistanceToBox(void *ent, const Vector &P)
+{
+    if (!ent)
+        return -1.0f;
+    void *coll = VCall<void *>(ent, 3);
+    if (!coll)
+        return -1.0f;
+    const Vector *mn = VCall<const Vector *>(coll, 1);
+    const Vector *mx = VCall<const Vector *>(coll, 2);
+    const Vector *o = VCall<const Vector *>(coll, 8);
+    const QAngle *a = VCall<const QAngle *>(coll, 9);
+    int solid = VCall<int>(coll, 11);
+    if (!mn || !mx || !o || !a)
+        return -1.0f;
+    return BoxDistance(*o, *a, *mn, *mx, solid, P, nullptr);
+}
+
+// The pointer finger: with only the index finger out, what the outline search finds from the
+// fingertip is touched when the tip reaches its box (never a door or valve); the first touch presses
+// "use" once (OnCreateMove), and the tip has to come off it before it can press again.
+void *PointerSearch(void *self, void *edx)
+{
+    void *outline = nullptr;
+    const float upm = g_Mod.UnitsPerMetre();
+    for (int h = 0; h < 2; ++h)
+    {
+        if (!g_Mod.IsPointing(h) || h == g_Mod.HeldObjectHand())
+        {
+            g_Mod.pointerTouching[h] = false;
+            continue;
+        }
+        const Vector tip = g_Mod.PointerTip(h);
+        const Vector fwd = g_Mod.handRot[h].Forward();
+        g_clUseStart = tip - fwd * 4.0f;
+        g_clUseAngles = VectorAngles(fwd);
+        g_clUsePlayer = self;
+        void *e = hkClientFindUseEntity.original(self, edx);
+        g_clUsePlayer = nullptr;
+        float d = e && !IsDoor(e) ? ClientDistanceToBox(e, tip) : -1.0f;
+        if (d >= 0.0f && d <= g_Config.pointerReach * upm)
+        {
+            if (!g_Mod.pointerTouching[h])
+                g_Mod.pointerPress[h] = true;
+            g_Mod.pointerTouching[h] = true;
+        }
+        else if (d < 0.0f || d > (g_Config.pointerReach + 0.02f) * upm)
+            g_Mod.pointerTouching[h] = false;
+        if (!outline && d >= 0.0f && d <= 0.15f * upm)
+            outline = e;
+    }
+    return outline;
+}
+
 void *IVR_FASTCALL ClientFindUseEntityDetour(void *self, void *edx)
 {
     if (g_clUsePlayer || !g_Mod.Active() || g_Mod.menuMode || !g_Config.handUse || !g_Mod.handUseClient)
         return hkClientFindUseEntity.original(self, edx);
+    if (void *p = g_Config.pointerTouch ? PointerSearch(self, edx) : nullptr)
+        return p;
     // The outline marks what either hand points at: the hand that used something last first.
     int order[2] = {g_Mod.interactHand, 1 - g_Mod.interactHand};
     void *r = nullptr;
