@@ -103,6 +103,16 @@ public:
     void UseRay(int hand, Vector &start, QAngle &angles) const;
     // The hand that holds a physics object and is hidden for it, or -1.
     int HeldObjectHand() const;
+    // Second object, carried in the other hand by the mod's own grab controller (server side,
+    // SecondHoldFrame in hooks_game.cpp). The grip asks; the server picks up or lets go.
+    Vector holdPosH[2], holdRelH[2]; // each hand's hold point (as holdPos / holdRel)
+    Mat3 holdRotH[2];
+    int secondRequest = -1;       // hand that just gripped while the other one carries something
+    bool secondRelease = false;   // the second object's hand let go
+    float secondReleaseSpeed = 0; // m/s, how fast that hand was moving (a throw)
+    int secondHand = -1;          // the hand carrying the second object (set by the server), or -1
+    int secondEntIndex = -1;      // its entity index
+    int SecondHeldHand() const { return menuMode ? -1 : secondHand; }
     Vector lensPos;
     QAngle lensAngles;
 

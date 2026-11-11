@@ -472,6 +472,9 @@ void VRMod::OnCreateMove(CUserCmd *cmd)
         Pose p = HandWorld(h);
         handPos[h] = p.pos;
         handRot[h] = p.rot;
+        holdRotH[h] = p.rot;
+        holdPosH[h] = p.pos + p.rot * Vector(g_Config.holdOffset * m_scale, 0, 0);
+        holdRelH[h] = holdPosH[h] - m_anchor;
     }
     if (g_Config.logInput && (cmd->buttons & (IN_USE | IN_ATTACK)))
         IVR_LOG("cmd %d buttons %x aim %.1f %.1f move %.0f %.0f", cmd->command_number, cmd->buttons, aim.x, aim.y,
@@ -829,11 +832,20 @@ void VRMod::ProcessGameInput(double now, double dt)
                 continue;
             }
         }
-        if (grips[h]->pressed && !consumed[h] && HandValid(h) && m_grabbingHand >= 0 && m_grabbingHand != h &&
-            IsHoldingObject())
+        if (grips[h]->released && secondHand == h)
         {
-            // The other hand already carries something and this one is not near it: INFRA holds one
-            // object at a time, and a second "use" while carrying crashed in the physics code.
+            secondRelease = true;
+            secondReleaseSpeed = g_VR.HandPose(h).velocity.Length();
+            continue;
+        }
+        if (grips[h]->pressed && !consumed[h] && HandValid(h) && secondHand != h && IsHoldingObject() &&
+            HeldObjectHand() >= 0 && HeldObjectHand() != h)
+        {
+            // The other hand already carries something and this one is not near it. INFRA holds one
+            // object at a time (a second "use" while carrying crashed in the physics code), so the
+            // mod's own grab controller picks up the second one.
+            if (g_Config.twoHandHold && secondHand < 0)
+                secondRequest = h;
             continue;
         }
         if (grips[h]->pressed && !consumed[h] && HandValid(h))

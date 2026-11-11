@@ -249,6 +249,14 @@ struct Game
     void *fnPlayerCanUse = nullptr;        // CINFRA_Player's "can this entity be used" check (server)
     void *fnSetCollisionGroup = nullptr;   // CBaseEntity::SetCollisionGroup(int) (server)
     void *fnGrabDetach = nullptr;          // CGrabController::DetachEntity(bool) (server, vtable 3)
+    // Second object, held in the other hand (our own CGrabController, server):
+    void *fnGrabAttach = nullptr;          // CGrabController::AttachEntity (vtable 1)
+    void *fnCanPickupObject = nullptr;     // CBasePlayer::CanPickupObject(entity, mass, size), cdecl
+    void *fnIsHeldByPlayer = nullptr;      // entity thiscall check in PickupObject: already held
+    float pickupMass = 0, pickupSize = 0;  // PickupObject's limits
+    void *fnOnPhysGunPickup = nullptr;     // Pickup_OnPhysGunPickup(entity, player, reason), cdecl
+    void *fnOnPhysGunDrop = nullptr;       // Pickup_OnPhysGunDrop(entity, player, reason), cdecl
+    void *fnGameFrame = nullptr;           // CServerGameDLL::GameFrame(bool) (vtable 5)
     void *heldCollideCvar = nullptr;       // ConVar player_held_object_collide_with_player (server)
     void *fnClientFindUseEntity = nullptr; // C_INFRA_Player::FindUseEntity (client, selection outline)
     void *fnClientEyePosition = nullptr;   // C_INFRA_Player::EyePosition (client)

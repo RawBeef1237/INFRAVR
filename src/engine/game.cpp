@@ -249,6 +249,44 @@ bool Game::InitServer()
     fnSetCollisionGroup = Resolve(kSetCollisionGroup);
     if (void **vt = FindVTable("server.dll", ".?AVCGrabController@@"))
         fnGrabDetach = vt[3];
+    if (void **vt = FindVTable("server.dll", ".?AVCGrabController@@"))
+        fnGrabAttach = vt[1];
+    // CINFRA_Player::PickupObject (441): "movss xmm0, [size]" +0x19, "movss xmm0, [mass]" +0x2a,
+    // "call CanPickupObject" +0x38, "call <already held>" +0x46.
+    if (void **vt = FindVTable("server.dll", ".?AVCINFRA_Player@@"))
+    {
+        const uint8_t *p = static_cast<const uint8_t *>(vt[441]);
+        if (p && IsReadable(p, 0x50) && memcmp(p + 0x19, "\xF3\x0F\x10\x05", 4) == 0 &&
+            memcmp(p + 0x2a, "\xF3\x0F\x10\x05", 4) == 0 && p[0x38] == 0xE8 && p[0x46] == 0xE8)
+        {
+            const float *size = *reinterpret_cast<const float *const *>(p + 0x1d);
+            const float *mass = *reinterpret_cast<const float *const *>(p + 0x2e);
+            if (IsReadable(size, 4) && IsReadable(mass, 4))
+            {
+                pickupSize = *size;
+                pickupMass = *mass;
+                fnCanPickupObject = CallTarget(p + 0x38);
+                fnIsHeldByPlayer = CallTarget(p + 0x46);
+            }
+        }
+    }
+    // CPlayerPickupController::Init (197) calls Pickup_OnPhysGunPickup at +0xc2, Shutdown (198)
+    // Pickup_OnPhysGunDrop at +0xc5.
+    if (void **vt = FindVTable("server.dll", ".?AVCPlayerPickupController@@"))
+    {
+        const uint8_t *init = static_cast<const uint8_t *>(vt[197]);
+        const uint8_t *shut = static_cast<const uint8_t *>(vt[198]);
+        if (init && IsReadable(init + 0xc2, 5) && init[0xc2] == 0xE8)
+            fnOnPhysGunPickup = CallTarget(init + 0xc2);
+        if (shut && IsReadable(shut + 0xc5, 5) && shut[0xc5] == 0xE8)
+            fnOnPhysGunDrop = CallTarget(shut + 0xc5);
+    }
+    if (void **vt = FindVTable("server.dll", ".?AVCServerGameDLL@@"))
+        fnGameFrame = vt[5];
+    IVR_LOG("server: second hold: AttachEntity %p, CanPickupObject %p (mass %.0f, size %.0f), held check %p, "
+            "OnPhysGunPickup %p, OnPhysGunDrop %p, GameFrame %p",
+            fnGrabAttach, fnCanPickupObject, pickupMass, pickupSize, fnIsHeldByPlayer, fnOnPhysGunPickup,
+            fnOnPhysGunDrop, fnGameFrame);
     // FindUseEntity checks each candidate with "push entity; mov ecx, edi; call CanUse" at +0x2e2;
     // the check starts with INFRA's aligned-stack prologue (53 8B DC).
     if (fnPlayerFindUseEntity)
