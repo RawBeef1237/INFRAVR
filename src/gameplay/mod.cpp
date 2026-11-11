@@ -646,6 +646,11 @@ void VRMod::OnLevelLoaded()
         m_firstMap = lower;
     mainMenu = lower.find("background") != std::string::npos || lower.find("menu") != std::string::npos ||
                (!m_firstMap.empty() && lower == m_firstMap) || (map.empty() && m_levelLoads == 1 && !launchedIntoMap);
+    // Source's motion blur blurs along how far the view turned since the last frame it drew. In
+    // VR that is the other eye, so every frame was smeared sideways and down by a few pixels,
+    // which also left INFRA's selection outline (drawn after it, unblurred) off the object.
+    if (!g_Config.motionBlur)
+        QueueCommand("mat_motion_blur_enabled 0");
     IVR_LOG("Level loaded: \"%s\"%s", map.c_str(),
             mainMenu ? (g_Config.mainMenuInVR ? " (main menu, shown in VR)" : " (main menu, shown on the flat screen)")
                      : "");
