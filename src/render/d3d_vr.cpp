@@ -137,6 +137,7 @@ void D3DVR::OnBeforeReset()
     // released by the engine itself (it recreates its render targets).
     blank.Reset();
     menu.Reset();
+    ReleaseSubtitles();
     for (auto &e : eye)
         e.Reset();
     hud.Reset();
@@ -925,6 +926,13 @@ void D3DVR::ProbeFrame(bool stereo, bool hudOn)
         }
         else
             m_blackEyeProbes = 0;
+        if (m_subsShown)
+        {
+            // raw = as the game left it, panel = what the headset gets (alpha rebuilt)
+            ProbeStats r = Probe(subsRaw, nullptr), p = Probe(subs, nullptr);
+            IVR_LOG("probe: subtitle panel brightness max %.0f; game alpha %.0f%% opaque, panel %.0f%% opaque", p.max,
+                    r.opaque * 100.0f, p.opaque * 100.0f);
+        }
         if (hudOn)
         {
             ProbeStats h = Probe(hud, nullptr);
@@ -1073,6 +1081,7 @@ void D3DVR::OnPresent()
 
     bool stereo = g_Mod.eyesRendered && !g_Mod.menuMode && eye[0].Valid() && eye[1].Valid();
     bool hudOn = stereo && g_Mod.hudPainted && hud.Valid() && (!hudBroken || g_Mod.phoneMenu);
+    bool subsOn = stereo && g_Mod.subsPainted && subsRaw.Valid() && !g_VR.IsOpenXR();
     // Phone (pause) menu but no new 3D view this frame: show the last one again, tagged with the
     // head pose it was drawn for, so SteamVR keeps it fixed in the world while you look around.
     bool reuse = !stereo && g_Mod.phoneMenu && !g_Mod.menuMode && m_haveLastEyes && eye[0].Valid() &&
@@ -1097,6 +1106,7 @@ void D3DVR::OnPresent()
         m_haveLastEyes = false;
     g_Mod.eyesRendered = false;
     g_Mod.hudPainted = false;
+    g_Mod.subsPainted = false;
     if (g_VR.IsOpenXR())
         XrHandOver();
     if (reuse && g_VR.IsOpenXR())
@@ -1141,6 +1151,11 @@ void D3DVR::OnPresent()
     }
     else
         CopyBackBufferToMenu();
+    if (subsOn)
+        subsOn = BuildSubtitlePanel();
+    m_subsShown = subsOn;
+    if (!stereo)
+        g_Mod.ShowSubtitles(false);
     ProbeFrame(stereo, hudOn && !g_Mod.phoneMenu); // the pause menu may be opaque on purpose
     hudOn = hudOn && (!hudBroken || g_Mod.phoneMenu);
     if (!stereo)
@@ -1161,7 +1176,7 @@ void D3DVR::OnPresent()
         return;
     }
 
-    VrTexture *list[3];
+    VrTexture *list[4];
     int n = 0;
     if (stereo)
     {
@@ -1169,6 +1184,8 @@ void D3DVR::OnPresent()
         list[n++] = &eye[1];
         if (hudOn)
             list[n++] = &hud;
+        if (subsOn)
+            list[n++] = &subs;
     }
     else
     {
@@ -1199,6 +1216,13 @@ void D3DVR::OnPresent()
             vr::Texture_t th = {&h, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
             g_VR.Overlays()->SetOverlayTexture(g_Mod.hudOverlay, th);
         }
+        if (subsOn)
+        {
+            vr::VRVulkanTextureData_t sd = VulkanData(subs);
+            vr::Texture_t ts = {&sd, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
+            g_VR.Overlays()->SetOverlayTexture(g_Mod.subsOverlay, ts);
+        }
+        g_Mod.ShowSubtitles(subsOn);
     }
     else
     {

@@ -21,6 +21,7 @@ by RTTI vtable + slot or by a unique byte signature, and the RVA is the cross-ch
 | VMaterialSystem080 | materialsystem.dll | wine |
 | VGUI_Surface031 | vguimatsurface.dll | wine |
 | VGUI_InputInternal001 | vgui2.dll | not found under Wine (vgui2 needs the running game) |
+| VGUI_Panel009 (vgui::IPanel, VPanelWrapper) | vgui2.dll | static (string in vgui2.dll) |
 | VEngineModel016 (IVModelRender) | engine.dll | static |
 
 ## materialsystem.dll
@@ -91,6 +92,9 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 |---|---|---|
 | IVRenderView slot 38 (VGui_Paint) | RVA 0x11a040 | wine, headset |
 | IVEngineClient slot 104 (ExecuteClientCmd) | RVA 0x71140 | wine, headset |
+| ISurface slot 9 GetEmbeddedPanel / slot 118 PaintTraverseEx(VPANEL, bool) | CMatSystemSurface vtable 0x100bbecc: slot 9 `mov eax, [ecx+0x254]; ret`, slot 118 at 0x1000b2f0 tests `[ebp+0xc]` (paintPopups) and ends `ret 8`; macOS dylib symbols at the same indices | static (dll + dylib) |
+| vgui::IPanel slots (VGUI_Panel009) | VPanelWrapper vtable 0x100402d4 in vgui2.dll: GetSize 5, GetAbsPos 10, SetVisible 14, IsVisible 15, GetChildCount 17, GetChild 18, GetName 36. The dylib's VPanelWrapper symbols are one slot higher (GCC emits two destructors); every dll slot's `ret` size matches the dylib signature (SetPos/GetPos/GetSize `ret 0xc`, SetVisible/GetChild `ret 8`, IsVisible/GetChildCount/GetName `ret 4`, PaintTraverse 41 `ret 0xc`) | static (dll + dylib) |
+| INFRA's subtitle panels | `CHudCloseCaption` ("HudCloseCaption") and `CHudSubtitles` ("HudSubtitles", Portal 2 branch) in client.dll. They are painted with PAINT_UIPANELS, not PAINT_INGAMEPANELS: a headset run that painted only the in-game panels into the subtitle texture probed brightness max 0 every time, while subtitles still showed on the phone screen with only the UI panels painted there. Their parent chain and bounds are logged at the first find ("Subtitles: vgui panel ...") | static (client.dll strings, dylib symbols); in-game paint layer: headset (log) |
 | ISurface slot 56 (IsCursorVisible) | RVA 0x5850 | wine |
 | IVModelRender slot 26 ComputeLightingState(int count, const LightingQuery_t*, MaterialLightingState_t*, ITexture**) | RVA 0xe2da0 (0x100e2da0 at the preferred base), `__thiscall`, `ret 0x10` | static (engine.dll, cross-checked with the engine.dylib symbols) |
 | LightingQuery_t | 0x10 bytes: origin 0, instance (ushort, 0xFFFF = none) 0xC, ambient boost (bool) 0xE | static |

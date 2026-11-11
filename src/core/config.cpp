@@ -125,6 +125,23 @@ void LoadConfig()
     c.hudDistance = ini.GetFloat("vr.hud_distance", c.hudDistance);
     c.hudWidth = ini.GetFloat("vr.hud_width", c.hudWidth);
     c.hudDown = ini.GetFloat("vr.hud_down", c.hudDown);
+    c.subtitles = ini.GetBool("subtitles.enabled", c.subtitles);
+    c.subtitlesDistance = ini.GetFloat("subtitles.distance", c.subtitlesDistance);
+    c.subtitlesWidth = ini.GetFloat("subtitles.width", c.subtitlesWidth);
+    c.subtitlesDown = ini.GetFloat("subtitles.down", c.subtitlesDown);
+    c.subtitlesGain = ini.GetFloat("subtitles.gain", c.subtitlesGain);
+    c.subtitlesBackground = std::clamp(ini.GetFloat("subtitles.background", c.subtitlesBackground), 0.0f, 1.0f);
+    c.subtitlesOnPhone = ini.GetBool("subtitles.on_phone", c.subtitlesOnPhone);
+    c.subtitlesHudPanel = ini.GetBool("subtitles.hud_panel", c.subtitlesHudPanel);
+    {
+        std::string r = ini.GetString("subtitles.region", "");
+        float v[4];
+        if (!r.empty() && std::sscanf(r.c_str(), "%f %f %f %f", &v[0], &v[1], &v[2], &v[3]) == 4 && v[2] > v[0] &&
+            v[3] > v[1])
+            std::copy(v, v + 4, c.subtitlesRegion);
+    }
+    if (c.subtitlesWidth < 0.05f)
+        c.subtitlesWidth = 0.05f;
     c.menuDistance = ini.GetFloat("vr.menu_distance", c.menuDistance);
     c.menuWidth = ini.GetFloat("vr.menu_width", c.menuWidth);
     c.postProcessing = ini.GetBool("vr.post_processing", c.postProcessing);

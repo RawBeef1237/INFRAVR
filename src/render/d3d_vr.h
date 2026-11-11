@@ -78,6 +78,10 @@ public:
     VrTexture hud;
     // Our own textures.
     VrTexture blank, menu;
+    // Subtitle panel: subsRaw is the subtitle region copied out of the HUD texture while the game
+    // paints (render queue), subs the same picture with its alpha rebuilt, sent to the headset.
+    VrTexture subsRaw, subs;
+    void CopySubtitles(); // on the render queue, right after the in-game HUD was painted
 
     // Set while the engine creates one of our render targets (see CreateTexture hook).
     int capturing = -1; // 0/1 eye, 2 hud
@@ -136,6 +140,12 @@ private:
     void LogHudContent();
     bool MeasureSmear(const VrTexture &t, const char *what, UINT &picW, UINT &picH);
     void MakeOpaque(const VrTexture &t);
+    bool BuildSubtitlePanel(); // subsRaw -> subs at Present
+    void ReleaseSubtitles();
+    IDirect3DPixelShader9 *m_subsPS = nullptr;
+    bool m_subsPSFailed = false;
+    bool m_subsShown = false; // the subtitle panel went to the headset this frame (probe)
+    int m_subsLogs = 0;
     void ReleaseHelpers();
     bool EnsureOwnTextures();
     void RefreshImages(VrTexture *const *textures, int count); // DXVK may move images

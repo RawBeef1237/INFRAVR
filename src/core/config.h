@@ -51,6 +51,17 @@ struct Config
     HudMode hudMode = HudMode::Overlay;
     float hudDistance = 1.2f, hudWidth = 1.0f, hudDown = 0.10f;
     float menuDistance = 2.2f, menuWidth = 2.4f;
+    // Subtitles (INFRA's close captions) on a panel of their own, head-locked below your view, so
+    // they show in normal play and not only on the phone menu. Only with hud_mode = overlay and the
+    // OpenVR backend. The panel is cut out of the in-game HUD: region is left top right bottom in
+    // HudLayout.res units (x from the screen centre, y from the top, 480 = screen height).
+    bool subtitles = true;
+    float subtitlesDistance = 1.4f, subtitlesWidth = 1.0f, subtitlesDown = 0.40f;
+    float subtitlesRegion[4] = {-270.0f, 250.0f, 270.0f, 420.0f};
+    float subtitlesGain = 1.5f;       // how quickly faint pixels become solid (text edges)
+    float subtitlesBackground = 0.0f; // 0..1: darkness of the panel behind the text
+    bool subtitlesOnPhone = false;    // also paint the HUD (subtitles) onto the phone menu screen
+    bool subtitlesHudPanel = false;   // also show the whole HUD panel (hud_width/...) in normal play
     // The engine's full-screen post effects (bloom, colour correction, vignette, depth of field).
     // They need buffers at the eye size: on only when world_at_eye_size worked (or the eyes are
     // window-sized), otherwise they smear into lines and are switched off whatever this says.
