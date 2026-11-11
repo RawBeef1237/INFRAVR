@@ -103,7 +103,10 @@ void IVR_FASTCALL DrawSSRDetour(void *self, void *edx, void *mat, int dx, int dy
         else if (n && std::strstr(n, "glow_blur_y"))
             Defer([] { g_D3D.DumpBound(true, "outline_2_glow"); });
         else if (n && std::strstr(n, "halo_add_to_screen"))
-            Defer([] { g_D3D.DumpBound(true, "outline_3_eye"); });
+            Defer([] {
+                g_D3D.DumpBound(true, "outline_3_eye");
+                g_D3D.DumpStencil("outline_4_stencil");
+            });
     }
 } // trace the next left eye (set when INFRA's selection outline first shows)
 

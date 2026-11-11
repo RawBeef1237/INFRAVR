@@ -740,6 +740,12 @@ void D3DVR::DumpBound(bool renderTarget, const char *name)
         IVR_LOG("dump %s: nothing bound", name);
         return;
     }
+    DumpSurface(src, name);
+    src->Release();
+}
+
+void D3DVR::DumpSurface(IDirect3DSurface9 *src, const char *name)
+{
     D3DSURFACE_DESC d{};
     src->GetDesc(&d);
     IDirect3DSurface9 *rt = nullptr, *sys = nullptr;
@@ -804,7 +810,6 @@ void D3DVR::DumpBound(bool renderTarget, const char *name)
         sys->Release();
     if (rt)
         rt->Release();
-    src->Release();
 }
 
 // Where on the HUD panel something is drawn (subtitles, hints): the 32x32 probe misses small text.

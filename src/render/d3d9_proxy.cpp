@@ -144,6 +144,89 @@ HRESULT STDMETHODCALLTYPE hkSetDepthStencil(IDirect3DDevice9 *self, IDirect3DSur
     return ApplyDepth(self, true);
 }
 
+} // namespace
+
+// The stencil buffer bound now, as a picture (white = not 0): the selection glow is added only where
+// it is 0, so this shows what hides the glow. Drawn with a full-screen quad into a multisampled
+// target the size of the bound depth buffer, then saved like the other pictures.
+void D3DVR::DumpStencil(const char *name)
+{
+    IDirect3DDevice9 *dev = device;
+    IDirect3DSurface9 *ds = nullptr, *rt0 = nullptr;
+    if (!dev || FAILED(dev->GetDepthStencilSurface(&ds)) || !ds)
+    {
+        IVR_LOG("dump %s: no depth buffer bound", name);
+        return;
+    }
+    dev->GetRenderTarget(0, &rt0);
+    D3DSURFACE_DESC dd{};
+    ds->GetDesc(&dd);
+    IDirect3DSurface9 *tmp = nullptr;
+    IDirect3DStateBlock9 *sb = nullptr;
+    D3DVIEWPORT9 vp{};
+    dev->GetViewport(&vp);
+    if (SUCCEEDED(dev->CreateRenderTarget(dd.Width, dd.Height, D3DFMT_A8R8G8B8, dd.MultiSampleType,
+                                          dd.MultiSampleQuality, FALSE, &tmp, nullptr)) &&
+        SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &sb)))
+    {
+        g_hkSetRenderTarget.original(dev, 0, tmp);
+        g_hkSetDepthStencil.original(dev, ds);
+        D3DVIEWPORT9 full = {0, 0, dd.Width, dd.Height, 0.0f, 1.0f};
+        dev->SetViewport(&full);
+        dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0);
+        dev->SetVertexShader(nullptr);
+        dev->SetPixelShader(nullptr);
+        dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+        dev->SetTexture(0, nullptr);
+        dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+        dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, 15);
+        dev->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+        dev->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+        dev->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE, FALSE);
+        dev->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_NOTEQUAL);
+        dev->SetRenderState(D3DRS_STENCILREF, 0);
+        dev->SetRenderState(D3DRS_STENCILMASK, 0xff);
+        dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
+        dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);
+        dev->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
+        dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
+        dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+        dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+        dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+        dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+        struct V
+        {
+            float x, y, z, w;
+            DWORD c;
+        };
+        const float W = (float)dd.Width, H = (float)dd.Height;
+        const DWORD white = D3DCOLOR_ARGB(255, 255, 255, 255);
+        V q[4] = {{-0.5f, -0.5f, 0, 1, white}, {W - 0.5f, -0.5f, 0, 1, white}, {-0.5f, H - 0.5f, 0, 1, white},
+                  {W - 0.5f, H - 0.5f, 0, 1, white}};
+        dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(V));
+        DumpSurface(tmp, name);
+        sb->Apply();
+        g_hkSetRenderTarget.original(dev, 0, rt0);
+        g_hkSetDepthStencil.original(dev, ds);
+        dev->SetViewport(&vp);
+    }
+    else
+        IVR_LOG("dump %s: could not make the picture", name);
+    if (sb)
+        sb->Release();
+    if (tmp)
+        tmp->Release();
+    if (rt0)
+        rt0->Release();
+    ds->Release();
+}
+
+namespace {
+
 HRESULT STDMETHODCALLTYPE hkSetViewport(IDirect3DDevice9 *self, const D3DVIEWPORT9 *vp)
 {
     if (g_D3D.trace && vp)
@@ -247,6 +330,20 @@ using SetScissorFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, const RECT
 Hook<SetRenderStateFn> g_hkSetRenderState;
 Hook<SetTextureFn> g_hkSetTexture;
 Hook<SetScissorFn> g_hkSetScissor;
+using ClearFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, DWORD, const D3DRECT *, DWORD, D3DCOLOR, float, DWORD);
+Hook<ClearFn> g_hkClear;
+HRESULT STDMETHODCALLTYPE hkClear(IDirect3DDevice9 *self, DWORD n, const D3DRECT *r, DWORD flags, D3DCOLOR c, float z,
+                                  DWORD st)
+{
+    if (g_D3D.trace)
+    {
+        TraceDraws();
+        IVR_LOG("  trace: Clear%s%s%s %lu rects, stencil %lu", (flags & D3DCLEAR_TARGET) ? " colour" : "",
+                (flags & D3DCLEAR_ZBUFFER) ? " depth" : "", (flags & D3DCLEAR_STENCIL) ? " stencil" : "",
+                (unsigned long)n, (unsigned long)st);
+    }
+    return g_hkClear.original(self, n, r, flags, c, z, st);
+}
 
 // Traced: the stencil / colour-write / scissor states and the first texture of each draw, so the
 // order of a multi-pass effect (INFRA's selection glow) can be followed in the log.
@@ -679,6 +776,7 @@ void HookDevice(IDirect3DDevice9 *device, HWND window)
                                    reinterpret_cast<void *>(&hkSetRenderState));
         g_hkSetTexture.Install("IDirect3DDevice9::SetTexture", vt[65], reinterpret_cast<void *>(&hkSetTexture));
         g_hkSetScissor.Install("IDirect3DDevice9::SetScissorRect", vt[75], reinterpret_cast<void *>(&hkSetScissor));
+        g_hkClear.Install("IDirect3DDevice9::Clear", vt[43], reinterpret_cast<void *>(&hkClear));
     }
     IDirect3DDevice9Ex *ex = nullptr;
     if (SUCCEEDED(device->QueryInterface(__uuidof(IDirect3DDevice9Ex), reinterpret_cast<void **>(&ex))) && ex)

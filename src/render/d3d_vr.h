@@ -99,6 +99,8 @@ public:
     void TraceSurface(const char *what, IDirect3DSurface9 *s, const RECT *r = nullptr);
     // Saves the bound render target 0 (or the texture on stage 0) as infravr\<name>.bmp, half size.
     void DumpBound(bool renderTarget, const char *name);
+    void DumpSurface(IDirect3DSurface9 *src, const char *name);
+    void DumpStencil(const char *name); // d3d9_proxy.cpp
     void OnTextureCreated(IDirect3DTexture9 *tex, UINT w, UINT h, DWORD usage);
     // Fallback: identify the texture currently bound as render target 0.
     bool CaptureBoundRenderTarget(VrTexture &out, UINT width, UINT height);
