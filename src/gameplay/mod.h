@@ -86,6 +86,11 @@ public:
     // Pointer finger: a hand with only the index finger out touches things with its tip.
     bool IsPointing(int hand) const;
     Vector PointerTip(int hand) const; // the index fingertip in the world
+    // The drawn hand's index fingertip (hands renderer, each frame it is drawn); PointerTip uses
+    // it while it is fresh, else an estimate from the controller.
+    void SetFingerTip(int hand, const Vector &p);
+    Vector fingerTip[2];
+    double fingerTipAt[2] = {-1.0, -1.0};
     bool pointerTouching[2] = {false, false}; // the tip is on something usable (client outline search)
     bool pointerPress[2] = {false, false};    // just touched it: OnCreateMove presses "use"
     double pointerUseUntil = -1.0;            // the server's use search is the fingertip's until then

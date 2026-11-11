@@ -117,8 +117,18 @@ bool VRMod::IsPointing(int hand) const
            c[3] > g_Config.pointerOtherCurl && c[4] > g_Config.pointerOtherCurl;
 }
 
+void VRMod::SetFingerTip(int hand, const Vector &p)
+{
+    if (hand < 0 || hand > 1 || !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+        return;
+    fingerTip[hand] = p;
+    fingerTipAt[hand] = NowSeconds();
+}
+
 Vector VRMod::PointerTip(int hand) const
 {
+    if (NowSeconds() - fingerTipAt[hand] < 0.2 && (fingerTip[hand] - handPos[hand]).Length() < 0.3f * m_scale)
+        return fingerTip[hand];
     return handPos[hand] + handRot[hand] * Vector(g_Config.pointerTipForward * m_scale, 0,
                                                   g_Config.pointerTipUp * m_scale);
 }
@@ -862,7 +872,6 @@ void VRMod::ProcessGameInput(double now, double dt)
         m_useTicks = 2;
         m_aimTicks = 2;
         m_aimSource = 0;
-        g_VR.Haptic(h, 0.02f, 160.0f, 0.4f);
     }
 
     // Triggers = "use" (buttons, doors, pick-ups) from that hand, or the camera shutter.

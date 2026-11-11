@@ -157,7 +157,6 @@ void LoadConfig()
     c.holdOffset = ini.GetFloat("aim.hold_offset", c.holdOffset);
     c.handoffRadius = ini.GetFloat("aim.handoff_radius", c.handoffRadius);
     c.grabReach = ini.GetFloat("aim.grab_reach", c.grabReach);
-    c.touchReach = ini.GetFloat("aim.touch_reach", c.touchReach);
     c.heldNoCollide = ini.GetBool("aim.held_no_collide", c.heldNoCollide);
     c.pointerTouch = ini.GetBool("aim.pointer_touch", c.pointerTouch);
     c.pointerReach = ini.GetFloat("aim.pointer_reach", c.pointerReach);

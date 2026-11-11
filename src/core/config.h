@@ -98,7 +98,6 @@ struct Config
     int holdRotation = HoldUpright;
     float holdOffset = 0.04f; // metres in front of the controller where the held point sits
     float handoffRadius = 0.30f; // grip with the other hand this close (metres) to take a held object
-    float touchReach = 0.06f; // metres from the hand to an item's box that counts as touching it (0 = off)
     bool heldNoCollide = true;
     // Pointer finger: only the index finger out (finger tracking) and its tip touching an item uses it.
     bool pointerTouch = true;

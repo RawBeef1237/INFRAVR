@@ -1263,12 +1263,7 @@ void *IVR_FASTCALL FindUseEntityDetour(void *self, void *edx)
         return t;
     }
     void *r = nullptr;
-    if (g_Mod.HandValid(hand) && g_Config.touchReach > 0.0f)
-    {
-        const Vector pts[2] = {g_Mod.handPos[hand], g_Mod.handPos[hand] + g_Mod.handRot[hand].Forward() * (0.08f * upm)};
-        r = TouchUseEntity(self, pts, 2, g_Config.touchReach * upm, false);
-    }
-    bool touched = r != nullptr;
+    const bool touched = false;
     if (!r && g_Mod.HandValid(hand) && g_Config.grabReach > 0.0f)
     {
         const Vector P = g_Mod.handPos[hand];
@@ -1364,10 +1359,24 @@ void *PointerSearch(void *self, void *edx)
         void *e = hkClientFindUseEntity.original(self, edx);
         g_clUsePlayer = nullptr;
         float d = e && !IsDoor(e) ? ClientDistanceToBox(e, tip) : -1.0f;
+        static double s_logAt[2] = {0, 0};
+        if (NowSeconds() - s_logAt[h] > 2.0)
+        {
+            static int s_logs = 0;
+            s_logAt[h] = NowSeconds();
+            if (s_logs++ < 30)
+                IVR_LOG("Pointer (%s hand): fingertip (%.0f %.0f %.0f), %s%s %.1f cm away",
+                        h ? "right" : "left", tip.x, tip.y, tip.z, e ? (RttiName(e)[0] ? RttiName(e) : "an entity") : "nothing",
+                        e && IsDoor(e) ? " (door/valve, skipped)" : "", d >= 0.0f ? d / upm * 100.0f : -1.0f);
+        }
         if (d >= 0.0f && d <= g_Config.pointerReach * upm)
         {
             if (!g_Mod.pointerTouching[h])
+            {
                 g_Mod.pointerPress[h] = true;
+                g_VR.Haptic(h, 0.04f, 180.0f, 0.9f); // a click under the fingertip
+                IVR_LOG("Pointer (%s hand): touched %s", h ? "right" : "left", RttiName(e)[0] ? RttiName(e) : "an entity");
+            }
             g_Mod.pointerTouching[h] = true;
         }
         else if (d < 0.0f || d > (g_Config.pointerReach + 0.02f) * upm)

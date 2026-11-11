@@ -293,7 +293,32 @@ struct ModelData
     float screenW = 0, screenH = 0;
     int itemMaterial = -1; // the item's own material (not the hand's)
     int altImage = -1;     // index into glb.images
+    int indexTip = -1;     // VR hands: the vertex at the end of the index finger
 };
+
+// The vertex at the tip of the index finger: of the vertices skinned mostly to an index finger
+// joint, the one furthest along the fingers (-Z in the model's frame).
+int FindIndexTip(const GlbModel &m)
+{
+    int best = -1;
+    for (size_t i = 0; i < m.vertices.size(); ++i)
+    {
+        const GlbVertex &v = m.vertices[i];
+        int k = 0;
+        for (int j = 1; j < 4; ++j)
+            if (v.weights[j] > v.weights[k])
+                k = j;
+        int joint = v.joints[k];
+        if (joint >= (int)m.joints.size())
+            continue;
+        int node = m.joints[joint];
+        if (node < 0 || node >= (int)m.nodes.size() || m.nodes[node].finger != 1)
+            continue;
+        if (best < 0 || v.pos[2] < m.vertices[best].pos[2])
+            best = (int)i;
+    }
+    return best;
+}
 
 ModelData g_model[MODEL_COUNT];
 int g_state = 0;       // 0 not tried, 1 loaded, -1 failed / off
@@ -512,6 +537,13 @@ bool LoadModel(int id, const std::string &file)
     }
     BuildBatches(md, id == MODEL_CAMERA);
     const GlbModel &m = md.glb;
+    if (id == MODEL_LEFT || id == MODEL_RIGHT)
+    {
+        md.indexTip = FindIndexTip(m);
+        if (md.indexTip >= 0)
+            IVR_LOG("GLB model %s: index fingertip at (%.3f %.3f %.3f)", file.c_str(),
+                    m.vertices[md.indexTip].pos[0], m.vertices[md.indexTip].pos[1], m.vertices[md.indexTip].pos[2]);
+    }
     IVR_LOG("GLB model %s: %u vertices, %u triangles, %u joints (%d finger joints), %u materials, %u images, "
             "size %.3f x %.3f x %.3f",
             file.c_str(), (unsigned)m.vertices.size(), (unsigned)m.indices.size() / 3, (unsigned)m.joints.size(),
@@ -1219,6 +1251,10 @@ std::shared_ptr<Frame> BuildFrame(const CViewSetup &v)
         md.glb.Skin(g_curl[h], g_Config.handsCurlMax, pos, nrm, &tan);
         Pose w = ModelToWorld(h);
         float scale = g_Mod.UnitsPerMetre() * g_Config.handsScale;
+        // Where the drawn index finger ends: what the pointer finger touches with.
+        if (md.indexTip >= 0 && (size_t)md.indexTip * 3 + 2 < pos.size())
+            g_Mod.SetFingerTip(h, w.Transform(Vector(pos[md.indexTip * 3], pos[md.indexTip * 3 + 1],
+                                                       pos[md.indexTip * 3 + 2])));
         DrawItem it;
         BuildItem(it, h, pos, nrm, tan, &w, scale, nullptr, LightAt(w.pos, eye));
         fr->items.push_back(std::move(it));
