@@ -342,6 +342,21 @@ HRESULT STDMETHODCALLTYPE hkClear(IDirect3DDevice9 *self, DWORD n, const D3DRECT
                 (flags & D3DCLEAR_ZBUFFER) ? " depth" : "", (flags & D3DCLEAR_STENCIL) ? " stencil" : "",
                 (unsigned long)n, (unsigned long)st);
     }
+    // The game never clears the stencil buffer. With the multisampled depth buffer of the eyes the
+    // selection glow's stencil mask then piles up frame after frame and hides the glow where the
+    // object has been before: cleared with the depth buffer.
+    if ((flags & D3DCLEAR_ZBUFFER) && !(flags & D3DCLEAR_STENCIL) && n == 0 && g_boundDepth &&
+        g_boundDepth != g_appDepth && g_Config.clearStencil)
+    {
+        flags |= D3DCLEAR_STENCIL;
+        st = 0;
+        static bool s_logged = false;
+        if (!s_logged)
+        {
+            s_logged = true;
+            IVR_LOG("Antialiasing: the eyes' stencil buffer is cleared with their depth buffer");
+        }
+    }
     return g_hkClear.original(self, n, r, flags, c, z, st);
 }
 
