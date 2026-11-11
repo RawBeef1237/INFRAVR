@@ -32,6 +32,7 @@ const char *kCameraFlag = "camera_model";
 const char *kFlashlightFlag = "flashlight_model";
 const char *kPhoneFlag = "phone_model";
 constexpr int kTrustFrames = 600;
+constexpr int kItemTrustFrames = 90; // an item model's first frames: where a bad model would crash
 constexpr float kGamma = 1.0f / 2.2f;
 
 // --- vertex formats ----------------------------------------------------------------------------
@@ -344,6 +345,7 @@ struct ItemModel
     double shownAt = 0;
     int frames = 0;
     bool onTrial = false; // its crash-sticky flag is set
+    bool trialDone = false; // tried once this session (put away fine): not on trial again
     int panelFrame = -100; // the last frame INFRA's screen panel was put on the model (main thread)
 };
 ItemModel g_items[ITEM_COUNT] = {
@@ -1212,11 +1214,14 @@ std::shared_ptr<Frame> BuildFrame(const CViewSetup &v)
             {
                 flags::End(im.flag);
                 im.onTrial = false;
+                im.trialDone = true;
             }
             continue;
         }
         handTaken[place.hand] = true;
-        if (!im.onTrial && im.frames < kTrustFrames)
+        // Only the first take-out of a session is on trial, and only briefly: INFRA closing while
+        // the item is in your hand must not switch its model off for good.
+        if (!im.onTrial && !im.trialDone && im.frames < kItemTrustFrames)
             im.onTrial = flags::Begin(im.flag);
         const ModelData &md = g_model[im.model];
         md.glb.SkinJoints(bones, pos, nrm, &tan);
@@ -1234,10 +1239,11 @@ std::shared_ptr<Frame> BuildFrame(const CViewSetup &v)
             it.altTexture = g_phoneCall.load() && md.altImage >= 0;
         }
         fr->items.push_back(std::move(it));
-        if (++im.frames == kTrustFrames)
+        if (++im.frames == kItemTrustFrames)
         {
             flags::End(im.flag);
             im.onTrial = false;
+            im.trialDone = true;
             IVR_LOG("%s: %d frames drawn without trouble", im.what, im.frames);
         }
     }

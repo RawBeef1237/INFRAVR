@@ -18,6 +18,7 @@
 #include <functional>
 
 namespace ivr {
+void Defer(std::function<void()> fn);
 
 namespace {
 
@@ -79,6 +80,7 @@ bool g_traceRequest = false;
 // Traced on the main thread too: the screen-space rectangles INFRA's post-processing and selection
 // glow draw (IMatRenderContext::DrawScreenSpaceRectangle, vtable 105), with their material.
 bool g_traceRects = false;
+bool g_dumpOutline = false; // this trace also saves pictures of the outline passes
 using DrawSSRFn = void(IVR_FASTCALL *)(void *, void *, void *, int, int, int, int, float, float, float, float, int,
                                        int, void *, int, int);
 Hook<DrawSSRFn> hkDrawSSR;
@@ -92,6 +94,17 @@ void IVR_FASTCALL DrawSSRDetour(void *self, void *edx, void *mat, int dx, int dy
                 x1, y1, tw, th);
     }
     hkDrawSSR.original(self, edx, mat, dx, dy, w, h, x0, y0, x1, y1, tw, th, rend, xd, yd);
+    if (g_traceRects && g_dumpOutline)
+    {
+        // Pictures of the selection glow's stages, for working out where it goes wrong.
+        const char *n = mat ? VCall<const char *>(mat, vidx::MAT_GetName) : nullptr;
+        if (n && std::strstr(n, "glow_downsample"))
+            Defer([] { g_D3D.DumpBound(false, "outline_1_silhouette"); });
+        else if (n && std::strstr(n, "glow_blur_y"))
+            Defer([] { g_D3D.DumpBound(true, "outline_2_glow"); });
+        else if (n && std::strstr(n, "halo_add_to_screen"))
+            Defer([] { g_D3D.DumpBound(true, "outline_3_eye"); });
+    }
 } // trace the next left eye (set when INFRA's selection outline first shows)
 
 // ---- multicore rendering ---------------------------------------------------------------------
@@ -419,6 +432,7 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
         static int s_traced = 0; // trace what the game does while drawing the left eye, twice
         bool trace = eye == 0 && g_D3D.eye[0].Valid() &&
                      ((s_traced < 2 && (s_traced == 0 || NowSeconds() > g_traceAgainAt)) || g_traceRequest);
+        g_dumpOutline = trace && g_traceRequest;
         if (trace && g_traceRequest)
         {
             g_traceRequest = false;
@@ -453,6 +467,7 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
                               flags | (eye == 1 ? RENDERVIEW_SUPPRESSMONITORRENDERING : 0));
         world::EndEye();
         g_traceRects = false;
+        g_dumpOutline = false;
         if (!g_handsDrawn) // no viewmodel pass this eye (or hands.post_processing = false): on top
             hands::DrawEye(eye, v);
         Defer([trace, eye] {
@@ -1378,6 +1393,19 @@ float ClientDistanceToBox(void *ent, const Vector &P)
     return BoxDistance(*o, *a, *mn, *mx, solid, P, nullptr);
 }
 
+// A small item (switch plate, valve, cassette player): the outline problem shows on these, not
+// on doors, so the outline trace and image dump wait for one.
+bool IsSmallClientEntity(void *ent)
+{
+    void *coll = ent ? VCall<void *>(ent, 3) : nullptr;
+    const Vector *mn = coll ? VCall<const Vector *>(coll, 1) : nullptr;
+    const Vector *mx = coll ? VCall<const Vector *>(coll, 2) : nullptr;
+    if (!mn || !mx)
+        return false;
+    Vector size = *mx - *mn;
+    return std::max(size.x, std::max(size.y, size.z)) < 40.0f;
+}
+
 // The pointer finger: with only the index finger out, what the outline search finds from the
 // fingertip is touched when the tip reaches its box (never a door or valve); the first touch presses
 // "use" once (OnCreateMove), and the tip has to come off it before it can press again.
@@ -1458,7 +1486,7 @@ void *IVR_FASTCALL ClientFindUseEntityDetour(void *self, void *edx)
         return g_Mod.HeldObjectHand() >= 0 ? nullptr : hkClientFindUseEntity.original(self, edx);
     static int s_outlineTraces = 0;
     static double s_outlineTraceAt = 0;
-    if (r && s_outlineTraces < 2 && NowSeconds() > s_outlineTraceAt)
+    if (r && s_outlineTraces < 2 && NowSeconds() > s_outlineTraceAt && IsSmallClientEntity(r))
     {
         ++s_outlineTraces;
         s_outlineTraceAt = NowSeconds() + 30.0;
