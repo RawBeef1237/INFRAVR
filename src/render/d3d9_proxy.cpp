@@ -87,6 +87,30 @@ void TraceDraws()
     g_D3D.traceDraws = 0;
 }
 
+// The depth buffer the game asked for, and whether render target 0 is a multisampled stand-in.
+// Its multisampled depth buffer is used only with a multisampled render target: an eye-sized plain
+// target (the selection glow's _rt_FullFrameFB) with a multisampled depth buffer draws nothing.
+IDirect3DSurface9 *g_appDepth = nullptr; // referenced
+IDirect3DSurface9 *g_boundDepth = nullptr;
+bool g_rt0Multisampled = false;
+
+HRESULT ApplyDepth(IDirect3DDevice9 *self, bool force)
+{
+    IDirect3DSurface9 *want = g_rt0Multisampled ? g_D3D.MapDepth(g_appDepth) : g_appDepth;
+    if (!force && want == g_boundDepth)
+        return D3D_OK;
+    g_boundDepth = want;
+    return g_hkSetDepthStencil.original(self, want);
+}
+
+void ForgetDepth()
+{
+    if (g_appDepth)
+        g_appDepth->Release();
+    g_appDepth = g_boundDepth = nullptr;
+    g_rt0Multisampled = false;
+}
+
 HRESULT STDMETHODCALLTYPE hkSetRenderTarget(IDirect3DDevice9 *self, DWORD index, IDirect3DSurface9 *surf)
 {
     if (g_D3D.trace)
@@ -96,16 +120,28 @@ HRESULT STDMETHODCALLTYPE hkSetRenderTarget(IDirect3DDevice9 *self, DWORD index,
         sprintf(what, "SetRenderTarget[%lu]", (unsigned long)index);
         g_D3D.TraceSurface(what, surf);
     }
-    if (index == 0)
-        surf = g_D3D.MapRenderTarget(surf);
-    return g_hkSetRenderTarget.original(self, index, surf);
+    if (index != 0)
+        return g_hkSetRenderTarget.original(self, index, surf);
+    IDirect3DSurface9 *mapped = g_D3D.MapRenderTarget(surf);
+    g_rt0Multisampled = mapped != surf;
+    HRESULT hr = g_hkSetRenderTarget.original(self, index, mapped);
+    ApplyDepth(self, false);
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE hkSetDepthStencil(IDirect3DDevice9 *self, IDirect3DSurface9 *surf)
 {
     if (g_D3D.trace)
         g_D3D.TraceSurface("SetDepthStencil", surf);
-    return g_hkSetDepthStencil.original(self, g_D3D.MapDepth(surf));
+    if (surf != g_appDepth)
+    {
+        if (surf)
+            surf->AddRef();
+        if (g_appDepth)
+            g_appDepth->Release();
+        g_appDepth = surf;
+    }
+    return ApplyDepth(self, true);
 }
 
 HRESULT STDMETHODCALLTYPE hkSetViewport(IDirect3DDevice9 *self, const D3DVIEWPORT9 *vp)
@@ -595,6 +631,7 @@ HRESULT STDMETHODCALLTYPE hkPresentEx(IDirect3DDevice9Ex *self, const RECT *src,
 
 HRESULT STDMETHODCALLTYPE hkReset(IDirect3DDevice9 *self, D3DPRESENT_PARAMETERS *pp)
 {
+    ForgetDepth();
     g_D3D.OnBeforeReset();
     AdjustPresentParams(pp);
     return g_hkReset.original(self, pp);
@@ -602,6 +639,7 @@ HRESULT STDMETHODCALLTYPE hkReset(IDirect3DDevice9 *self, D3DPRESENT_PARAMETERS 
 
 HRESULT STDMETHODCALLTYPE hkResetEx(IDirect3DDevice9Ex *self, D3DPRESENT_PARAMETERS *pp, D3DDISPLAYMODEEX *mode)
 {
+    ForgetDepth();
     g_D3D.OnBeforeReset();
     AdjustPresentParams(pp);
     return g_hkResetEx.original(self, pp, mode);

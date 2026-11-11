@@ -943,7 +943,7 @@ void IVR_FASTCALL DrawPanelIn3DSpaceDetour(void *self, void *edx, unsigned panel
             static int s_draws = 0;
             if (s_draws == 0)
                 IVR_LOG("Screen panel: drawn %.2f times INFRA's size on the mod's model", t.scale);
-            if (++s_draws == 600)
+            if (++s_draws == 60) // a bad panel size would crash at once; INFRA closing later is fine
                 flags::End(kPanelScaleFlag);
             w *= t.scale;
             h *= t.scale;
@@ -1847,7 +1847,7 @@ bool InstallClientHooks()
     if (g_Game.fnRenderCameraWeapon)
         hkRenderCameraWeapon.Install("CViewRender::RenderCameraWeapon", g_Game.fnRenderCameraWeapon,
                                      (void *)&RenderCameraWeaponDetour);
-    if (g_Game.surface && flags::Begin(kPanelScaleFlag)) // ended after 600 scaled panels
+    if (g_Game.surface && flags::Begin(kPanelScaleFlag)) // ended after 60 scaled panels
     {
         void *fn = (*static_cast<void ***>(g_Game.surface))[vidx::DrawPanelIn3DSpace];
         hkDrawPanelIn3DSpace.Install("IMatSystemSurface::DrawPanelIn3DSpace", fn, (void *)&DrawPanelIn3DSpaceDetour);
