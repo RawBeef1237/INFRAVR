@@ -75,6 +75,7 @@ CViewSetup g_engineView; // the engine's own (flat) view of this frame
 int g_grabOverride = 0;
 double g_lastLog = 0;
 double g_traceAgainAt = 0;
+bool g_traceRequest = false; // trace the next left eye (set when INFRA's selection outline first shows)
 
 // ---- multicore rendering ---------------------------------------------------------------------
 // With mat_queue_mode 2 the engine records its rendering on this thread and plays it back on a
@@ -399,7 +400,13 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
         SetRenderTarget(g_eyeRT[eye]);
         g_currentEye = eye;
         static int s_traced = 0; // trace what the game does while drawing the left eye, twice
-        bool trace = eye == 0 && s_traced < 2 && g_D3D.eye[0].Valid() && (s_traced == 0 || NowSeconds() > g_traceAgainAt);
+        bool trace = eye == 0 && g_D3D.eye[0].Valid() &&
+                     ((s_traced < 2 && (s_traced == 0 || NowSeconds() > g_traceAgainAt)) || g_traceRequest);
+        if (trace && g_traceRequest)
+        {
+            g_traceRequest = false;
+            Defer([] { IVR_LOG("trace: the selection outline is showing - tracing its passes"); });
+        }
         if (trace)
         {
             ++s_traced;
@@ -446,8 +453,14 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
         PaintHud(hudView, PAINT_UIPANELS | PAINT_INGAMEPANELS); // the pause menu, for the phone panel
         hud = true;
     }
-    else if (g_Config.hudMode == HudMode::Overlay && g_hudRT && (whatToDraw & RENDERVIEW_DRAWHUD))
+    else if (g_Config.hudMode == HudMode::Overlay && g_hudRT)
     {
+        // Painted whatever the view asks: INFRA's subtitles never showed on the panel, and its main
+        // view may not ask for the HUD the way the panel expects.
+        static int s_with = 0, s_without = 0;
+        ++((whatToDraw & RENDERVIEW_DRAWHUD) ? s_with : s_without);
+        if (s_with + s_without == 600)
+            IVR_LOG("HUD: painted 600 frames for the panel, the game's view asked for the HUD in %d of them", s_with);
         PaintHud(hudView, PAINT_INGAMEPANELS);
         hud = true;
     }
@@ -1415,6 +1428,14 @@ void *IVR_FASTCALL ClientFindUseEntityDetour(void *self, void *edx)
     }
     if (!any)
         return g_Mod.HeldObjectHand() >= 0 ? nullptr : hkClientFindUseEntity.original(self, edx);
+    static int s_outlineTraces = 0;
+    static double s_outlineTraceAt = 0;
+    if (r && s_outlineTraces < 2 && NowSeconds() > s_outlineTraceAt)
+    {
+        ++s_outlineTraces;
+        s_outlineTraceAt = NowSeconds() + 30.0;
+        g_traceRequest = true;
+    }
     static int s_calls = 0;
     if (++s_calls == 600)
     {

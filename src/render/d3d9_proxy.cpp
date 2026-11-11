@@ -205,6 +205,65 @@ HRESULT STDMETHODCALLTYPE hkDrawIndexed(IDirect3DDevice9 *self, D3DPRIMITIVETYPE
     return g_hkDrawIndexed.original(self, t, bv, mi, nv, si, pc);
 }
 
+using SetRenderStateFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, D3DRENDERSTATETYPE, DWORD);
+using SetTextureFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, DWORD, IDirect3DBaseTexture9 *);
+using SetScissorFn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DDevice9 *, const RECT *);
+Hook<SetRenderStateFn> g_hkSetRenderState;
+Hook<SetTextureFn> g_hkSetTexture;
+Hook<SetScissorFn> g_hkSetScissor;
+
+// Traced: the stencil / colour-write / scissor states and the first texture of each draw, so the
+// order of a multi-pass effect (INFRA's selection glow) can be followed in the log.
+HRESULT STDMETHODCALLTYPE hkSetRenderState(IDirect3DDevice9 *self, D3DRENDERSTATETYPE st, DWORD v)
+{
+    if (g_D3D.trace)
+    {
+        const char *n = nullptr;
+        switch (st)
+        {
+        case D3DRS_STENCILENABLE: n = "STENCILENABLE"; break;
+        case D3DRS_STENCILFUNC: n = "STENCILFUNC"; break;
+        case D3DRS_STENCILREF: n = "STENCILREF"; break;
+        case D3DRS_STENCILPASS: n = "STENCILPASS"; break;
+        case D3DRS_COLORWRITEENABLE: n = "COLORWRITE"; break;
+        case D3DRS_SCISSORTESTENABLE: n = "SCISSORTEST"; break;
+        case D3DRS_ZENABLE: n = "ZENABLE"; break;
+        case D3DRS_ALPHABLENDENABLE: n = "BLEND"; break;
+        default: break;
+        }
+        if (n)
+        {
+            TraceDraws();
+            IVR_LOG("  trace: %s %lu", n, (unsigned long)v);
+        }
+    }
+    return g_hkSetRenderState.original(self, st, v);
+}
+
+HRESULT STDMETHODCALLTYPE hkSetTexture(IDirect3DDevice9 *self, DWORD stage, IDirect3DBaseTexture9 *t)
+{
+    if (g_D3D.trace && stage == 0 && t && t->GetType() == D3DRTYPE_TEXTURE)
+    {
+        D3DSURFACE_DESC d{};
+        if (SUCCEEDED(static_cast<IDirect3DTexture9 *>(t)->GetLevelDesc(0, &d)) && (d.Usage & D3DUSAGE_RENDERTARGET))
+        {
+            TraceDraws();
+            IVR_LOG("  trace: texture 0 = render target %p %ux%u", (void *)t, d.Width, d.Height);
+        }
+    }
+    return g_hkSetTexture.original(self, stage, t);
+}
+
+HRESULT STDMETHODCALLTYPE hkSetScissor(IDirect3DDevice9 *self, const RECT *r)
+{
+    if (g_D3D.trace && r)
+    {
+        TraceDraws();
+        IVR_LOG("  trace: scissor %ld,%ld-%ld,%ld", r->left, r->top, r->right, r->bottom);
+    }
+    return g_hkSetScissor.original(self, r);
+}
+
 HRESULT STDMETHODCALLTYPE hkDraw(IDirect3DDevice9 *self, D3DPRIMITIVETYPE t, UINT sv, UINT pc)
 {
     if (g_D3D.trace)
@@ -578,6 +637,10 @@ void HookDevice(IDirect3DDevice9 *device, HWND window)
         g_hkDraw.Install("IDirect3DDevice9::DrawPrimitive", vt[81], reinterpret_cast<void *>(&hkDraw));
         g_hkDrawIndexed.Install("IDirect3DDevice9::DrawIndexedPrimitive", vt[82],
                                 reinterpret_cast<void *>(&hkDrawIndexed));
+        g_hkSetRenderState.Install("IDirect3DDevice9::SetRenderState", vt[57],
+                                   reinterpret_cast<void *>(&hkSetRenderState));
+        g_hkSetTexture.Install("IDirect3DDevice9::SetTexture", vt[65], reinterpret_cast<void *>(&hkSetTexture));
+        g_hkSetScissor.Install("IDirect3DDevice9::SetScissorRect", vt[75], reinterpret_cast<void *>(&hkSetScissor));
     }
     IDirect3DDevice9Ex *ex = nullptr;
     if (SUCCEEDED(device->QueryInterface(__uuidof(IDirect3DDevice9Ex), reinterpret_cast<void **>(&ex))) && ex)
