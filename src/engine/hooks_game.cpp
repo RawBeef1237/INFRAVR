@@ -75,7 +75,24 @@ CViewSetup g_engineView; // the engine's own (flat) view of this frame
 int g_grabOverride = 0;
 double g_lastLog = 0;
 double g_traceAgainAt = 0;
-bool g_traceRequest = false; // trace the next left eye (set when INFRA's selection outline first shows)
+bool g_traceRequest = false;
+// Traced on the main thread too: the screen-space rectangles INFRA's post-processing and selection
+// glow draw (IMatRenderContext::DrawScreenSpaceRectangle, vtable 105), with their material.
+bool g_traceRects = false;
+using DrawSSRFn = void(IVR_FASTCALL *)(void *, void *, void *, int, int, int, int, float, float, float, float, int,
+                                       int, void *, int, int);
+Hook<DrawSSRFn> hkDrawSSR;
+void IVR_FASTCALL DrawSSRDetour(void *self, void *edx, void *mat, int dx, int dy, int w, int h, float x0, float y0,
+                                float x1, float y1, int tw, int th, void *rend, int xd, int yd)
+{
+    if (g_traceRects)
+    {
+        const char *n = mat ? VCall<const char *>(mat, vidx::MAT_GetName) : nullptr;
+        IVR_LOG("  rect: %s dest %d,%d %dx%d from %.1f,%.1f-%.1f,%.1f of %dx%d", n ? n : "?", dx, dy, w, h, x0, y0,
+                x1, y1, tw, th);
+    }
+    hkDrawSSR.original(self, edx, mat, dx, dy, w, h, x0, y0, x1, y1, tw, th, rend, xd, yd);
+} // trace the next left eye (set when INFRA's selection outline first shows)
 
 // ---- multicore rendering ---------------------------------------------------------------------
 // With mat_queue_mode 2 the engine records its rendering on this thread and plays it back on a
@@ -419,12 +436,23 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
                 g_D3D.traceDraws = 0;
             });
         }
+        if (trace && !hkDrawSSR.Installed())
+        {
+            if (void *ctx = g_Game.RenderContext())
+            {
+                void **vt = *reinterpret_cast<void ***>(ctx);
+                hkDrawSSR.Install("IMatRenderContext::DrawScreenSpaceRectangle", vt[105], (void *)&DrawSSRDetour);
+                Game::ReleaseContext(ctx);
+            }
+        }
+        g_traceRects = trace;
         world::BeginEye(); // post-processing works out its rectangles for the eye, not the window
         g_eyeView = v;
         g_handsDrawn = false;
         hkRenderView.original(self, edx, &v, &hudEye, clearFlags,
                               flags | (eye == 1 ? RENDERVIEW_SUPPRESSMONITORRENDERING : 0));
         world::EndEye();
+        g_traceRects = false;
         if (!g_handsDrawn) // no viewmodel pass this eye (or hands.post_processing = false): on top
             hands::DrawEye(eye, v);
         Defer([trace, eye] {
