@@ -178,6 +178,7 @@ void LoadConfig()
     c.grabReach = ini.GetFloat("aim.grab_reach", c.grabReach);
     c.heldNoCollide = ini.GetBool("aim.held_no_collide", c.heldNoCollide);
     c.twoHandHold = ini.GetBool("aim.two_hand_hold", c.twoHandHold);
+    c.secondReach = ini.GetFloat("aim.second_reach", c.secondReach);
     c.pointerTouch = ini.GetBool("aim.pointer_touch", c.pointerTouch);
     c.pointerReach = ini.GetFloat("aim.pointer_reach", c.pointerReach);
     c.pointerTipForward = ini.GetFloat("aim.pointer_tip_forward", c.pointerTipForward);

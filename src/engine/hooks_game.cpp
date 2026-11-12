@@ -1543,6 +1543,37 @@ float ClientDistanceToBox(void *ent, const Vector &P)
     return BoxDistance(*o, *a, *mn, *mx, solid, P, nullptr);
 }
 
+// The client's side of the second hand's search (outline only): the nearest physics prop whose box
+// is within second_reach of the hand, other than the one being carried.
+bool g_secondEnabled = false;
+void *ClientNearestPickup(int hand)
+{
+    if (!g_Game.entityList || !g_Mod.HandValid(hand))
+        return nullptr;
+    const Vector P = g_Mod.handPos[hand];
+    const float reach = std::max(0.05f, g_Config.secondReach) * g_Mod.UnitsPerMetre();
+    void *best = nullptr;
+    float bestD = 1e9f;
+    for (int i = 1; i < 2048; ++i)
+    {
+        if (i == g_Mod.heldEntIndex)
+            continue;
+        void *e = VCall<void *, int>(g_Game.entityList, vidx::GetClientEntity, i);
+        if (!e)
+            continue;
+        const char *n = RttiName(e);
+        if (!n || !strstr(n, "Phys"))
+            continue;
+        float d = ClientDistanceToBox(e, P);
+        if (d >= 0.0f && d <= reach && d < bestD)
+        {
+            best = e;
+            bestD = d;
+        }
+    }
+    return best;
+}
+
 // A small item (switch plate, valve, cassette player): the outline problem shows on these, not
 // on doors, so the outline trace and image dump wait for one.
 bool IsSmallClientEntity(void *ent)
@@ -1635,6 +1666,9 @@ void *IVR_FASTCALL ClientFindUseEntityDetour(void *self, void *edx)
         if (r)
             break;
     }
+    // Carrying one object: the free hand's outline marks the physics object it can take as well.
+    if (!r && g_Config.twoHandHold && g_secondEnabled && g_Mod.HeldObjectHand() >= 0 && g_Mod.SecondHeldHand() < 0)
+        r = ClientNearestPickup(1 - g_Mod.HeldObjectHand());
     if (!any)
         return g_Mod.HeldObjectHand() >= 0 || g_Mod.SecondHeldHand() >= 0 ? nullptr
                                                                            : hkClientFindUseEntity.original(self, edx);
@@ -1971,9 +2005,46 @@ void *SecondSearch(void *player, int hand)
     return r;
 }
 
+// The physics object the hand is at: the nearest one whose collision box is within reach of the
+// hand that the game would let you pick up. INFRA's use search does not offer physics objects
+// while the player carries something, so the second hand looks through the entity list itself.
+void *NearestPickup(void *player, const Vector &P, float reach)
+{
+    const uint8_t *base = ServerEntityArray();
+    if (!base || !IsReadable(base, 2048 * 24))
+        return nullptr;
+    void *best = nullptr;
+    float bestD = 1e9f;
+    for (int i = 1; i < 2048; ++i)
+    {
+        uint8_t *ent = *reinterpret_cast<uint8_t *const *>(base + i * 24 + 4);
+        if (!ent || ent == player || !IsReadable(ent + kEntAbsOrigin, 12))
+            continue;
+        const Vector o = *reinterpret_cast<const Vector *>(ent + kEntAbsOrigin);
+        if (!std::isfinite(o.x) || (o - P).Length() > 128.0f)
+            continue;
+        if (!IsReadable(ent + kEntPhysicsObject, 4) || !*reinterpret_cast<void **>(ent + kEntPhysicsObject))
+            continue;
+        float d = DistanceToBox(ent, P, nullptr);
+        if (d < 0.0f || d > reach || d >= bestD)
+            continue;
+        uint32_t handle = EntityHandle(ent);
+        if (handle == g_hold.handle || handle == g_secondHeld)
+            continue;
+        if (!reinterpret_cast<CanPickupFn>(g_Game.fnCanPickupObject)(ent, g_Game.pickupMass, g_Game.pickupSize) ||
+            reinterpret_cast<IsHeldFn>(g_Game.fnIsHeldByPlayer)(ent, nullptr))
+            continue;
+        best = ent;
+        bestD = d;
+    }
+    return best;
+}
+
 // What the hand is right at, for the second object: the same close-range passes as hand use.
 void *SecondSearchAt(void *player, int hand)
 {
+    if (void *e = NearestPickup(player, g_Mod.handPos[hand], std::max(0.05f, g_Config.secondReach) * g_Mod.UnitsPerMetre()))
+        return e;
     const Vector P = g_Mod.handPos[hand];
     const Mat3 &R = g_Mod.handRot[hand];
     const Vector dirs[6] = {R.Forward(), Vector(0, 0, -1), R.Up() * -1.0f, R.Left(), R.Left() * -1.0f, R.Up()};
@@ -2268,7 +2339,10 @@ bool InstallServerHooks()
         if (SecondHoldReady() && g_Game.fnPlayerCanUse &&
             hkCanUse.Install("CINFRA_Player use check", g_Game.fnPlayerCanUse, (void *)&CanUseDetour) &&
             hkGameFrame.Install("CServerGameDLL::GameFrame", g_Game.fnGameFrame, (void *)&GameFrameDetour))
+        {
+            g_secondEnabled = true;
             IVR_LOG("Second hold: on (one physics object in each hand)");
+        }
         else
             IVR_LOG("Second hold: off (a game function was not found)");
     }
