@@ -81,6 +81,8 @@ bool g_traceRequest = false;
 // glow draw (IMatRenderContext::DrawScreenSpaceRectangle, vtable 105), with their material.
 bool g_traceRects = false;
 uint32_t g_secondHeld = 0xFFFFFFFFu; // the object in the other hand (mod's own grab), or none
+void *g_primaryGrab = nullptr;        // INFRA's own grab controller, last seen moving the first object
+void *g_useExclude = nullptr;         // entity INFRA's use check must refuse during a search
 bool g_dumpOutline = false; // this trace also saves pictures of the outline passes
 using DrawSSRFn = void(IVR_FASTCALL *)(void *, void *, void *, int, int, int, int, float, float, float, float, int,
                                        int, void *, int, int);
@@ -1638,7 +1640,8 @@ void *IVR_FASTCALL ClientFindUseEntityDetour(void *self, void *edx)
                                                                            : hkClientFindUseEntity.original(self, edx);
     static int s_outlineTraces = 0;
     static double s_outlineTraceAt = 0;
-    if (r && s_outlineTraces < 2 && NowSeconds() > s_outlineTraceAt && IsSmallClientEntity(r))
+    // The outline is fixed: no more traces and pictures of it (g_Config.probe keeps the code reachable).
+    if (false && r && s_outlineTraces < 2 && NowSeconds() > s_outlineTraceAt && IsSmallClientEntity(r))
     {
         ++s_outlineTraces;
         s_outlineTraceAt = NowSeconds() + 30.0;
@@ -1752,6 +1755,8 @@ void IVR_FASTCALL GrabDetachDetour(void *self, void *edx, bool clearVelocity)
     hkGrabDetach.original(self, edx, clearVelocity);
     RestoreHeldCollision();
     g_hold.handle = 0xFFFFFFFFu;
+    if (self == g_primaryGrab)
+        g_primaryGrab = nullptr;
 }
 
 void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *target, const QAngle *angles, bool teleport)
@@ -1761,6 +1766,7 @@ void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *targe
         !g_Mod.HandValid(g_Mod.interactHand) || !IsReadable(c + kGrabAttachedEntity, 0x30))
         return hkGrabSetTarget.original(self, edx, target, angles, teleport);
     uint32_t handle = *reinterpret_cast<const uint32_t *>(c + kGrabAttachedEntity);
+    g_primaryGrab = self;
     g_Mod.heldEntIndex = handle == 0xFFFFFFFFu ? -1 : (int)(handle & 0xFFFF);
     Vector local = *reinterpret_cast<const Vector *>(c + kGrabAttachedPosition);
     if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) || local.Length() > 512.0f)
@@ -1931,8 +1937,42 @@ void SecondLetGo(bool thrown, const char *why)
     g_Mod.secondEntIndex = -1;
 }
 
-// What the hand is right at, for the second object: the same close-range passes as hand use.
+// While carrying, INFRA's FindUseEntity answers with what is carried: the player's use entity
+// (+0x189c) and then the attached entity of the player's grab controller. Both are hidden for the
+// second hand's search, and the carried object is refused by the use check, so the search finds
+// what that hand is at instead.
+constexpr size_t kPlayerUseEntity = 0x189c;
+void *SecondSearchAt(void *player, int hand);
 void *SecondSearch(void *player, int hand)
+{
+    uint8_t *pl = static_cast<uint8_t *>(player);
+    uint8_t *grab = static_cast<uint8_t *>(g_primaryGrab);
+    uint32_t useEnt = 0xFFFFFFFFu, attached = 0xFFFFFFFFu;
+    const bool hideUse = IsReadable(pl + kPlayerUseEntity, 4);
+    const bool hideGrab = grab && g_hold.handle != 0xFFFFFFFFu && IsReadable(grab + kGrabAttachedEntity, 4) &&
+                          *reinterpret_cast<uint32_t *>(grab + kGrabAttachedEntity) == g_hold.handle;
+    if (hideUse)
+    {
+        useEnt = *reinterpret_cast<uint32_t *>(pl + kPlayerUseEntity);
+        *reinterpret_cast<uint32_t *>(pl + kPlayerUseEntity) = 0xFFFFFFFFu;
+    }
+    if (hideGrab)
+    {
+        attached = *reinterpret_cast<uint32_t *>(grab + kGrabAttachedEntity);
+        *reinterpret_cast<uint32_t *>(grab + kGrabAttachedEntity) = 0xFFFFFFFFu;
+    }
+    g_useExclude = ServerEntity(g_hold.handle);
+    void *r = SecondSearchAt(player, hand);
+    g_useExclude = nullptr;
+    if (hideGrab)
+        *reinterpret_cast<uint32_t *>(grab + kGrabAttachedEntity) = attached;
+    if (hideUse)
+        *reinterpret_cast<uint32_t *>(pl + kPlayerUseEntity) = useEnt;
+    return r;
+}
+
+// What the hand is right at, for the second object: the same close-range passes as hand use.
+void *SecondSearchAt(void *player, int hand)
 {
     const Vector P = g_Mod.handPos[hand];
     const Mat3 &R = g_Mod.handRot[hand];
@@ -2119,6 +2159,14 @@ void SecondHoldReset()
     g_Mod.secondEntIndex = -1;
 }
 
+Hook<CanUseFn> hkCanUse;
+bool IVR_FASTCALL CanUseDetour(void *self, void *edx, void *ent)
+{
+    if (g_useExclude && ent == g_useExclude)
+        return false;
+    return hkCanUse.original(self, edx, ent);
+}
+
 using GameFrameFn = void(IVR_FASTCALL *)(void *, void *, bool);
 Hook<GameFrameFn> hkGameFrame;
 void IVR_FASTCALL GameFrameDetour(void *self, void *edx, bool simulating)
@@ -2186,6 +2234,8 @@ bool InstallClientHooks()
     return ok;
 }
 
+void ResetSecondHold() { SecondHoldReset(); }
+
 bool InstallServerHooks()
 {
     if (!g_Game.InitServer())
@@ -2215,7 +2265,9 @@ bool InstallServerHooks()
     {
         if (!g_second)
             g_second = new SecondHold;
-        if (SecondHoldReady() && hkGameFrame.Install("CServerGameDLL::GameFrame", g_Game.fnGameFrame, (void *)&GameFrameDetour))
+        if (SecondHoldReady() && g_Game.fnPlayerCanUse &&
+            hkCanUse.Install("CINFRA_Player use check", g_Game.fnPlayerCanUse, (void *)&CanUseDetour) &&
+            hkGameFrame.Install("CServerGameDLL::GameFrame", g_Game.fnGameFrame, (void *)&GameFrameDetour))
             IVR_LOG("Second hold: on (one physics object in each hand)");
         else
             IVR_LOG("Second hold: off (a game function was not found)");

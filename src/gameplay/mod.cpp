@@ -652,8 +652,11 @@ Item VRMod::DetectItem()
 // INFRA shows its main menu over a live background level. Tell it apart from real levels by name:
 // Source background maps are called "background..."; otherwise the first level after start-up
 // (the game was not launched straight into a map) is the menu's.
+void ResetSecondHold(); // hooks_game.cpp: a new level forgets the second hand's grab
+
 void VRMod::OnLevelLoaded()
 {
+    ResetSecondHold();
     std::string map = g_Game.ConVarString("host_map");
     ++m_levelLoads;
     if (firstLevelAt < 0)
