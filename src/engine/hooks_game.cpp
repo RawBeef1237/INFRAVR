@@ -1904,11 +1904,18 @@ struct SecondHold
     int frames = 0;
     int farFrames = 0;
     bool onTrial = false;
+    bool releasing = false; // let go, but DetachEntity has not freed it yet
+    bool releaseThrown = false;
 };
 SecondHold *g_second = nullptr;
 
-void InitSecondGrab(SecondHold &s)
+bool InitSecondGrab(SecondHold &s)
 {
+    if (*reinterpret_cast<void **>(s.grab + 0x2084) != nullptr) // a motion controller still calls into it
+    {
+        IVR_ERR("Second hold: the last grab still has its physics controller - not picking up");
+        return false;
+    }
     std::memset(s.grab, 0, sizeof(s.grab));
     uint8_t *g = s.grab;
     auto f = [&](size_t at, float v) { std::memcpy(g + at, &v, 4); };
@@ -1924,6 +1931,7 @@ void InitSecondGrab(SecondHold &s)
     i(0x208c, -1);
     i(kGrabPlayerHandle, -1);
     i(0x20b4, -1);
+    return true;
 }
 
 uint32_t EntityHandle(void *ent)
@@ -1944,12 +1952,36 @@ bool SecondHoldReady()
            hkGrabSetTarget.Installed() && hkGrabDetach.Installed() && ServerEntityArray();
 }
 
+// DetachEntity, for certain. With the player in it, INFRA's DetachEntity can refuse (a check of its
+// grab controller's vtable 4 for players with flag +0x139e): the object then stays in the motion
+// controller, frozen where it was last held, and reusing the grab afterwards crashed in the physics
+// code. Without the player it always takes the path that frees the object and destroys the motion
+// controller (m_controller +0x2084), which is checked.
+constexpr size_t kGrabController = 0x2084;
+bool SecondDetach(SecondHold &s)
+{
+    uint32_t *player = reinterpret_cast<uint32_t *>(s.grab + kGrabPlayerHandle);
+    *player = 0xFFFFFFFFu;
+    hkGrabDetach.original(s.grab, nullptr, false);
+    const bool done = *reinterpret_cast<uint32_t *>(s.grab + kGrabAttachedEntity) == 0xFFFFFFFFu &&
+                      *reinterpret_cast<void **>(s.grab + kGrabController) == nullptr;
+    if (!done)
+        IVR_ERR("Second hold: DetachEntity left the object attached (controller %p) - trying again",
+                *reinterpret_cast<void **>(s.grab + kGrabController));
+    return done;
+}
+
 void SecondLetGo(bool thrown, const char *why)
 {
     SecondHold &s = *g_second;
     void *ent = ServerEntity(s.handle);
-    if (s.attached)
-        hkGrabDetach.original(s.grab, nullptr, false);
+    if (s.attached && !SecondDetach(s))
+    {
+        s.releasing = true; // keep it until the controller is gone; never reuse the grab before
+        s.releaseThrown = thrown;
+        return;
+    }
+    s.releasing = false;
     if (ent)
     {
         uint8_t *e = static_cast<uint8_t *>(ent);
@@ -2103,7 +2135,8 @@ void SecondPickUp(int hand)
             return;
         s.onTrial = true;
     }
-    InitSecondGrab(s);
+    if (!InitSecondGrab(s))
+        return;
     int group = *reinterpret_cast<int *>(e + kEntCollisionGroup);
     if (group == kGroupDebris && g_Game.fnSetCollisionGroup) // as CPlayerPickupController::Init does
     {
@@ -2153,13 +2186,15 @@ void SecondFollow()
     uint8_t *e = static_cast<uint8_t *>(ServerEntity(s.handle));
     if (!e || !IsReadable(e + kEntPhysicsObject, 4) || !*reinterpret_cast<void **>(e + kEntPhysicsObject))
     {
-        s.attached = false; // gone (broken, removed): nothing left to detach from
+        // Gone (broken, removed, or a new level whose physics world replaced the old one): its
+        // controller may belong to a physics world that no longer exists, so it is not touched.
+        s.attached = false;
+        *reinterpret_cast<void **>(s.grab + 0x2084) = nullptr;
         SecondLetGo(false, "the object is gone");
         return;
     }
     if (*reinterpret_cast<uint32_t *>(s.grab + kGrabAttachedEntity) != s.handle)
     {
-        s.attached = false;
         SecondLetGo(false, "the game let go of it");
         return;
     }
@@ -2205,6 +2240,11 @@ void SecondHoldFrame()
     g_Mod.secondRequest = -1;
     g_Mod.secondRelease = false;
     SecondHold &s = *g_second;
+    if (s.releasing)
+    {
+        SecondLetGo(s.releaseThrown, "let go after a retry");
+        return;
+    }
     if (s.attached && (rel || !g_Mod.Active() || g_Mod.menuMode || !g_Mod.HandValid(s.hand)))
         SecondLetGo(speed > 2.5f, rel ? (speed > 2.5f ? "thrown" : "dropped") : "hand lost");
     if (s.attached)
@@ -2222,6 +2262,8 @@ void SecondHoldReset()
     if (g_second->attached)
         IVR_LOG("Second hold: forgotten on level change");
     g_second->attached = false;
+    g_second->releasing = false;
+    *reinterpret_cast<void **>(g_second->grab + 0x2084) = nullptr; // destroyed with the old physics world
     g_second->handle = 0xFFFFFFFFu;
     g_secondHeld = 0xFFFFFFFFu;
     g_second->hand = -1;
@@ -2335,7 +2377,7 @@ bool InstallServerHooks()
         flags::Allowed(kTwoHandFlag))
     {
         if (!g_second)
-            g_second = new SecondHold;
+            g_second = new SecondHold(); // zeroed: no controller yet
         if (SecondHoldReady() && g_Game.fnPlayerCanUse &&
             hkCanUse.Install("CINFRA_Player use check", g_Game.fnPlayerCanUse, (void *)&CanUseDetour) &&
             hkGameFrame.Install("CServerGameDLL::GameFrame", g_Game.fnGameFrame, (void *)&GameFrameDetour))
