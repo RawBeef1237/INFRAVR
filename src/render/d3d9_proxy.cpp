@@ -696,6 +696,7 @@ void InitVROnce()
         return;
     g_vrInitDone = true;
     InstallGamepadHooks(); // before the engine's input system looks for controllers
+    flags::InstallExitHook();
 
     // DXVK options for VR (no vsync against the monitor, low latency) unless the user has their own.
     std::string conf = ModDir() + "cfg\\dxvk.conf";

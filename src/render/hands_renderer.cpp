@@ -287,6 +287,10 @@ struct ModelData
     int cameraJoint = -1; // camera: the joint carrying the camera; flashlight: the flashlight's
     Pose lensLocal;       // in cameraJoint's space (game units): camera lens / flashlight beam
     bool haveLens = false;
+    // Camera: how far the screen was raised out of its recess (RaiseScreen), in the mesh and then
+    // in cameraJoint's space (game units). INFRA's viewfinder panel is moved out as far.
+    Vector screenRaiseMesh;
+    float screenRaise = 0;
     // Phone only: its screen in screenJoint's space (x right, y up, z out of the glass; game
     // units), and the image shown instead of the phone's texture during INFRA's call screen.
     int screenJoint = -1;
@@ -364,6 +368,7 @@ std::mutex g_boneLock;
 void RaiseScreen(ModelData &md, int camMat)
 {
     GlbModel &m = md.glb;
+    md.screenRaiseMesh = Vector(0, 0, 0);
     if (md.screenIndices.size() < 3)
         return;
     std::vector<char> onScreen(m.vertices.size(), 0), elsewhere(m.vertices.size(), 0);
@@ -431,6 +436,7 @@ void RaiseScreen(ModelData &md, int camMat)
         float inset = (bestD > 0 ? 1.0f : -1.0f) * 0.003f * size;
         moves.push_back({c, P(best) - n * inset});
     }
+    md.screenRaiseMesh = n * depth;
     for (const Move &mv : moves)
     {
         m.vertices[mv.v].pos[0] = mv.to.x;
@@ -607,6 +613,7 @@ void BuildBatches(ModelData &md, bool camera)
         Vector up = nt && nb ? (top * (1.0f / nt) - bottom * (1.0f / nb)) : Vector(0, 0, 1);
         up = (up - fwd * Dot(up, fwd)).Normalized();
         Vector left = Cross(up, fwd);
+        md.screenRaise = xf(md.screenRaiseMesh.x, md.screenRaiseMesh.y, md.screenRaiseMesh.z, false).Length();
         md.lensLocal.pos = centre;
         md.lensLocal.rot.SetCol(0, fwd);
         md.lensLocal.rot.SetCol(1, left);
@@ -1653,9 +1660,10 @@ void Draw(const std::shared_ptr<Frame> &fr, const CViewSetup &v)
             dev->SetPixelShader(nullptr);
             dev->SetFVF(kFvf);
             float rect[4];
-            // INFRA's viewfinder panel is added on top (it draws additively): the screen stays dark
-            // under it, as on INFRA's own camera.
-            IDirect3DTexture9 *screen = it.panelOnScreen ? nullptr : ScreenTexture(md.screenAspect, rect);
+            // INFRA's viewfinder panel is added on top (it draws additively): its focus marks and
+            // battery show over the picture. Its own copy of the view is drawn at a fifth of its
+            // brightness, so with the screen left dark under it the screen looked black.
+            IDirect3DTexture9 *screen = ScreenTexture(md.screenAspect, rect);
             std::vector<FVertex> verts = it.screen;
             if (screen)
             {
@@ -1818,6 +1826,10 @@ bool ItemPanel(int item, const char *bone, const Vector &centre, const Mat3 &fra
         p.rot.SetCol(1, Cross(z, x));
         p.rot.SetCol(2, z);
     }
+    // The camera's screen sits at the front of its recess now (RaiseScreen): the panel goes there too,
+    // a hair in front of it, or the screen would hide it.
+    if (md.screenRaise > 0)
+        p.pos = p.pos + p.rot.Col(2) * (md.screenRaise * b.scale);
     g_items[item].panelFrame = g_eyeFrame.load();
     scale = b.scale;
     out = p;
