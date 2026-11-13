@@ -10,6 +10,7 @@
 #include "hooks.h"
 #include "mod.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -17,6 +18,7 @@
 #include <functional>
 
 namespace ivr {
+void Defer(std::function<void()> fn);
 
 namespace {
 
@@ -36,6 +38,8 @@ using UpdateObjectVMFn = bool(IVR_FASTCALL *)(void *, void *, void *, float);
 using ComputeErrorFn = float(IVR_FASTCALL *)(void *, void *);
 using EyeAnglesFn = const QAngle *(IVR_FASTCALL *)(void *, void *);
 using ShootPositionFn = Vector *(IVR_FASTCALL *)(void *, void *, Vector *);
+using FindUseEntityFn = void *(IVR_FASTCALL *)(void *, void *);
+using GrabSetTargetFn = void(IVR_FASTCALL *)(void *, void *, const Vector *, const QAngle *, bool);
 
 Hook<RenderViewFn> hkRenderView;
 Hook<RenderCameraWeaponFn> hkRenderCameraWeapon;
@@ -50,6 +54,14 @@ Hook<UpdateObjectVMFn> hkUpdateObjectVM;
 Hook<ComputeErrorFn> hkComputeError;
 Hook<EyeAnglesFn> hkEyeAngles;
 Hook<ShootPositionFn> hkShootPosition;
+Hook<FindUseEntityFn> hkFindUseEntity;        // server
+Hook<ShootPositionFn> hkEyePosition;          // server
+Hook<GrabSetTargetFn> hkGrabSetTarget;        // server
+using GrabDetachFn = void(IVR_FASTCALL *)(void *, void *, bool);
+Hook<GrabDetachFn> hkGrabDetach;              // server
+Hook<FindUseEntityFn> hkClientFindUseEntity;
+Hook<ShootPositionFn> hkClientEyePosition;
+Hook<EyeAnglesFn> hkClientEyeAngles;
 
 void *g_eyeRT[2] = {nullptr, nullptr};
 void *g_hudRT = nullptr;
@@ -64,6 +76,42 @@ CViewSetup g_engineView; // the engine's own (flat) view of this frame
 int g_grabOverride = 0;
 double g_lastLog = 0;
 double g_traceAgainAt = 0;
+bool g_traceRequest = false;
+// Traced on the main thread too: the screen-space rectangles INFRA's post-processing and selection
+// glow draw (IMatRenderContext::DrawScreenSpaceRectangle, vtable 105), with their material.
+bool g_traceRects = false;
+uint32_t g_secondHeld = 0xFFFFFFFFu; // the object in the other hand (mod's own grab), or none
+void *g_primaryGrab = nullptr;        // INFRA's own grab controller, last seen moving the first object
+void *g_useExclude = nullptr;         // entity INFRA's use check must refuse during a search
+bool g_dumpOutline = false; // this trace also saves pictures of the outline passes
+using DrawSSRFn = void(IVR_FASTCALL *)(void *, void *, void *, int, int, int, int, float, float, float, float, int,
+                                       int, void *, int, int);
+Hook<DrawSSRFn> hkDrawSSR;
+void IVR_FASTCALL DrawSSRDetour(void *self, void *edx, void *mat, int dx, int dy, int w, int h, float x0, float y0,
+                                float x1, float y1, int tw, int th, void *rend, int xd, int yd)
+{
+    if (g_traceRects)
+    {
+        const char *n = mat ? VCall<const char *>(mat, vidx::MAT_GetName) : nullptr;
+        IVR_LOG("  rect: %s dest %d,%d %dx%d from %.1f,%.1f-%.1f,%.1f of %dx%d", n ? n : "?", dx, dy, w, h, x0, y0,
+                x1, y1, tw, th);
+    }
+    hkDrawSSR.original(self, edx, mat, dx, dy, w, h, x0, y0, x1, y1, tw, th, rend, xd, yd);
+    if (g_traceRects && g_dumpOutline)
+    {
+        // Pictures of the selection glow's stages, for working out where it goes wrong.
+        const char *n = mat ? VCall<const char *>(mat, vidx::MAT_GetName) : nullptr;
+        if (n && std::strstr(n, "glow_downsample"))
+            Defer([] { g_D3D.DumpBound(false, "outline_1_silhouette"); });
+        else if (n && std::strstr(n, "glow_blur_y"))
+            Defer([] { g_D3D.DumpBound(true, "outline_2_glow"); });
+        else if (n && std::strstr(n, "halo_add_to_screen"))
+            Defer([] {
+                g_D3D.DumpBound(true, "outline_3_eye");
+                g_D3D.DumpStencil("outline_4_stencil");
+            });
+    }
+} // trace the next left eye (set when INFRA's selection outline first shows)
 
 // ---- multicore rendering ---------------------------------------------------------------------
 // With mat_queue_mode 2 the engine records its rendering on this thread and plays it back on a
@@ -502,7 +550,14 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
         SetRenderTarget(g_eyeRT[eye]);
         g_currentEye = eye;
         static int s_traced = 0; // trace what the game does while drawing the left eye, twice
-        bool trace = eye == 0 && s_traced < 2 && g_D3D.eye[0].Valid() && (s_traced == 0 || NowSeconds() > g_traceAgainAt);
+        bool trace = eye == 0 && g_D3D.eye[0].Valid() &&
+                     ((s_traced < 2 && (s_traced == 0 || NowSeconds() > g_traceAgainAt)) || g_traceRequest);
+        g_dumpOutline = trace && g_traceRequest;
+        if (trace && g_traceRequest)
+        {
+            g_traceRequest = false;
+            Defer([] { IVR_LOG("trace: the selection outline is showing - tracing its passes"); });
+        }
         if (trace)
         {
             ++s_traced;
@@ -515,12 +570,24 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
                 g_D3D.traceDraws = 0;
             });
         }
+        if (trace && !hkDrawSSR.Installed())
+        {
+            if (void *ctx = g_Game.RenderContext())
+            {
+                void **vt = *reinterpret_cast<void ***>(ctx);
+                hkDrawSSR.Install("IMatRenderContext::DrawScreenSpaceRectangle", vt[105], (void *)&DrawSSRDetour);
+                Game::ReleaseContext(ctx);
+            }
+        }
+        g_traceRects = trace;
         world::BeginEye(); // post-processing works out its rectangles for the eye, not the window
         g_eyeView = v;
         g_handsDrawn = false;
         hkRenderView.original(self, edx, &v, &hudEye, clearFlags,
                               flags | (eye == 1 ? RENDERVIEW_SUPPRESSMONITORRENDERING : 0));
         world::EndEye();
+        g_traceRects = false;
+        g_dumpOutline = false;
         if (!g_handsDrawn) // no viewmodel pass this eye (or hands.post_processing = false): on top
             hands::DrawEye(eye, v);
         Defer([trace, eye] {
@@ -567,7 +634,7 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
             PaintHud(hudView, PAINT_UIPANELS | PAINT_INGAMEPANELS); // the pause menu, for the phone panel
         hud = true;
     }
-    else if (g_Config.hudMode == HudMode::Overlay && g_hudRT && (whatToDraw & RENDERVIEW_DRAWHUD))
+    else if (g_Config.hudMode == HudMode::Overlay && g_hudRT)
     {
         if (subsLayer)
         {
@@ -882,7 +949,7 @@ void IVR_FASTCALL DrawPanelIn3DSpaceDetour(void *self, void *edx, unsigned panel
             static int s_draws = 0;
             if (s_draws == 0)
                 IVR_LOG("Screen panel: drawn %.2f times INFRA's size on the mod's model", t.scale);
-            if (++s_draws == 600)
+            if (++s_draws == 60) // a bad panel size would crash at once; INFRA closing later is fine
                 flags::End(kPanelScaleFlag);
             w *= t.scale;
             h *= t.scale;
@@ -1171,8 +1238,46 @@ void IVR_FASTCALL InfraFlashlightDetour(void *self, void *edx, float ox, float o
 }
 
 // ---- server: hold grabbed objects in front of the hand instead of the eyes -----------------
+// CBaseEntity::m_vecAbsOrigin (server): read by FindUseEntity / UpdateObject at +0x1cc after
+// CalcAbsolutePosition when the dirty bit (0x800 in +0xc8) is set.
+constexpr size_t kEntAbsOrigin = 0x1cc;
+constexpr size_t kEntAbsAngles = 0x1d8; // CBaseEntity::m_angAbsRotation (datadesc)
+void *g_grabPlayer = nullptr; // the player whose held object is being updated
+
+// The server's entity list (CGlobalEntityList entries of 24 bytes: entity at +4, serial at +8),
+// read from UpdateObject's own "mov edx, [g_pEntityList]" at +0x47 (8B 15 imm32).
+const uint8_t *ServerEntityArray()
+{
+    static const uint8_t *s_list = nullptr;
+    static bool s_tried = false;
+    if (!s_tried)
+    {
+        s_tried = true;
+        const uint8_t *p = static_cast<const uint8_t *>(g_Game.fnGrabUpdateObject);
+        if (p && IsReadable(p + 0x47, 6) && p[0x47] == 0x8B && p[0x48] == 0x15)
+            s_list = *reinterpret_cast<const uint8_t *const *>(p + 0x49);
+        IVR_LOG("Server entity list %s", s_list ? "found" : "not found (no touch use, no object diagnostics)");
+    }
+    if (!s_list || !IsReadable(s_list, 4))
+        return nullptr;
+    return *reinterpret_cast<const uint8_t *const *>(s_list);
+}
+
+void *ServerEntity(uint32_t handle)
+{
+    const uint8_t *base = ServerEntityArray();
+    if (!base || handle == 0xFFFFFFFFu)
+        return nullptr;
+    const uint8_t *e = base + (handle & 0xFFFF) * 24 + 4;
+    if (!IsReadable(e, 8) || *reinterpret_cast<const uint32_t *>(e + 4) != (handle >> 16))
+        return nullptr;
+    void *ent = *reinterpret_cast<void *const *>(e);
+    return IsReadable(static_cast<uint8_t *>(ent) + kEntAbsOrigin, 12) ? ent : nullptr;
+}
+
 bool IVR_FASTCALL UpdateObjectDetour(void *self, void *edx, void *player, float error, bool teleport)
 {
+    g_grabPlayer = player;
     g_Mod.lastGrabUpdate = NowSeconds();
     ++g_grabOverride;
     bool r = hkUpdateObject.original(self, edx, player, error, teleport);
@@ -1182,6 +1287,7 @@ bool IVR_FASTCALL UpdateObjectDetour(void *self, void *edx, void *player, float 
 
 bool IVR_FASTCALL UpdateObjectVMDetour(void *self, void *edx, void *player, float error)
 {
+    g_grabPlayer = player;
     g_Mod.lastGrabUpdate = NowSeconds();
     ++g_grabOverride;
     bool r = hkUpdateObjectVM.original(self, edx, player, error);
@@ -1197,8 +1303,996 @@ float IVR_FASTCALL ComputeErrorDetour(void *self, void *edx)
     return r;
 }
 
+// ---- hand-based "use": the game's use search starts at the hand -----------------------------
+// INFRA's FindUseEntity (server: what "use" acts on; client: what the selection outline marks)
+// traces from EyePosition() along EyeVectors() (= EyeAngles()), then looks around that point.
+// While it runs for the player, both answer with the hand instead.
+void *g_usePlayer = nullptr; // server player whose FindUseEntity is running with the hand
+Vector g_useStart;
+QAngle g_useAngles;
+void *g_clUsePlayer = nullptr; // the same on the client
+Vector g_clUseStart;
+QAngle g_clUseAngles;
+constexpr const char *kHandUseFlag = "hand_use";
+constexpr const char *kHoldInHandFlag = "hold_in_hand";
+
+// CBaseEntity::m_Collision (CCollisionProperty, datadesc +0xe8): m_vecMins +0x08, m_vecMaxs +0x14 (in
+// the entity's space, or world-aligned for SOLID_BBOX), m_nSolidType byte +0x22.
+constexpr size_t kEntCollision = 0xe8;
+constexpr size_t kEntCollisionGroup = 0x148; // CBaseEntity::m_CollisionGroup (datadesc)
+constexpr int kSolidBBox = 2;
+using CanUseFn = bool(IVR_FASTCALL *)(void *, void *, void *);
+
+// Distance (game units) from P to a collision box (mins/maxs in the entity's space, or
+// world-aligned for SOLID_BBOX); < 0 if the numbers make no sense.
+float BoxDistance(const Vector &o, const QAngle &a, const Vector &mn, const Vector &mx, int solid, const Vector &P,
+                  float *volume)
+{
+    const float v[] = {o.x, o.y, o.z, a.x, a.y, a.z, mn.x, mn.y, mn.z, mx.x, mx.y, mx.z};
+    for (float f : v)
+        if (!std::isfinite(f))
+            return -1.0f;
+    if (mx.x < mn.x || mx.y < mn.y || mx.z < mn.z || (mx - mn).Length() > 1024.0f)
+        return -1.0f;
+    Vector d = P - o;
+    if (solid != kSolidBBox)
+        d = AnglesToMatrix(a).Transposed() * d;
+    Vector c(std::clamp(d.x, mn.x, mx.x), std::clamp(d.y, mn.y, mx.y), std::clamp(d.z, mn.z, mx.z));
+    if (volume)
+        *volume = (mx.x - mn.x) * (mx.y - mn.y) * (mx.z - mn.z);
+    return (d - c).Length();
+}
+
+// Server entity (from the game's own list, so live): its collision box.
+float DistanceToBox(const uint8_t *ent, const Vector &P, float *volume)
+{
+    return BoxDistance(*reinterpret_cast<const Vector *>(ent + kEntAbsOrigin),
+                       *reinterpret_cast<const QAngle *>(ent + kEntAbsAngles),
+                       *reinterpret_cast<const Vector *>(ent + kEntCollision + 0x08),
+                       *reinterpret_cast<const Vector *>(ent + kEntCollision + 0x14), ent[kEntCollision + 0x22], P,
+                       volume);
+}
+
+// Doors and valves (momentary_rot_button / func_rot_button: CMomentaryRotButton, CRotButton and
+// their client classes) are left to the grip and the trigger: the fingertip skips them.
+bool IsDoor(const void *ent)
+{
+    const char *n = ent ? RttiName(ent) : "";
+    return n && (strstr(n, "Door") || strstr(n, "RotButton"));
+}
+
+// What a hand (or fingertip) is touching: the nearest entity the game would let you use whose
+// collision box is within `reach` of one of the points. Small things are hard to hit with the
+// game's traces and cone; this goes by the box instead. Smaller boxes win ties, so a note on a
+// usable desk is picked over the desk.
+// Runs every tick while "use" is held, so it stays cheap: the list is checked readable once (the
+// entities in it are live) and the answer is kept for 0.1 s while the hand stays put.
+void *TouchUseEntity(void *player, const Vector *points, int count, float reach, bool noDoors)
+{
+    static const uint8_t *s_checked = nullptr;
+    const uint8_t *base = ServerEntityArray();
+    if (!base || !g_Game.fnPlayerCanUse || count <= 0 || reach <= 0.0f)
+        return nullptr;
+    if (base != s_checked)
+    {
+        if (!IsReadable(base, 2048 * 24))
+            return nullptr;
+        s_checked = base;
+    }
+    static double s_at = -1.0;
+    static Vector s_point;
+    static void *s_result = nullptr;
+    static uint32_t s_serial = 0;
+    static int s_index = -1;
+    static bool s_noDoors = false;
+    const double now = NowSeconds();
+    if (now - s_at < 0.1 && (points[0] - s_point).Length() < 1.0f && noDoors == s_noDoors)
+    {
+        if (!s_result)
+            return nullptr;
+        const uint8_t *e = base + s_index * 24 + 4;
+        if (*reinterpret_cast<void *const *>(e) == s_result && *reinterpret_cast<const uint32_t *>(e + 4) == s_serial)
+            return s_result;
+    }
+    void *best = nullptr;
+    int bestIndex = -1;
+    float bestD = 1e9f, bestV = 1e9f;
+    for (int i = 1; i < 2048; ++i)
+    {
+        const uint8_t *ent = *reinterpret_cast<const uint8_t *const *>(base + i * 24 + 4);
+        if (!ent || ent == player)
+            continue;
+        const Vector o = *reinterpret_cast<const Vector *>(ent + kEntAbsOrigin);
+        if (!std::isfinite(o.x) || (o - points[0]).Length() > 256.0f)
+            continue;
+        float d = 1e9f, v = 0;
+        for (int k = 0; k < count; ++k)
+        {
+            float vk = 0, dk = DistanceToBox(ent, points[k], &vk);
+            if (dk >= 0.0f && dk < d)
+            {
+                d = dk;
+                v = vk;
+            }
+        }
+        if (d > reach || d > bestD + 0.5f || (d >= bestD - 0.5f && v >= bestV))
+            continue;
+        if (!reinterpret_cast<CanUseFn>(g_Game.fnPlayerCanUse)(player, nullptr, const_cast<uint8_t *>(ent)))
+            continue;
+        if (noDoors && IsDoor(ent))
+            continue;
+        best = const_cast<uint8_t *>(ent);
+        bestIndex = i;
+        bestD = d;
+        bestV = v;
+    }
+    s_at = now;
+    s_point = points[0];
+    s_noDoors = noDoors;
+    s_result = best;
+    s_index = bestIndex;
+    s_serial = best ? *reinterpret_cast<const uint32_t *>(base + bestIndex * 24 + 8) : 0;
+    return best;
+}
+
+void *FindUseEntityHands(void *self, void *edx)
+{
+    if (g_usePlayer || !g_Mod.Active() || g_Mod.menuMode || !g_Mod.HandUseActive())
+        return hkFindUseEntity.original(self, edx);
+    // First what the hand is right at: short searches through the hand in several directions
+    // (along it, down, and across the palm both ways), kept only if the entity's origin is within
+    // grab_reach of the hand. Then where the hand points.
+    const int hand = g_Mod.interactHand;
+    const float upm = g_Mod.UnitsPerMetre();
+    if (g_Mod.PointerUseActive())
+    {
+        // The fingertip touched something: use only what it touches, never a door or valve.
+        Vector tip = g_Mod.PointerTip(g_Mod.pointerHand);
+        void *t = TouchUseEntity(self, &tip, 1, (g_Config.pointerReach + 0.03f) * upm, true);
+        static int s_tipLogs = 0;
+        if (s_tipLogs < 16)
+        {
+            ++s_tipLogs;
+            IVR_LOG("Pointer touch (%s hand) at (%.0f %.0f %.0f): %s", g_Mod.pointerHand ? "right" : "left", tip.x,
+                    tip.y, tip.z, t ? (RttiName(t)[0] ? RttiName(t) : "an entity") : "nothing usable");
+        }
+        return t;
+    }
+    void *r = nullptr;
+    const bool touched = false;
+    if (!r && g_Mod.HandValid(hand) && g_Config.grabReach > 0.0f)
+    {
+        const Vector P = g_Mod.handPos[hand];
+        const Mat3 &R = g_Mod.handRot[hand];
+        const Vector dirs[6] = {R.Forward(), Vector(0, 0, -1), R.Up() * -1.0f, R.Left(), R.Left() * -1.0f, R.Up()};
+        const float reach = g_Config.grabReach * g_Mod.UnitsPerMetre();
+        for (const Vector &d : dirs)
+        {
+            g_usePlayer = self;
+            g_useStart = P - d * 12.0f;
+            g_useAngles = VectorAngles(d);
+            void *e = hkFindUseEntity.original(self, edx);
+            g_usePlayer = nullptr;
+            if (!e || !IsReadable(static_cast<uint8_t *>(e) + kEntAbsOrigin, 12))
+                continue;
+            Vector o = *reinterpret_cast<const Vector *>(static_cast<uint8_t *>(e) + kEntAbsOrigin);
+            if ((o - P).Length() <= reach)
+            {
+                r = e;
+                break;
+            }
+        }
+    }
+    if (!r)
+    {
+        g_usePlayer = self;
+        g_useStart = g_Mod.useStart;
+        g_useAngles = g_Mod.useAngles;
+        r = hkFindUseEntity.original(self, edx);
+        g_usePlayer = nullptr;
+    }
+    static int s_logs = 0;
+    static void *s_last = nullptr;
+    if (s_logs < 16 && (r != s_last || !r))
+    {
+        ++s_logs;
+        s_last = r;
+        IVR_LOG("Hand use (%s hand) %s (%.0f %.0f %.0f) aim %.0f %.0f: %s", g_Mod.interactHand ? "right" : "left",
+                touched ? "touching, at" : "from", touched ? g_Mod.handPos[hand].x : g_useStart.x,
+                touched ? g_Mod.handPos[hand].y : g_useStart.y, touched ? g_Mod.handPos[hand].z : g_useStart.z,
+                g_useAngles.x, g_useAngles.y, r ? (RttiName(r)[0] ? RttiName(r) : "an entity") : "nothing usable");
+    }
+    return r;
+}
+
+uint32_t EntityHandle(void *ent);
+void *IVR_FASTCALL FindUseEntityDetour(void *self, void *edx)
+{
+    void *r = FindUseEntityHands(self, edx);
+    // The object in the other hand is the mod's: INFRA's own pickup must never take it as well.
+    if (r && g_secondHeld != 0xFFFFFFFFu && EntityHandle(r) == g_secondHeld)
+        return nullptr;
+    return r;
+}
+
+Vector *IVR_FASTCALL EyePositionDetour(void *self, void *edx, Vector *out)
+{
+    Vector *r = hkEyePosition.original(self, edx, out);
+    if (g_usePlayer && self == g_usePlayer && r)
+        *r = g_useStart;
+    return r;
+}
+
+// Client entity: IClientUnknown::GetCollideable (vtable 3) -> ICollideable OBBMins (1), OBBMaxs (2),
+// GetCollisionOrigin (8), GetCollisionAngles (9), GetSolid (11); read from INFRA's client.dll
+// (C_BaseEntity vt[3] = this + 0x410, CCollisionProperty's vtable).
+float ClientDistanceToBox(void *ent, const Vector &P)
+{
+    if (!ent)
+        return -1.0f;
+    void *coll = VCall<void *>(ent, 3);
+    if (!coll)
+        return -1.0f;
+    const Vector *mn = VCall<const Vector *>(coll, 1);
+    const Vector *mx = VCall<const Vector *>(coll, 2);
+    const Vector *o = VCall<const Vector *>(coll, 8);
+    const QAngle *a = VCall<const QAngle *>(coll, 9);
+    int solid = VCall<int>(coll, 11);
+    if (!mn || !mx || !o || !a)
+        return -1.0f;
+    return BoxDistance(*o, *a, *mn, *mx, solid, P, nullptr);
+}
+
+// The client's side of the second hand's search (outline only): the nearest physics prop whose box
+// is within second_reach of the hand, other than the one being carried.
+bool g_secondEnabled = false;
+void *ClientNearestPickup(int hand)
+{
+    if (!g_Game.entityList || !g_Mod.HandValid(hand))
+        return nullptr;
+    const Vector P = g_Mod.handPos[hand];
+    const float reach = std::max(0.05f, g_Config.secondReach) * g_Mod.UnitsPerMetre();
+    void *best = nullptr;
+    float bestD = 1e9f;
+    for (int i = 1; i < 2048; ++i)
+    {
+        if (i == g_Mod.heldEntIndex)
+            continue;
+        void *e = VCall<void *, int>(g_Game.entityList, vidx::GetClientEntity, i);
+        if (!e)
+            continue;
+        const char *n = RttiName(e);
+        if (!n || !strstr(n, "Phys"))
+            continue;
+        float d = ClientDistanceToBox(e, P);
+        if (d >= 0.0f && d <= reach && d < bestD)
+        {
+            best = e;
+            bestD = d;
+        }
+    }
+    return best;
+}
+
+// A small item (switch plate, valve, cassette player): the outline problem shows on these, not
+// on doors, so the outline trace and image dump wait for one.
+bool IsSmallClientEntity(void *ent)
+{
+    void *coll = ent ? VCall<void *>(ent, 3) : nullptr;
+    const Vector *mn = coll ? VCall<const Vector *>(coll, 1) : nullptr;
+    const Vector *mx = coll ? VCall<const Vector *>(coll, 2) : nullptr;
+    if (!mn || !mx)
+        return false;
+    Vector size = *mx - *mn;
+    return std::max(size.x, std::max(size.y, size.z)) < 40.0f;
+}
+
+// The pointer finger: with only the index finger out, what the outline search finds from the
+// fingertip is touched when the tip reaches its box (never a door or valve); the first touch presses
+// "use" once (OnCreateMove), and the tip has to come off it before it can press again.
+void *PointerSearch(void *self, void *edx)
+{
+    void *outline = nullptr;
+    const float upm = g_Mod.UnitsPerMetre();
+    for (int h = 0; h < 2; ++h)
+    {
+        if (!g_Mod.IsPointing(h) || h == g_Mod.HeldObjectHand() || h == g_Mod.SecondHeldHand())
+        {
+            g_Mod.pointerTouching[h] = false;
+            continue;
+        }
+        const Vector tip = g_Mod.PointerTip(h);
+        const Vector fwd = g_Mod.handRot[h].Forward();
+        g_clUseStart = tip - fwd * 4.0f;
+        g_clUseAngles = VectorAngles(fwd);
+        g_clUsePlayer = self;
+        void *e = hkClientFindUseEntity.original(self, edx);
+        g_clUsePlayer = nullptr;
+        float d = e && !IsDoor(e) ? ClientDistanceToBox(e, tip) : -1.0f;
+        static double s_logAt[2] = {0, 0};
+        if (NowSeconds() - s_logAt[h] > 2.0)
+        {
+            static int s_logs = 0;
+            s_logAt[h] = NowSeconds();
+            if (s_logs++ < 30)
+                IVR_LOG("Pointer (%s hand): fingertip (%.0f %.0f %.0f), %s%s %.1f cm away",
+                        h ? "right" : "left", tip.x, tip.y, tip.z, e ? (RttiName(e)[0] ? RttiName(e) : "an entity") : "nothing",
+                        e && IsDoor(e) ? " (door/valve, skipped)" : "", d >= 0.0f ? d / upm * 100.0f : -1.0f);
+        }
+        if (d >= 0.0f && d <= g_Config.pointerReach * upm)
+        {
+            if (!g_Mod.pointerTouching[h])
+            {
+                g_Mod.pointerPress[h] = true;
+                g_VR.Haptic(h, 0.04f, 180.0f, 0.9f); // a click under the fingertip
+                IVR_LOG("Pointer (%s hand): touched %s", h ? "right" : "left", RttiName(e)[0] ? RttiName(e) : "an entity");
+            }
+            g_Mod.pointerTouching[h] = true;
+        }
+        else if (d < 0.0f || d > (g_Config.pointerReach + 0.02f) * upm)
+            g_Mod.pointerTouching[h] = false;
+        if (!outline && d >= 0.0f && d <= 0.15f * upm)
+            outline = e;
+    }
+    return outline;
+}
+
+void *IVR_FASTCALL ClientFindUseEntityDetour(void *self, void *edx)
+{
+    if (g_clUsePlayer || !g_Mod.Active() || g_Mod.menuMode || !g_Config.handUse || !g_Mod.handUseClient)
+        return hkClientFindUseEntity.original(self, edx);
+    if (void *p = g_Config.pointerTouch ? PointerSearch(self, edx) : nullptr)
+        return p;
+    // The outline marks what either hand points at: the hand that used something last first.
+    int order[2] = {g_Mod.interactHand, 1 - g_Mod.interactHand};
+    void *r = nullptr;
+    bool any = false;
+    for (int h : order)
+    {
+        if (!g_Mod.HandValid(h) || h == g_Mod.HeldObjectHand() || h == g_Mod.SecondHeldHand())
+            continue;
+        any = true;
+        g_Mod.UseRay(h, g_clUseStart, g_clUseAngles);
+        g_clUsePlayer = self;
+        r = hkClientFindUseEntity.original(self, edx);
+        g_clUsePlayer = nullptr;
+        // No outline on the object you are holding.
+        if (r && g_Mod.HeldObjectHand() >= 0 && g_Mod.heldEntIndex > 0 && g_Game.entityList &&
+            VCall<void *, int>(g_Game.entityList, vidx::GetClientEntity, g_Mod.heldEntIndex) == r)
+            r = nullptr;
+        if (r && g_Mod.SecondHeldHand() >= 0 && g_Mod.secondEntIndex > 0 && g_Game.entityList &&
+            VCall<void *, int>(g_Game.entityList, vidx::GetClientEntity, g_Mod.secondEntIndex) == r)
+            r = nullptr;
+        if (r)
+            break;
+    }
+    // Carrying one object: the free hand's outline marks the physics object it can take as well.
+    if (!r && g_Config.twoHandHold && g_secondEnabled && g_Mod.HeldObjectHand() >= 0 && g_Mod.SecondHeldHand() < 0)
+        r = ClientNearestPickup(1 - g_Mod.HeldObjectHand());
+    if (!any)
+        return g_Mod.HeldObjectHand() >= 0 || g_Mod.SecondHeldHand() >= 0 ? nullptr
+                                                                           : hkClientFindUseEntity.original(self, edx);
+    static int s_outlineTraces = 0;
+    static double s_outlineTraceAt = 0;
+    // The outline is fixed: no more traces and pictures of it (g_Config.probe keeps the code reachable).
+    if (false && r && s_outlineTraces < 2 && NowSeconds() > s_outlineTraceAt && IsSmallClientEntity(r))
+    {
+        ++s_outlineTraces;
+        s_outlineTraceAt = NowSeconds() + 30.0;
+        g_traceRequest = true;
+    }
+    static int s_calls = 0;
+    if (++s_calls == 600)
+    {
+        flags::End(kHandUseFlag);
+        IVR_LOG("Hand use: the selection outline has followed the hands for 600 frames");
+    }
+    return r;
+}
+
+Vector *IVR_FASTCALL ClientEyePositionDetour(void *self, void *edx, Vector *out)
+{
+    Vector *r = hkClientEyePosition.original(self, edx, out);
+    if (g_clUsePlayer && self == g_clUsePlayer && r)
+        *r = g_clUseStart;
+    return r;
+}
+
+const QAngle *IVR_FASTCALL ClientEyeAnglesDetour(void *self, void *edx)
+{
+    if (g_clUsePlayer && self == g_clUsePlayer)
+        return &g_clUseAngles;
+    return hkClientEyeAngles.original(self, edx);
+}
+
+// ---- held objects go to the hand ----------------------------------------------------------------
+// CGrabController (Portal 2 branch, read from UpdateObject / SetTargetPosition in INFRA's
+// server.dll): m_attachedEntity handle at +0x2054, m_attachedPositionObjectSpace (the grabbed
+// point in the object's space) at +0x2078. UpdateObject ends with
+// SetTargetPosition(end - R * m_attachedPositionObjectSpace, R): the grabbed point at `end`.
+constexpr size_t kGrabAttachedEntity = 0x2054;
+constexpr size_t kGrabAttachedPosition = 0x2078;
+struct HoldState
+{
+    uint32_t handle = 0xFFFFFFFFu;
+    int hand = -1;
+    Mat3 rel;   // object rotation in the hand's frame, captured when it was picked up
+    Mat3 world; // object rotation in the world when it was picked up (hold_rotation = keep)
+    float yaw = 0; // which way it faced around the hand's up axis when picked up (hold_rotation = upright)
+    int frames = 0;
+    int logs = 0;
+    bool onTrial = false;
+} g_hold;
+
+// The object's heading (degrees) around the hand's up axis, given its rotation in the hand's frame:
+// its forward axis flattened onto the hand's forward/left plane, or its left axis when it points
+// along the hand's up.
+float UprightYaw(const Mat3 &rel)
+{
+    Vector f = rel.Forward();
+    if (f.x * f.x + f.y * f.y > 0.04f)
+        return std::atan2(f.y, f.x) * 57.29578f;
+    Vector l = rel.Left();
+    return std::atan2(l.y, l.x) * 57.29578f - 90.0f;
+}
+
+// Held objects must not collide with the player. INFRA's AttachEntity already moves the object to
+// COLLISION_GROUP_PLAYER_HELD (23, which the game rules keep apart from the player and the player's
+// movement) unless player_held_object_collide_with_player is set; make sure it is, and put the old
+// group back when the object is let go if it was this code that changed it.
+constexpr int kGroupPlayerHeld = 23;
+struct NoCollideState
+{
+    uint32_t handle = 0xFFFFFFFFu; // the object this code moved to the held group
+    int saved = -1;                // its group before
+} g_noCollide;
+using SetCollisionGroupFn = void(IVR_FASTCALL *)(void *, void *, int);
+
+void RestoreHeldCollision()
+{
+    if (g_noCollide.handle == 0xFFFFFFFFu)
+        return;
+    uint8_t *ent = static_cast<uint8_t *>(ServerEntity(g_noCollide.handle));
+    if (ent && g_Game.fnSetCollisionGroup && IsReadable(ent + kEntCollisionGroup, 4) &&
+        *reinterpret_cast<int *>(ent + kEntCollisionGroup) == kGroupPlayerHeld)
+        reinterpret_cast<SetCollisionGroupFn>(g_Game.fnSetCollisionGroup)(ent, nullptr, g_noCollide.saved);
+    g_noCollide = NoCollideState();
+}
+
+void HeldNoCollide(uint32_t handle)
+{
+    RestoreHeldCollision();
+    uint8_t *ent = static_cast<uint8_t *>(ServerEntity(handle));
+    if (!ent || !IsReadable(ent + kEntCollisionGroup, 4))
+        return;
+    int group = *reinterpret_cast<int *>(ent + kEntCollisionGroup);
+    int cvar = -1;
+    if (g_Game.heldCollideCvar && IsReadable(g_Game.heldCollideCvar, 4))
+        cvar = VCall<int>(g_Game.heldCollideCvar, 13); // ConVar::GetInt
+    int playerGroup = -1;
+    if (g_grabPlayer && IsReadable(static_cast<uint8_t *>(g_grabPlayer) + kEntCollisionGroup, 4))
+        playerGroup = *reinterpret_cast<int *>(static_cast<uint8_t *>(g_grabPlayer) + kEntCollisionGroup);
+    bool forced = false;
+    if (g_Config.heldNoCollide && group != kGroupPlayerHeld && g_Game.fnSetCollisionGroup)
+    {
+        reinterpret_cast<SetCollisionGroupFn>(g_Game.fnSetCollisionGroup)(ent, nullptr, kGroupPlayerHeld);
+        g_noCollide.handle = handle;
+        g_noCollide.saved = group;
+        forced = true;
+    }
+    IVR_LOG("Hold in hand: object collision group %d%s (player %d, player_held_object_collide_with_player %d)",
+            group, forced ? ", moved to 23 so it passes through you" : "", playerGroup, cvar);
+}
+
+void IVR_FASTCALL GrabDetachDetour(void *self, void *edx, bool clearVelocity)
+{
+    hkGrabDetach.original(self, edx, clearVelocity);
+    RestoreHeldCollision();
+    g_hold.handle = 0xFFFFFFFFu;
+    if (self == g_primaryGrab)
+        g_primaryGrab = nullptr;
+}
+
+void IVR_FASTCALL GrabSetTargetDetour(void *self, void *edx, const Vector *target, const QAngle *angles, bool teleport)
+{
+    const uint8_t *c = static_cast<const uint8_t *>(self);
+    if (g_grabOverride <= 0 || !g_Mod.Active() || g_Mod.menuMode || !g_Config.holdInHand || !target || !angles ||
+        !g_Mod.HandValid(g_Mod.interactHand) || !IsReadable(c + kGrabAttachedEntity, 0x30))
+        return hkGrabSetTarget.original(self, edx, target, angles, teleport);
+    uint32_t handle = *reinterpret_cast<const uint32_t *>(c + kGrabAttachedEntity);
+    g_primaryGrab = self;
+    g_Mod.heldEntIndex = handle == 0xFFFFFFFFu ? -1 : (int)(handle & 0xFFFF);
+    Vector local = *reinterpret_cast<const Vector *>(c + kGrabAttachedPosition);
+    if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) || local.Length() > 512.0f)
+        local = Vector(0, 0, 0);
+    // On trial only while it actually moves objects, so a crash somewhere else in a session where
+    // nothing was held does not switch it off.
+    if (!g_hold.onTrial && g_hold.frames < 300)
+    {
+        if (!flags::Begin(kHoldInHandFlag))
+            return hkGrabSetTarget.original(self, edx, target, angles, teleport);
+        g_hold.onTrial = true;
+    }
+    Mat3 game = AnglesToMatrix(*angles);
+    if (handle != g_hold.handle)
+        HeldNoCollide(handle);
+    if (handle != g_hold.handle || g_Mod.interactHand != g_hold.hand)
+    {
+        // Picked up (or passed to the other hand): keep the way it is turned now, relative to the hand.
+        g_hold.handle = handle;
+        g_hold.hand = g_Mod.interactHand;
+        // Start from how the object is really turned, not the angles the game asks for: INFRA's
+        // grab controller snaps props to its preferred carry angles, which turned them on pickup.
+        Mat3 now = game;
+        if (const uint8_t *ent = static_cast<const uint8_t *>(ServerEntity(handle)))
+        {
+            if (IsReadable(ent + kEntAbsAngles, sizeof(QAngle)))
+            {
+                QAngle real = *reinterpret_cast<const QAngle *>(ent + kEntAbsAngles);
+                if (std::isfinite(real.x) && std::isfinite(real.y) && std::isfinite(real.z))
+                    now = AnglesToMatrix(real);
+            }
+        }
+        g_hold.world = now;
+        g_hold.rel = g_Mod.holdRot.Transposed() * now;
+        g_hold.yaw = UprightYaw(g_hold.rel);
+        Vector d = *target + game * local - g_Mod.holdPos;
+        IVR_LOG("Hold in hand: object %08x in the %s hand (grab point %.0f %.0f %.0f in the object, the game held "
+                "it %.0f units from the hand)",
+                handle, g_hold.hand ? "right" : "left", local.x, local.y, local.z, d.Length());
+    }
+    Mat3 R = g_Config.holdRotation == Config::HoldKeep   ? g_hold.world
+             : g_Config.holdRotation == Config::HoldHand ? g_Mod.holdRot * g_hold.rel
+                                                         : g_Mod.holdRot * AnglesToMatrix(QAngle(0, g_hold.yaw, 0));
+    QAngle a = MatrixToAngles(R);
+    // The hold point relative to the player's eye on the server this tick: the client's view origin
+    // is interpolated and lags the server while moving, which made held objects hitch.
+    Vector hold = g_Mod.holdPos;
+    if (g_grabPlayer && hkEyePosition.Installed())
+    {
+        Vector eye;
+        Vector *pe = hkEyePosition.original(g_grabPlayer, nullptr, &eye);
+        if (pe && std::isfinite(pe->x) && (*pe + g_Mod.holdRel - g_Mod.holdPos).Length() < 64.0f)
+            hold = *pe + g_Mod.holdRel;
+    }
+    Vector t = hold - R * local;
+    // Diagnostics: how far the object really is from where it is being held.
+    if (g_grabPlayer && (g_hold.frames % 45) == 0 && g_hold.logs < 40)
+    {
+        Vector eye;
+        Vector *pe = hkEyePosition.original(g_grabPlayer, nullptr, &eye);
+        Vector rel = pe ? hold - *pe : Vector(0, 0, 0);
+        float off = -1.0f;
+        if (const uint8_t *ent = static_cast<const uint8_t *>(ServerEntity(handle)))
+            off = (*reinterpret_cast<const Vector *>(ent + kEntAbsOrigin) - t).Length();
+        ++g_hold.logs;
+        IVR_LOG("Hold in hand: hold point %.0f units from the eye (%.0f %.0f %.0f), object %.1f units from its "
+                "target",
+                rel.Length(), rel.x, rel.y, rel.z, off);
+    }
+    hkGrabSetTarget.original(self, edx, &t, &a, teleport);
+    if (++g_hold.frames == 300)
+    {
+        g_hold.onTrial = false;
+        flags::End(kHoldInHandFlag);
+        IVR_LOG("Hold in hand: 300 updates without trouble");
+    }
+}
+
+// ---- a second physics object, in the other hand ------------------------------------------------
+// INFRA's player carries one object at a time through its player_pickup controller; a second "use"
+// while carrying crashed in the physics code. The other hand gets the mod's own CGrabController
+// instead: a block of memory laid out the way CPlayerPickupController's constructor lays out its
+// embedded one (vtable, shadow-control limits, empty handles), attached with the game's own
+// AttachEntity and moved every server frame with SetTargetPosition. It is never freed, so the
+// physics motion controller AttachEntity creates for it can never call into freed memory.
+constexpr const char *kTwoHandFlag = "two_hand_hold";
+constexpr size_t kGrabSize = 0x2200;
+constexpr size_t kGrabPlayerHandle = 0x2094;
+constexpr size_t kEntPhysicsObject = 0x14c; // CBaseEntity::m_pPhysicsObject (read from CPlayerPickupController::Init)
+constexpr int kGroupDebris = 1, kGroupInteractiveDebris = 3;
+struct SecondHold
+{
+    alignas(16) uint8_t grab[kGrabSize];
+    bool attached = false;
+    uint32_t handle = 0xFFFFFFFFu;
+    int hand = -1;
+    void *player = nullptr;
+    Mat3 rel, world;
+    float yaw = 0;
+    int savedGroup = -1;
+    int frames = 0;
+    int farFrames = 0;
+    bool onTrial = false;
+    bool releasing = false; // let go, but DetachEntity has not freed it yet
+    bool releaseThrown = false;
+};
+SecondHold *g_second = nullptr;
+
+bool InitSecondGrab(SecondHold &s)
+{
+    if (*reinterpret_cast<void **>(s.grab + 0x2084) != nullptr) // a motion controller still calls into it
+    {
+        IVR_ERR("Second hold: the last grab still has its physics controller - not picking up");
+        return false;
+    }
+    std::memset(s.grab, 0, sizeof(s.grab));
+    uint8_t *g = s.grab;
+    auto f = [&](size_t at, float v) { std::memcpy(g + at, &v, 4); };
+    auto i = [&](size_t at, int32_t v) { std::memcpy(g + at, &v, 4); };
+    void **vt = FindVTable("server.dll", ".?AVCGrabController@@");
+    std::memcpy(g, &vt, 4);
+    f(0x1c, 3600.0f); // shadow: max angular
+    f(0x20, 3600.0f); // max damp angular
+    f(0x24, 1000.0f); // max speed
+    f(0x28, 2000.0f); // max damp speed
+    f(0x2c, 1.0f);    // damp factor
+    i(0x2054, -1);    // attached entity
+    i(0x208c, -1);
+    i(kGrabPlayerHandle, -1);
+    i(0x20b4, -1);
+    return true;
+}
+
+uint32_t EntityHandle(void *ent)
+{
+    const uint32_t *h = ent ? VCall<const uint32_t *>(ent, 2) : nullptr; // IHandleEntity::GetRefEHandle
+    return h && IsReadable(h, 4) ? *h : 0xFFFFFFFFu;
+}
+
+using AttachFn = void(IVR_FASTCALL *)(void *, void *, void *, void *, void *, bool, const Vector *, bool);
+using CanPickupFn = bool(__cdecl *)(void *, float, float);
+using IsHeldFn = bool(IVR_FASTCALL *)(void *, void *);
+using PhysGunFn = void(__cdecl *)(void *, void *, int);
+
+bool SecondHoldReady()
+{
+    return g_Game.fnGrabAttach && g_Game.fnGrabDetach && g_Game.fnGrabSetTarget && g_Game.fnCanPickupObject &&
+           g_Game.fnIsHeldByPlayer && g_Game.fnOnPhysGunPickup && g_Game.fnOnPhysGunDrop &&
+           hkGrabSetTarget.Installed() && hkGrabDetach.Installed() && ServerEntityArray();
+}
+
+// DetachEntity, for certain. With the player in it, INFRA's DetachEntity can refuse (a check of its
+// grab controller's vtable 4 for players with flag +0x139e): the object then stays in the motion
+// controller, frozen where it was last held, and reusing the grab afterwards crashed in the physics
+// code. Without the player it always takes the path that frees the object and destroys the motion
+// controller (m_controller +0x2084), which is checked.
+constexpr size_t kGrabController = 0x2084;
+bool SecondDetach(SecondHold &s)
+{
+    uint32_t *player = reinterpret_cast<uint32_t *>(s.grab + kGrabPlayerHandle);
+    *player = 0xFFFFFFFFu;
+    hkGrabDetach.original(s.grab, nullptr, false);
+    const bool done = *reinterpret_cast<uint32_t *>(s.grab + kGrabAttachedEntity) == 0xFFFFFFFFu &&
+                      *reinterpret_cast<void **>(s.grab + kGrabController) == nullptr;
+    if (!done)
+        IVR_ERR("Second hold: DetachEntity left the object attached (controller %p) - trying again",
+                *reinterpret_cast<void **>(s.grab + kGrabController));
+    return done;
+}
+
+void SecondLetGo(bool thrown, const char *why)
+{
+    SecondHold &s = *g_second;
+    void *ent = ServerEntity(s.handle);
+    if (s.attached && !SecondDetach(s))
+    {
+        s.releasing = true; // keep it until the controller is gone; never reuse the grab before
+        s.releaseThrown = thrown;
+        return;
+    }
+    s.releasing = false;
+    if (ent)
+    {
+        uint8_t *e = static_cast<uint8_t *>(ent);
+        if (s.savedGroup >= 0 && g_Game.fnSetCollisionGroup &&
+            *reinterpret_cast<int *>(e + kEntCollisionGroup) == kGroupPlayerHeld)
+            reinterpret_cast<SetCollisionGroupFn>(g_Game.fnSetCollisionGroup)(ent, nullptr, s.savedGroup);
+        if (s.player)
+            reinterpret_cast<PhysGunFn>(g_Game.fnOnPhysGunDrop)(ent, s.player, thrown ? 1 : 0);
+    }
+    IVR_LOG("Second hold: object %08x let go from the %s hand (%s)", s.handle, s.hand ? "right" : "left", why);
+    if (s.hand >= 0)
+        g_VR.Haptic(s.hand, 0.03f, 120.0f, 0.4f);
+    s.attached = false;
+    s.handle = 0xFFFFFFFFu;
+    g_secondHeld = 0xFFFFFFFFu;
+    s.hand = -1;
+    s.savedGroup = -1;
+    g_Mod.secondHand = -1;
+    g_Mod.secondEntIndex = -1;
+}
+
+// While carrying, INFRA's FindUseEntity answers with what is carried: the player's use entity
+// (+0x189c) and then the attached entity of the player's grab controller. Both are hidden for the
+// second hand's search, and the carried object is refused by the use check, so the search finds
+// what that hand is at instead.
+constexpr size_t kPlayerUseEntity = 0x189c;
+void *SecondSearchAt(void *player, int hand);
+void *SecondSearch(void *player, int hand)
+{
+    uint8_t *pl = static_cast<uint8_t *>(player);
+    uint8_t *grab = static_cast<uint8_t *>(g_primaryGrab);
+    uint32_t useEnt = 0xFFFFFFFFu, attached = 0xFFFFFFFFu;
+    const bool hideUse = IsReadable(pl + kPlayerUseEntity, 4);
+    const bool hideGrab = grab && g_hold.handle != 0xFFFFFFFFu && IsReadable(grab + kGrabAttachedEntity, 4) &&
+                          *reinterpret_cast<uint32_t *>(grab + kGrabAttachedEntity) == g_hold.handle;
+    if (hideUse)
+    {
+        useEnt = *reinterpret_cast<uint32_t *>(pl + kPlayerUseEntity);
+        *reinterpret_cast<uint32_t *>(pl + kPlayerUseEntity) = 0xFFFFFFFFu;
+    }
+    if (hideGrab)
+    {
+        attached = *reinterpret_cast<uint32_t *>(grab + kGrabAttachedEntity);
+        *reinterpret_cast<uint32_t *>(grab + kGrabAttachedEntity) = 0xFFFFFFFFu;
+    }
+    g_useExclude = ServerEntity(g_hold.handle);
+    void *r = SecondSearchAt(player, hand);
+    g_useExclude = nullptr;
+    if (hideGrab)
+        *reinterpret_cast<uint32_t *>(grab + kGrabAttachedEntity) = attached;
+    if (hideUse)
+        *reinterpret_cast<uint32_t *>(pl + kPlayerUseEntity) = useEnt;
+    return r;
+}
+
+// The physics object the hand is at: the nearest one whose collision box is within reach of the
+// hand that the game would let you pick up. INFRA's use search does not offer physics objects
+// while the player carries something, so the second hand looks through the entity list itself.
+void *NearestPickup(void *player, const Vector &P, float reach)
+{
+    const uint8_t *base = ServerEntityArray();
+    if (!base || !IsReadable(base, 2048 * 24))
+        return nullptr;
+    void *best = nullptr;
+    float bestD = 1e9f;
+    for (int i = 1; i < 2048; ++i)
+    {
+        uint8_t *ent = *reinterpret_cast<uint8_t *const *>(base + i * 24 + 4);
+        if (!ent || ent == player || !IsReadable(ent + kEntAbsOrigin, 12))
+            continue;
+        const Vector o = *reinterpret_cast<const Vector *>(ent + kEntAbsOrigin);
+        if (!std::isfinite(o.x) || (o - P).Length() > 128.0f)
+            continue;
+        if (!IsReadable(ent + kEntPhysicsObject, 4) || !*reinterpret_cast<void **>(ent + kEntPhysicsObject))
+            continue;
+        float d = DistanceToBox(ent, P, nullptr);
+        if (d < 0.0f || d > reach || d >= bestD)
+            continue;
+        uint32_t handle = EntityHandle(ent);
+        if (handle == g_hold.handle || handle == g_secondHeld)
+            continue;
+        if (!reinterpret_cast<CanPickupFn>(g_Game.fnCanPickupObject)(ent, g_Game.pickupMass, g_Game.pickupSize) ||
+            reinterpret_cast<IsHeldFn>(g_Game.fnIsHeldByPlayer)(ent, nullptr))
+            continue;
+        best = ent;
+        bestD = d;
+    }
+    return best;
+}
+
+// What the hand is right at, for the second object: the same close-range passes as hand use.
+void *SecondSearchAt(void *player, int hand)
+{
+    if (void *e = NearestPickup(player, g_Mod.handPos[hand], std::max(0.05f, g_Config.secondReach) * g_Mod.UnitsPerMetre()))
+        return e;
+    const Vector P = g_Mod.handPos[hand];
+    const Mat3 &R = g_Mod.handRot[hand];
+    const Vector dirs[6] = {R.Forward(), Vector(0, 0, -1), R.Up() * -1.0f, R.Left(), R.Left() * -1.0f, R.Up()};
+    const float reach = std::max(0.1f, g_Config.grabReach) * g_Mod.UnitsPerMetre();
+    for (const Vector &d : dirs)
+    {
+        g_usePlayer = player;
+        g_useStart = P - d * 12.0f;
+        g_useAngles = VectorAngles(d);
+        void *e = hkFindUseEntity.original(player, nullptr);
+        g_usePlayer = nullptr;
+        if (!e || !IsReadable(static_cast<uint8_t *>(e) + kEntAbsOrigin, 12))
+            continue;
+        Vector o = *reinterpret_cast<const Vector *>(static_cast<uint8_t *>(e) + kEntAbsOrigin);
+        if ((o - P).Length() <= reach)
+            return e;
+    }
+    // then where the hand points
+    g_usePlayer = player;
+    g_Mod.UseRay(hand, g_useStart, g_useAngles);
+    void *e = hkFindUseEntity.original(player, nullptr);
+    g_usePlayer = nullptr;
+    return e;
+}
+
+void SecondPickUp(int hand)
+{
+    SecondHold &s = *g_second;
+    void *player = g_grabPlayer;
+    if (!player || !g_Mod.HandValid(hand))
+        return;
+    void *ent = SecondSearch(player, hand);
+    const char *why = nullptr;
+    uint8_t *e = static_cast<uint8_t *>(ent);
+    void *phys = e && IsReadable(e + kEntPhysicsObject, 4) ? *reinterpret_cast<void **>(e + kEntPhysicsObject) : nullptr;
+    uint32_t handle = EntityHandle(ent);
+    if (!ent)
+        why = "nothing in reach";
+    else if (handle == g_hold.handle)
+        why = "the other hand already holds it";
+    else if (!phys)
+        why = "not a physics object";
+    else if (!reinterpret_cast<CanPickupFn>(g_Game.fnCanPickupObject)(ent, g_Game.pickupMass, g_Game.pickupSize))
+        why = "too heavy or too big to pick up";
+    else if (reinterpret_cast<IsHeldFn>(g_Game.fnIsHeldByPlayer)(ent, nullptr))
+        why = "already held";
+    if (why)
+    {
+        IVR_LOG("Second hold (%s hand): %s%s%s", hand ? "right" : "left", why, ent ? " - " : "",
+                ent ? (RttiName(ent)[0] ? RttiName(ent) : "an entity") : "");
+        return;
+    }
+    if (!s.onTrial && s.frames < 300)
+    {
+        if (!flags::Begin(kTwoHandFlag))
+            return;
+        s.onTrial = true;
+    }
+    if (!InitSecondGrab(s))
+        return;
+    int group = *reinterpret_cast<int *>(e + kEntCollisionGroup);
+    if (group == kGroupDebris && g_Game.fnSetCollisionGroup) // as CPlayerPickupController::Init does
+    {
+        reinterpret_cast<SetCollisionGroupFn>(g_Game.fnSetCollisionGroup)(ent, nullptr, kGroupInteractiveDebris);
+        group = kGroupInteractiveDebris;
+    }
+    reinterpret_cast<PhysGunFn>(g_Game.fnOnPhysGunPickup)(ent, player, 2); // PICKED_UP_BY_PLAYER
+    static const Vector kZero(0, 0, 0);
+    reinterpret_cast<AttachFn>(g_Game.fnGrabAttach)(s.grab, nullptr, player, ent, phys, false, &kZero, false);
+    uint32_t attached = *reinterpret_cast<uint32_t *>(s.grab + kGrabAttachedEntity);
+    if (attached != handle)
+    {
+        IVR_ERR("Second hold: AttachEntity did not take the object (%08x, wanted %08x)", attached, handle);
+        reinterpret_cast<PhysGunFn>(g_Game.fnOnPhysGunDrop)(ent, player, 0);
+        return;
+    }
+    s.attached = true;
+    s.handle = handle;
+    s.hand = hand;
+    s.player = player;
+    s.farFrames = 0;
+    s.savedGroup = -1;
+    int now = *reinterpret_cast<int *>(e + kEntCollisionGroup);
+    if (g_Config.heldNoCollide && now != kGroupPlayerHeld && g_Game.fnSetCollisionGroup)
+    {
+        s.savedGroup = now;
+        reinterpret_cast<SetCollisionGroupFn>(g_Game.fnSetCollisionGroup)(ent, nullptr, kGroupPlayerHeld);
+    }
+    else if (now == kGroupPlayerHeld)
+        s.savedGroup = group; // AttachEntity moved it: put the old group back on letting go
+    Mat3 rot = AnglesToMatrix(*reinterpret_cast<const QAngle *>(e + kEntAbsAngles));
+    s.world = rot;
+    s.rel = g_Mod.holdRotH[hand].Transposed() * rot;
+    s.yaw = UprightYaw(s.rel);
+    g_Mod.secondHand = hand;
+    g_Mod.secondEntIndex = (int)(handle & 0xFFFF);
+    g_secondHeld = handle;
+    g_VR.Haptic(hand, 0.04f, 160.0f, 0.7f);
+    IVR_LOG("Second hold: object %08x (%s) in the %s hand, collision group %d -> %d", handle,
+            RttiName(ent)[0] ? RttiName(ent) : "an entity", hand ? "right" : "left", group,
+            *reinterpret_cast<int *>(e + kEntCollisionGroup));
+}
+
+void SecondFollow()
+{
+    SecondHold &s = *g_second;
+    uint8_t *e = static_cast<uint8_t *>(ServerEntity(s.handle));
+    if (!e || !IsReadable(e + kEntPhysicsObject, 4) || !*reinterpret_cast<void **>(e + kEntPhysicsObject))
+    {
+        // Gone (broken, removed, or a new level whose physics world replaced the old one): its
+        // controller may belong to a physics world that no longer exists, so it is not touched.
+        s.attached = false;
+        *reinterpret_cast<void **>(s.grab + 0x2084) = nullptr;
+        SecondLetGo(false, "the object is gone");
+        return;
+    }
+    if (*reinterpret_cast<uint32_t *>(s.grab + kGrabAttachedEntity) != s.handle)
+    {
+        SecondLetGo(false, "the game let go of it");
+        return;
+    }
+    const int h = s.hand;
+    Mat3 R = g_Config.holdRotation == Config::HoldKeep   ? s.world
+             : g_Config.holdRotation == Config::HoldHand ? g_Mod.holdRotH[h] * s.rel
+                                                         : g_Mod.holdRotH[h] * AnglesToMatrix(QAngle(0, s.yaw, 0));
+    QAngle a = MatrixToAngles(R);
+    Vector hold = g_Mod.holdPosH[h];
+    if (s.player && hkEyePosition.Installed())
+    {
+        Vector eye;
+        Vector *pe = hkEyePosition.original(s.player, nullptr, &eye);
+        if (pe && std::isfinite(pe->x) && (*pe + g_Mod.holdRelH[h] - g_Mod.holdPosH[h]).Length() < 64.0f)
+            hold = *pe + g_Mod.holdRelH[h];
+    }
+    Vector local = *reinterpret_cast<const Vector *>(s.grab + kGrabAttachedPosition);
+    if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) || local.Length() > 512.0f)
+        local = Vector(0, 0, 0);
+    Vector t = hold - R * local;
+    hkGrabSetTarget.original(s.grab, nullptr, &t, &a, false);
+    // Stuck behind something far from the hand for a second: let go, like the game's own carry.
+    float off = (*reinterpret_cast<const Vector *>(e + kEntAbsOrigin) - t).Length();
+    s.farFrames = off > 48.0f ? s.farFrames + 1 : 0;
+    if (s.farFrames > 60)
+        SecondLetGo(false, "it got stuck too far from the hand");
+    if (s.onTrial && ++s.frames >= 300)
+    {
+        s.onTrial = false;
+        flags::End(kTwoHandFlag);
+        IVR_LOG("Second hold: 300 frames without trouble");
+    }
+}
+
+// Once per server frame (CServerGameDLL::GameFrame), on the main thread like the input.
+void SecondHoldFrame()
+{
+    if (!g_second)
+        return;
+    const int req = g_Mod.secondRequest;
+    const bool rel = g_Mod.secondRelease;
+    const float speed = g_Mod.secondReleaseSpeed;
+    g_Mod.secondRequest = -1;
+    g_Mod.secondRelease = false;
+    SecondHold &s = *g_second;
+    if (s.releasing)
+    {
+        SecondLetGo(s.releaseThrown, "let go after a retry");
+        return;
+    }
+    if (s.attached && (rel || !g_Mod.Active() || g_Mod.menuMode || !g_Mod.HandValid(s.hand)))
+        SecondLetGo(speed > 2.5f, rel ? (speed > 2.5f ? "thrown" : "dropped") : "hand lost");
+    if (s.attached)
+        SecondFollow();
+    else if (req >= 0 && g_Mod.Active() && !g_Mod.menuMode)
+        SecondPickUp(req);
+}
+
+// A new level (or a loaded save): the physics world the second grab lived in is gone with all its
+// controllers, so forget it without detaching.
+void SecondHoldReset()
+{
+    if (!g_second)
+        return;
+    if (g_second->attached)
+        IVR_LOG("Second hold: forgotten on level change");
+    g_second->attached = false;
+    g_second->releasing = false;
+    *reinterpret_cast<void **>(g_second->grab + 0x2084) = nullptr; // destroyed with the old physics world
+    g_second->handle = 0xFFFFFFFFu;
+    g_secondHeld = 0xFFFFFFFFu;
+    g_second->hand = -1;
+    g_second->player = nullptr;
+    g_Mod.secondHand = -1;
+    g_Mod.secondEntIndex = -1;
+}
+
+Hook<CanUseFn> hkCanUse;
+bool IVR_FASTCALL CanUseDetour(void *self, void *edx, void *ent)
+{
+    if (g_useExclude && ent == g_useExclude)
+        return false;
+    return hkCanUse.original(self, edx, ent);
+}
+
+using GameFrameFn = void(IVR_FASTCALL *)(void *, void *, bool);
+Hook<GameFrameFn> hkGameFrame;
+void IVR_FASTCALL GameFrameDetour(void *self, void *edx, bool simulating)
+{
+    if (simulating)
+        SecondHoldFrame(); // before the frame's physics, which moves the object to its new target
+    hkGameFrame.original(self, edx, simulating);
+}
+
 const QAngle *IVR_FASTCALL EyeAnglesDetour(void *self, void *edx)
 {
+    if (g_usePlayer && self == g_usePlayer)
+        return &g_useAngles;
     if (g_grabOverride > 0 && g_Mod.Active() && !g_Mod.menuMode)
         return &g_Mod.grabHandAngles;
     return hkEyeAngles.original(self, edx);
@@ -1221,7 +2315,7 @@ bool InstallClientHooks()
     if (g_Game.fnRenderCameraWeapon)
         hkRenderCameraWeapon.Install("CViewRender::RenderCameraWeapon", g_Game.fnRenderCameraWeapon,
                                      (void *)&RenderCameraWeaponDetour);
-    if (g_Game.surface && flags::Begin(kPanelScaleFlag)) // ended after 600 scaled panels
+    if (g_Game.surface && flags::Begin(kPanelScaleFlag)) // ended after 60 scaled panels
     {
         void *fn = (*static_cast<void ***>(g_Game.surface))[vidx::DrawPanelIn3DSpace];
         hkDrawPanelIn3DSpace.Install("IMatSystemSurface::DrawPanelIn3DSpace", fn, (void *)&DrawPanelIn3DSpaceDetour);
@@ -1239,8 +2333,21 @@ bool InstallClientHooks()
     if (g_Game.fnFlashlightUpdate)
         hkUpdateLight.Install("CFlashlightEffect::UpdateLight", g_Game.fnFlashlightUpdate,
                               (void *)&UpdateLightDetour);
+    if (g_Config.handUse && g_Game.fnClientFindUseEntity && g_Game.fnClientEyePosition && g_Game.fnClientEyeAngles &&
+        flags::Begin(kHandUseFlag)) // ended after 600 outline searches from the hands
+    {
+        g_Mod.handUseClient =
+            hkClientEyePosition.Install("C_INFRA_Player::EyePosition", g_Game.fnClientEyePosition,
+                                        (void *)&ClientEyePositionDetour) &&
+            hkClientEyeAngles.Install("C_INFRA_Player::EyeAngles", g_Game.fnClientEyeAngles,
+                                      (void *)&ClientEyeAnglesDetour) &&
+            hkClientFindUseEntity.Install("C_INFRA_Player::FindUseEntity", g_Game.fnClientFindUseEntity,
+                                          (void *)&ClientFindUseEntityDetour);
+    }
     return ok;
 }
+
+void ResetSecondHold() { SecondHoldReset(); }
 
 bool InstallServerHooks()
 {
@@ -1256,6 +2363,33 @@ bool InstallServerHooks()
     hkEyeAngles.Install("CBasePlayer::EyeAngles", g_Game.fnPlayerEyeAngles, (void *)&EyeAnglesDetour);
     hkShootPosition.Install("CBasePlayer::Weapon_ShootPosition", g_Game.fnPlayerShootPosition,
                             (void *)&ShootPositionDetour);
+    if (g_Game.fnPlayerFindUseEntity && g_Game.fnPlayerEyePosition)
+        g_Mod.handUseServer = hkEyePosition.Install("CINFRA_Player::EyePosition", g_Game.fnPlayerEyePosition,
+                                                    (void *)&EyePositionDetour) &&
+                              hkFindUseEntity.Install("CINFRA_Player::FindUseEntity", g_Game.fnPlayerFindUseEntity,
+                                                      (void *)&FindUseEntityDetour);
+    if (g_Game.fnGrabSetTarget && flags::Allowed(kHoldInHandFlag)) // on trial from the first held update to the 300th
+        g_Mod.holdInHandReady = hkGrabSetTarget.Install("CGrabController::SetTargetPosition", g_Game.fnGrabSetTarget,
+                                                        (void *)&GrabSetTargetDetour);
+    if (g_Mod.holdInHandReady && g_Game.fnGrabDetach)
+        hkGrabDetach.Install("CGrabController::DetachEntity", g_Game.fnGrabDetach, (void *)&GrabDetachDetour);
+    if (g_Config.twoHandHold && g_Mod.holdInHandReady && g_Mod.handUseServer && g_Game.fnGameFrame &&
+        flags::Allowed(kTwoHandFlag))
+    {
+        if (!g_second)
+            g_second = new SecondHold(); // zeroed: no controller yet
+        if (SecondHoldReady() && g_Game.fnPlayerCanUse &&
+            hkCanUse.Install("CINFRA_Player use check", g_Game.fnPlayerCanUse, (void *)&CanUseDetour) &&
+            hkGameFrame.Install("CServerGameDLL::GameFrame", g_Game.fnGameFrame, (void *)&GameFrameDetour))
+        {
+            g_secondEnabled = true;
+            IVR_LOG("Second hold: on (one physics object in each hand)");
+        }
+        else
+            IVR_LOG("Second hold: off (a game function was not found)");
+    }
+    IVR_LOG("Hand use: server %s, outline %s; hold in hand %s", g_Mod.handUseServer ? "on" : "off",
+            g_Mod.handUseClient ? "on" : "off", g_Mod.holdInHandReady ? "on" : "off");
     return true;
 }
 

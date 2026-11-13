@@ -6,6 +6,11 @@
 #include "hands_renderer.h"
 
 #include <algorithm>
+#include <climits>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
 #include <cmath>
 
 namespace ivr {
@@ -713,6 +718,184 @@ bool D3DVR::MeasureSmear(const VrTexture &t, const char *what, UINT &picW, UINT 
     return ok;
 }
 
+void D3DVR::DumpBound(bool renderTarget, const char *name)
+{
+    if (!device)
+        return;
+    IDirect3DSurface9 *src = nullptr;
+    if (renderTarget)
+        device->GetRenderTarget(0, &src);
+    else
+    {
+        IDirect3DBaseTexture9 *bt = nullptr;
+        if (SUCCEEDED(device->GetTexture(0, &bt)) && bt)
+        {
+            if (bt->GetType() == D3DRTYPE_TEXTURE)
+                static_cast<IDirect3DTexture9 *>(bt)->GetSurfaceLevel(0, &src);
+            bt->Release();
+        }
+    }
+    if (!src)
+    {
+        IVR_LOG("dump %s: nothing bound", name);
+        return;
+    }
+    DumpSurface(src, name);
+    src->Release();
+}
+
+void D3DVR::DumpSurface(IDirect3DSurface9 *src, const char *name)
+{
+    D3DSURFACE_DESC d{};
+    src->GetDesc(&d);
+    IDirect3DSurface9 *rt = nullptr, *sys = nullptr;
+    HRESULT hr = device->CreateRenderTarget(d.Width, d.Height, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &rt,
+                                            nullptr);
+    if (SUCCEEDED(hr))
+        hr = device->StretchRect(src, nullptr, rt, nullptr, D3DTEXF_NONE);
+    if (SUCCEEDED(hr))
+        hr = device->CreateOffscreenPlainSurface(d.Width, d.Height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &sys, nullptr);
+    if (SUCCEEDED(hr))
+        hr = device->GetRenderTargetData(rt, sys);
+    D3DLOCKED_RECT lr{};
+    if (SUCCEEDED(hr))
+        hr = sys->LockRect(&lr, nullptr, D3DLOCK_READONLY);
+    if (SUCCEEDED(hr))
+    {
+        // Big pictures are halved; small ones (the glow) kept at full size.
+        const UINT step = d.Width > 1200 ? 2 : 1;
+        const UINT w = d.Width / step, h = d.Height / step;
+        const UINT pitch = (w * 3 + 3) & ~3u;
+        std::vector<uint8_t> img(pitch * h);
+        float maxA = 0;
+        for (UINT y = 0; y < h; ++y)
+        {
+            // BMP rows run bottom to top
+            uint8_t *out = img.data() + (h - 1 - y) * pitch;
+            const uint8_t *row = static_cast<const uint8_t *>(lr.pBits) + (y * step) * lr.Pitch;
+            for (UINT x = 0; x < w; ++x)
+            {
+                const uint8_t *px = row + (x * step) * 4;
+                out[x * 3 + 0] = px[0];
+                out[x * 3 + 1] = px[1];
+                out[x * 3 + 2] = px[2];
+                maxA = std::max(maxA, (float)px[3]);
+            }
+        }
+        sys->UnlockRect();
+        std::string path = ModDir() + name + ".bmp";
+        if (FILE *f = fopen(path.c_str(), "wb"))
+        {
+            uint8_t hdr[54] = {'B', 'M'};
+            auto put32 = [&](int at, uint32_t v) { std::memcpy(hdr + at, &v, 4); };
+            put32(2, 54 + (uint32_t)img.size());
+            put32(10, 54);
+            put32(14, 40);
+            put32(18, w);
+            put32(22, h);
+            hdr[26] = 1;
+            hdr[28] = 24;
+            put32(34, (uint32_t)img.size());
+            fwrite(hdr, 1, 54, f);
+            fwrite(img.data(), 1, img.size(), f);
+            fclose(f);
+        }
+        IVR_LOG("dump %s: %p %ux%u ms%d format %d saved as %s (%ux%u)", name, (void *)src, d.Width, d.Height,
+                (int)d.MultiSampleType, (int)d.Format, path.c_str(), w, h);
+    }
+    else
+        IVR_LOG("dump %s: %p %ux%u ms%d format %d could not be read (0x%08lx)", name, (void *)src, d.Width, d.Height,
+                (int)d.MultiSampleType, (int)d.Format, (unsigned long)hr);
+    if (sys)
+        sys->Release();
+    if (rt)
+        rt->Release();
+}
+
+// Where on the HUD panel something is drawn (subtitles, hints): the 32x32 probe misses small text.
+// The first time something shows, the panel is also saved as infravr\hud_panel.bmp.
+void D3DVR::LogHudContent()
+{
+    if (!device || !hud.d3d)
+        return;
+    IDirect3DSurface9 *src = nullptr;
+    if (FAILED(hud.d3d->GetSurfaceLevel(0, &src)) || !src)
+        return;
+    D3DSURFACE_DESC d{};
+    src->GetDesc(&d);
+    IDirect3DSurface9 *sys = nullptr;
+    D3DLOCKED_RECT lr{};
+    if (SUCCEEDED(device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &sys, nullptr)) &&
+        SUCCEEDED(device->GetRenderTargetData(src, sys)) && SUCCEEDED(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY)))
+    {
+        if (d.Format == D3DFMT_A8R8G8B8)
+        {
+            int x0 = INT_MAX, y0 = INT_MAX, x1 = -1, y1 = -1, count = 0;
+            for (UINT y = 0; y < d.Height; ++y)
+            {
+                const uint8_t *row = static_cast<const uint8_t *>(lr.pBits) + y * lr.Pitch;
+                for (UINT x = 0; x < d.Width; ++x)
+                    if (row[x * 4 + 3] > 16)
+                    {
+                        ++count;
+                        x0 = std::min(x0, (int)x);
+                        x1 = std::max(x1, (int)x);
+                        y0 = std::min(y0, (int)y);
+                        y1 = std::max(y1, (int)y);
+                    }
+            }
+            if (count)
+                IVR_LOG("probe: HUD panel has %d drawn pixels in %d,%d-%d,%d of %ux%u", count, x0, y0, x1, y1, d.Width,
+                        d.Height);
+            else
+                IVR_LOG("probe: HUD panel is empty (%ux%u)", d.Width, d.Height);
+            static bool s_saved = false;
+            if (count && !s_saved)
+            {
+                s_saved = true;
+                const UINT w = d.Width / 2, h = d.Height / 2, pitch = (w * 3 + 3) & ~3u;
+                std::vector<uint8_t> img(pitch * h);
+                for (UINT y = 0; y < h; ++y)
+                {
+                    uint8_t *out = img.data() + (h - 1 - y) * pitch;
+                    const uint8_t *row = static_cast<const uint8_t *>(lr.pBits) + (y * 2) * lr.Pitch;
+                    for (UINT x = 0; x < w; ++x)
+                    {
+                        const uint8_t *px = row + x * 8;
+                        // over grey, so the panel's see-through parts show
+                        for (int c = 0; c < 3; ++c)
+                            out[x * 3 + c] = (uint8_t)((px[c] * px[3] + 64 * (255 - px[3])) / 255);
+                    }
+                }
+                std::string path = ModDir() + "hud_panel.bmp";
+                if (FILE *f = fopen(path.c_str(), "wb"))
+                {
+                    uint8_t hdr[54] = {'B', 'M'};
+                    auto put32 = [&](int at, uint32_t v) { std::memcpy(hdr + at, &v, 4); };
+                    put32(2, 54 + (uint32_t)img.size());
+                    put32(10, 54);
+                    put32(14, 40);
+                    put32(18, w);
+                    put32(22, h);
+                    hdr[26] = 1;
+                    hdr[28] = 24;
+                    put32(34, (uint32_t)img.size());
+                    fwrite(hdr, 1, 54, f);
+                    fwrite(img.data(), 1, img.size(), f);
+                    fclose(f);
+                    IVR_LOG("probe: HUD panel saved as %s", path.c_str());
+                }
+            }
+        }
+        else
+            IVR_LOG("probe: HUD panel format %d not checked", (int)d.Format);
+        sys->UnlockRect();
+    }
+    if (sys)
+        sys->Release();
+    src->Release();
+}
+
 void D3DVR::ProbeFrame(bool stereo, bool hudOn)
 {
     double now = NowSeconds();
@@ -759,6 +942,7 @@ void D3DVR::ProbeFrame(bool stereo, bool hudOn)
         {
             ProbeStats h = Probe(hud, nullptr);
             IVR_LOG("probe: HUD panel %.0f%% opaque", h.opaque * 100.0f);
+            LogHudContent();
             if (h.ok && h.opaque > 0.6f && !hudBroken)
             {
                 hudBroken = true;
@@ -826,12 +1010,46 @@ vr::VRVulkanTextureData_t D3DVR::VulkanData(const VrTexture &t) const
 
 static const VkImageSubresourceRange kColorRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
+// DXVK (2.5 and later) defragments video memory: it may move a texture into new memory, which gives
+// it a new VkImage and destroys the old one once the GPU is done with it. The D3D9 interop does not
+// pin the images it hands out, so a VkImage remembered at Attach can be a dead one minutes later,
+// typically right after a level load frees a lot of memory. SteamVR given a dead image crashes
+// inside NVIDIA's Vulkan driver (crash dump: IVROverlay::SetOverlayTexture for the subtitle panel,
+// null read in nvoglv32.dll). Defragmentation is turned off at startup (DXVK_CONFIG, d3d9_proxy.cpp);
+// this asks DXVK for each image's current handle before every hand-over in case it moved anyway.
+void D3DVR::RefreshImages(VrTexture *const *textures, int count)
+{
+    static int s_moves = 0;
+    for (int i = 0; i < count; ++i)
+    {
+        VrTexture &t = *textures[i];
+        if (!t.interop)
+            continue;
+        VkImage img = VK_NULL_HANDLE;
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (FAILED(t.interop->GetVulkanImageInfo(&img, &layout, nullptr)) || !img)
+            continue;
+        if (img != t.image)
+        {
+            if (s_moves < 20)
+            {
+                ++s_moves;
+                IVR_LOG("VR texture %p: DXVK moved it, VkImage %llx -> %llx", t.d3d,
+                        (unsigned long long)(uintptr_t)t.image, (unsigned long long)(uintptr_t)img);
+            }
+            t.image = img;
+            t.layout = layout;
+        }
+    }
+}
+
 void D3DVR::BeginVulkanAccess(VrTexture *const *textures, int count)
 {
     for (int i = 0; i < count; ++i)
         m_interop->TransitionTextureLayout(textures[i]->interop, &kColorRange, textures[i]->layout,
                                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    m_interop->FlushRenderingCommands();
+    m_interop->FlushRenderingCommands(); // also waits for DXVK's worker, so no move is half done
+    RefreshImages(textures, count);
     m_interop->LockSubmissionQueue();
 }
 

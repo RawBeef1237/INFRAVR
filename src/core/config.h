@@ -38,6 +38,8 @@ struct Config
     bool mirrorToDesktop = true;
     bool mirrorFill = true; // crop the eye to the window shape (16:9) instead of letterboxing
     int antialiasing = 4;   // MSAA samples for the eye images: 0 (off), 2, 4 or 8
+    bool motionBlur = false;   // keep INFRA's motion blur (smears the image in VR)
+    bool clearStencil = true;  // clear the eyes' stencil buffer with their depth buffer (selection glow)
     bool offCenterEyes = true; // OpenXR: draw each eye with only its own field of view (off-center)
     bool multicore = false; // let the engine render on its own thread (mat_queue_mode 2)
     std::string dxvk = "stock"; // stock = dxvk_d3d9.dll (DXVK 2.7.1), gplall = dxvk_d3d9_gplall.dll
@@ -96,6 +98,30 @@ struct Config
 
     // [aim]
     float aimPitch = 0.0f;   // extra pitch applied to the controller aim ray (degrees, + = down)
+    // "Use" (buttons, doors, pick-ups) and INFRA's selection outline search from the hand along
+    // where it points, never from the eyes.
+    bool handUse = true;
+    // Held physics objects go to the hand that holds them and turn with it, and that hand is hidden
+    // (Half-Life 2: VR's way). false = held in front of the hand at the game's own distance.
+    bool holdInHand = true;
+    // How a held object is turned: Upright = stood upright along the controller's up axis, keeping
+    // the way it faced when picked up and turning with the hand; Hand = keeps its whole rotation at
+    // pick-up relative to the hand; Keep = keeps its rotation in the world.
+    enum HoldRotation { HoldUpright, HoldHand, HoldKeep };
+    int holdRotation = HoldUpright;
+    float holdOffset = 0.04f; // metres in front of the controller where the held point sits
+    float handoffRadius = 0.30f; // grip with the other hand this close (metres) to take a held object
+    bool heldNoCollide = true;
+    bool twoHandHold = true;   // a second physics object in the other hand
+    float secondReach = 0.15f; // metres from the hand to the object's box for that grab
+    // Pointer finger: only the index finger out (finger tracking) and its tip touching an item uses it.
+    bool pointerTouch = true;
+    float pointerReach = 0.02f;     // metres from the fingertip to the item's box
+    float pointerTipForward = 0.10f; // fingertip: metres in front of the controller...
+    float pointerTipUp = 0.0f;       // ...and above it
+    float pointerIndexCurl = 0.35f;  // index finger curl below this = out
+    float pointerOtherCurl = 0.55f;  // middle, ring and pinky curl above this = closed // held physics objects pass through the player
+    float grabReach = 0.35f; // metres around the hand searched when the hand is right at an object
 
     // [holsters]
     bool holsters = true;

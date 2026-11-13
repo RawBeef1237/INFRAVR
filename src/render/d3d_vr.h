@@ -97,6 +97,10 @@ public:
     IDirect3DSurface9 *cameraTemp = nullptr; // lens view, resolved, before it is stretched into cameraSurface
     int traceDraws = 0;
     void TraceSurface(const char *what, IDirect3DSurface9 *s, const RECT *r = nullptr);
+    // Saves the bound render target 0 (or the texture on stage 0) as infravr\<name>.bmp, half size.
+    void DumpBound(bool renderTarget, const char *name);
+    void DumpSurface(IDirect3DSurface9 *src, const char *name);
+    void DumpStencil(const char *name); // d3d9_proxy.cpp
     void OnTextureCreated(IDirect3DTexture9 *tex, UINT w, UINT h, DWORD usage);
     // Fallback: identify the texture currently bound as render target 0.
     bool CaptureBoundRenderTarget(VrTexture &out, UINT width, UINT height);
@@ -135,6 +139,7 @@ private:
     };
     ProbeStats Probe(const VrTexture &t, const vr::VRTextureBounds_t *bounds);
     void ProbeFrame(bool stereo, bool hudOn);
+    void LogHudContent();
     bool MeasureSmear(const VrTexture &t, const char *what, UINT &picW, UINT &picH);
     void MakeOpaque(const VrTexture &t);
     bool BuildSubtitlePanel(); // subsRaw -> subs at Present
@@ -145,6 +150,7 @@ private:
     int m_subsLogs = 0;
     void ReleaseHelpers();
     bool EnsureOwnTextures();
+    void RefreshImages(VrTexture *const *textures, int count); // DXVK may move images
     void BeginVulkanAccess(VrTexture *const *textures, int count);
     void EndVulkanAccess(VrTexture *const *textures, int count);
     vr::VRVulkanTextureData_t VulkanData(const VrTexture &t) const;

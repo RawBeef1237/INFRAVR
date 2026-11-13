@@ -70,6 +70,49 @@ public:
     bool IsHoldingObject() const;
     Vector grabHandPos;           // world, written by OnCreateMove
     QAngle grabHandAngles;
+    // Hand-based "use": the hooks on FindUseEntity (server: what "use" acts on; client: what INFRA's
+    // selection outline marks) make it search from the hand instead of the eyes.
+    bool handUseServer = false;   // server FindUseEntity + EyePosition hooks installed
+    bool handUseClient = false;   // client FindUseEntity + EyePosition + EyeAngles hooks installed
+    bool holdInHandReady = false; // server SetTargetPosition hook installed
+    Vector useStart;              // server use search for interactHand (written by OnCreateMove)
+    QAngle useAngles;
+    Vector holdPos;               // where a held object's grab point goes (interactHand)
+    Vector holdRel;               // holdPos relative to the engine's view origin (the server adds
+                                  // it to the player's own eye position, so moving doesn't hitch)
+    int heldEntIndex = -1;        // entity index of the object held in the hand (server handle & 0xFFFF)
+    Vector handPos[2];            // each controller in the world, this tick
+    Mat3 handRot[2];
+    Mat3 holdRot;                 // that hand's rotation
+    // Pointer finger: a hand with only the index finger out touches things with its tip.
+    bool IsPointing(int hand) const;
+    Vector PointerTip(int hand) const; // the index fingertip in the world
+    // The drawn hand's index fingertip (hands renderer, each frame it is drawn); PointerTip uses
+    // it while it is fresh, else an estimate from the controller.
+    void SetFingerTip(int hand, const Vector &p);
+    Vector fingerTip[2];
+    double fingerTipAt[2] = {-1.0, -1.0};
+    bool pointerTouching[2] = {false, false}; // the tip is on something usable (client outline search)
+    bool pointerPress[2] = {false, false};    // just touched it: OnCreateMove presses "use"
+    double pointerUseUntil = -1.0;            // the server's use search is the fingertip's until then
+    int pointerHand = -1;
+    bool PointerUseActive() const;
+    bool HandUseActive() const;
+    // The use search for one hand: starts a little behind the controller (so something the hand
+    // is already touching is found too) and goes along where the hand points.
+    void UseRay(int hand, Vector &start, QAngle &angles) const;
+    // The hand that holds a physics object and is hidden for it, or -1.
+    int HeldObjectHand() const;
+    // Second object, carried in the other hand by the mod's own grab controller (server side,
+    // SecondHoldFrame in hooks_game.cpp). The grip asks; the server picks up or lets go.
+    Vector holdPosH[2], holdRelH[2]; // each hand's hold point (as holdPos / holdRel)
+    Mat3 holdRotH[2];
+    int secondRequest = -1;       // hand that just gripped while the other one carries something
+    bool secondRelease = false;   // the second object's hand let go
+    float secondReleaseSpeed = 0; // m/s, how fast that hand was moving (a throw)
+    int secondHand = -1;          // the hand carrying the second object (set by the server), or -1
+    int secondEntIndex = -1;      // its entity index
+    int SecondHeldHand() const { return menuMode ? -1 : secondHand; }
     Vector lensPos;
     QAngle lensAngles;
 
