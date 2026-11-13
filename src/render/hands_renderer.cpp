@@ -356,6 +356,91 @@ ItemModel g_items[ITEM_COUNT] = {
 std::atomic<bool> g_phoneCall{false}; // INFRA shows its call screen on the phone
 std::mutex g_boneLock;
 
+// The camera's glass sits at the bottom of a recess (camera_hand.glb: 5.7 mm deep, black walls),
+// so the picture looked smaller than the black opening around it. Each corner of the screen quad
+// is moved to the corner of the opening straight in front of it: the nearest vertex of the
+// camera's own mesh a little in front of the glass and just beside the corner (the top of the
+// recess wall), a hair behind it so the bezel still frames the picture.
+void RaiseScreen(ModelData &md, int camMat)
+{
+    GlbModel &m = md.glb;
+    if (md.screenIndices.size() < 3)
+        return;
+    std::vector<char> onScreen(m.vertices.size(), 0), elsewhere(m.vertices.size(), 0);
+    for (uint16_t i : md.screenIndices)
+        onScreen[i] = 1;
+    for (const Batch &b : md.batches)
+        for (uint16_t i : b.indices)
+            elsewhere[i] = 1;
+    auto P = [&](int i) { return Vector(m.vertices[i].pos[0], m.vertices[i].pos[1], m.vertices[i].pos[2]); };
+    const uint16_t *t = md.screenIndices.data();
+    Vector n = Cross(P(t[1]) - P(t[0]), P(t[2]) - P(t[0]));
+    float size = 0;
+    for (size_t k = 0; k < md.screenIndices.size(); ++k)
+        for (size_t l = 0; l < k; ++l)
+            size = std::max(size, (P(md.screenIndices[k]) - P(md.screenIndices[l])).Length());
+    if (n.Length() < 1e-12f || size < 1e-6f)
+        return;
+    n = n.Normalized();
+    // The camera mesh's own vertices (not the screen's).
+    std::vector<int> body;
+    for (const GlbPrimitive &p : m.primitives)
+        if (p.material == camMat)
+            for (uint32_t i = p.firstIndex; i < p.firstIndex + p.indexCount; ++i)
+                if (!onScreen[m.indices[i]])
+                    body.push_back(m.indices[i]);
+    std::sort(body.begin(), body.end());
+    body.erase(std::unique(body.begin(), body.end()), body.end());
+    std::vector<int> corners;
+    for (size_t k = 0; k < m.vertices.size(); ++k)
+        if (onScreen[k])
+            corners.push_back((int)k);
+    struct Move
+    {
+        int v;
+        Vector to;
+    };
+    std::vector<Move> moves;
+    float depth = 0;
+    for (int c : corners)
+    {
+        if (elsewhere[c])
+        {
+            IVR_LOG("Camera model: the screen shares vertices with the body - left in the recess");
+            return;
+        }
+        Vector pc = P(c);
+        int best = -1;
+        float bestD = 0, bestSide = 0;
+        for (int b : body)
+        {
+            Vector d = P(b) - pc;
+            float along = Dot(d, n);
+            float side = (d - n * along).Length();
+            if (std::fabs(along) < 0.01f * size || std::fabs(along) > 0.2f * size || side > 0.04f * size)
+                continue;
+            if (best < 0 || side < bestSide) // straight in front of the corner: the wall's top
+                best = b, bestD = along, bestSide = side;
+        }
+        if (best < 0 || (depth != 0 && (bestD > 0) != (depth > 0)))
+        {
+            IVR_LOG("Camera model: no recess found around the screen - left as it is");
+            return;
+        }
+        depth = bestD;
+        float inset = (bestD > 0 ? 1.0f : -1.0f) * 0.003f * size;
+        moves.push_back({c, P(best) - n * inset});
+    }
+    for (const Move &mv : moves)
+    {
+        m.vertices[mv.v].pos[0] = mv.to.x;
+        m.vertices[mv.v].pos[1] = mv.to.y;
+        m.vertices[mv.v].pos[2] = mv.to.z;
+    }
+    IVR_LOG("Camera model: screen raised %.1f%% of its width out of the recess, to fill the black opening",
+            std::fabs(depth) / size * 100.0f);
+}
+
 void BuildBatches(ModelData &md, bool camera)
 {
     const GlbModel &m = md.glb;
@@ -403,6 +488,8 @@ void BuildBatches(ModelData &md, bool camera)
     }
     if (!camera)
         return;
+    if (g_Config.cameraScreenFlush)
+        RaiseScreen(md, camMat);
 
     // Screen: texture coordinates across it, and its shape (least squares P = A + s U + t V).
     md.screenST.assign(m.vertices.size() * 2, 0.0f);
@@ -1405,11 +1492,18 @@ IDirect3DTexture9 *ScreenTexture(float aspect, float rect[4])
         return nullptr;
     D3DSURFACE_DESC d{};
     IDirect3DTexture9 *tex = nullptr;
-    if (FAILED(s->GetDesc(&d)) || !d.Width || !d.Height ||
-        FAILED(s->GetContainer(kIID_Texture9, reinterpret_cast<void **>(&tex))) || !tex)
+    // The photo just taken, else the mod's own mipped copy of the lens view (d3d9_proxy.cpp).
+    IDirect3DTexture9 *own = g_D3D.photoTex && NowSeconds() < g_D3D.photoUntil ? g_D3D.photoTex : g_D3D.screenTex;
+    if (own)
+    {
+        own->AddRef();
+        tex = own;
+    }
+    else if (FAILED(s->GetDesc(&d)) || !d.Width || !d.Height ||
+             FAILED(s->GetContainer(kIID_Texture9, reinterpret_cast<void **>(&tex))) || !tex)
         return nullptr;
-    // The lens view is stretched over the whole texture (see hkStretchRect); crop it to the
-    // screen's shape.
+    // The lens view fills the whole texture (INFRA's is stretched over it, see hkStretchRect); crop
+    // it to the screen's shape.
     float w = (float)g_D3D.learnW, h = (float)g_D3D.learnH;
     float cw = 1.0f, ch = 1.0f;
     if (w / h > aspect)
@@ -1577,8 +1671,22 @@ void Draw(const std::shared_ptr<Frame> &fr, const CViewSetup &v)
                 dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
                 dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
                 dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+                // Trilinear and anisotropic: the screen is seen small and at an angle.
+                DWORD minF = 0, magF = 0, mipF = 0, aniso = 0;
+                dev->GetSamplerState(0, D3DSAMP_MINFILTER, &minF);
+                dev->GetSamplerState(0, D3DSAMP_MAGFILTER, &magF);
+                dev->GetSamplerState(0, D3DSAMP_MIPFILTER, &mipF);
+                dev->GetSamplerState(0, D3DSAMP_MAXANISOTROPY, &aniso);
+                dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC);
+                dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+                dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+                dev->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, 8);
                 dev->SetTexture(0, screen);
                 dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)verts.size() / 3, verts.data(), sizeof(FVertex));
+                dev->SetSamplerState(0, D3DSAMP_MINFILTER, minF);
+                dev->SetSamplerState(0, D3DSAMP_MAGFILTER, magF);
+                dev->SetSamplerState(0, D3DSAMP_MIPFILTER, mipF);
+                dev->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, aniso);
                 dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
                 dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
                 dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);

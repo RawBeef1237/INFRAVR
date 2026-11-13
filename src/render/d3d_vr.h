@@ -95,6 +95,12 @@ public:
     bool blockCameraCopy = false;
     IDirect3DSurface9 *cameraSurface = nullptr;
     IDirect3DSurface9 *cameraTemp = nullptr; // lens view, resolved, before it is stretched into cameraSurface
+    // The mod's camera screen: the lens view at its own size with mipmaps, so the small screen
+    // stays sharp instead of sampling INFRA's big stretched texture; and the last photo taken.
+    IDirect3DTexture9 *screenTex = nullptr;
+    IDirect3DTexture9 *photoTex = nullptr;
+    double photoUntil = 0; // NowSeconds() until which the screen shows photoTex
+    int cameraReads = 0;   // copies out of cameraSurface seen (diagnostics)
     int traceDraws = 0;
     void TraceSurface(const char *what, IDirect3DSurface9 *s, const RECT *r = nullptr);
     // Saves the bound render target 0 (or the texture on stage 0) as infravr\<name>.bmp, half size.

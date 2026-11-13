@@ -116,6 +116,8 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 | flashlight_hand.glb | 22 skin joints named like v_light's (`Bip001 L Hand` first, fingers, `flashlight`, `body`); made in the same space as vr_hand_left.glb | static, wine |
 | camera_hand.glb | 22 skin joints named like v_camera's (`Bip001 R Hand`, fingers, `w_camera003`); its local bone transforms equal v_camera's bind pose; camera mesh skinned to `w_camera003` only; no animations of its own | static, wine (`tests/glb_test`) |
 | camera_hand.glb texture: screen quad / lens | UV 0.113 0.134 to 0.486 0.404 / centre 0.891 0.716, radius 0.044 (v is stored +1, wrapped) | static |
+| INFRA photo copy | C_INFRACamera::ClientThink (client.dll 0x1ae7b0) calls 0x1ae370 three frames after a shot: GetBackBufferDimensions, then CopyRenderTargetToTextureEx(_rt_CameraWeaponFreezeFrame, 0, {0,0,w,h}, {0,0,w,h}) with `_rt_CameraWeapon` as the render target. Both are full-frame-buffer size render targets (made in the ClientRenderTargets init at 0x221400), so with world_eye_size they are eye-sized while the copy is window-sized. The mod recognises it in StretchRect (source = the camera texture, same-size render target, corner rect) | static (client.dll disassembly, string refs `_rt_CameraWeaponFreezeFrame`, `infra_camera_flash_time`) |
+| INFRA camera materials | vgui viewfinder: UnlitGeneric `$basetexture _rt_CameraWeapon`, additive, `$hdrcolorscale 0.2`; freeze frame: the same with `_rt_CameraWeaponFreezeFrame`, `$hdrcolorscale 0.5` (pak01_048.vpk) | static |
 
 ## How to re-check after a game update
 
