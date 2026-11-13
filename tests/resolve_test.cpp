@@ -31,6 +31,13 @@ int main(int argc, char **argv)
            rva("server.dll", g_Game.fnGrabUpdateObject), rva("server.dll", g_Game.fnGrabUpdateObjectVM),
            rva("server.dll", g_Game.fnGrabComputeError), rva("server.dll", g_Game.fnPlayerEyeAngles),
            rva("server.dll", g_Game.fnPlayerShootPosition));
+    printf("SetTargetPosition %x FindUseEntity %x EyePosition %x | client FindUseEntity %x EyePosition %x EyeAngles %x\n",
+           rva("server.dll", g_Game.fnGrabSetTarget), rva("server.dll", g_Game.fnPlayerFindUseEntity),
+           rva("server.dll", g_Game.fnPlayerEyePosition), rva("client.dll", g_Game.fnClientFindUseEntity),
+           rva("client.dll", g_Game.fnClientEyePosition), rva("client.dll", g_Game.fnClientEyeAngles));
+    printf("CanUse %x SetCollisionGroup %x DetachEntity %x heldCollideCvar %x\n",
+           rva("server.dll", g_Game.fnPlayerCanUse), rva("server.dll", g_Game.fnSetCollisionGroup),
+           rva("server.dll", g_Game.fnGrabDetach), rva("server.dll", g_Game.heldCollideCvar));
     void **vt = FindVTable("client.dll", ".?AVC_INFRA_Player@@");
     printf("C_INFRA_Player vt %x [243]=%x\n", rva("client.dll", vt), vt ? rva("client.dll", vt[243]) : 0);
     // interfaces' vtables: check the indices we call point at plausible code

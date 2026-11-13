@@ -6,6 +6,11 @@
 #include "hands_renderer.h"
 
 #include <algorithm>
+#include <climits>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
 #include <cmath>
 
 namespace ivr {
@@ -132,6 +137,7 @@ void D3DVR::OnBeforeReset()
     // released by the engine itself (it recreates its render targets).
     blank.Reset();
     menu.Reset();
+    ReleaseSubtitles();
     for (auto &e : eye)
         e.Reset();
     hud.Reset();
@@ -712,6 +718,184 @@ bool D3DVR::MeasureSmear(const VrTexture &t, const char *what, UINT &picW, UINT 
     return ok;
 }
 
+void D3DVR::DumpBound(bool renderTarget, const char *name)
+{
+    if (!device)
+        return;
+    IDirect3DSurface9 *src = nullptr;
+    if (renderTarget)
+        device->GetRenderTarget(0, &src);
+    else
+    {
+        IDirect3DBaseTexture9 *bt = nullptr;
+        if (SUCCEEDED(device->GetTexture(0, &bt)) && bt)
+        {
+            if (bt->GetType() == D3DRTYPE_TEXTURE)
+                static_cast<IDirect3DTexture9 *>(bt)->GetSurfaceLevel(0, &src);
+            bt->Release();
+        }
+    }
+    if (!src)
+    {
+        IVR_LOG("dump %s: nothing bound", name);
+        return;
+    }
+    DumpSurface(src, name);
+    src->Release();
+}
+
+void D3DVR::DumpSurface(IDirect3DSurface9 *src, const char *name)
+{
+    D3DSURFACE_DESC d{};
+    src->GetDesc(&d);
+    IDirect3DSurface9 *rt = nullptr, *sys = nullptr;
+    HRESULT hr = device->CreateRenderTarget(d.Width, d.Height, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &rt,
+                                            nullptr);
+    if (SUCCEEDED(hr))
+        hr = device->StretchRect(src, nullptr, rt, nullptr, D3DTEXF_NONE);
+    if (SUCCEEDED(hr))
+        hr = device->CreateOffscreenPlainSurface(d.Width, d.Height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &sys, nullptr);
+    if (SUCCEEDED(hr))
+        hr = device->GetRenderTargetData(rt, sys);
+    D3DLOCKED_RECT lr{};
+    if (SUCCEEDED(hr))
+        hr = sys->LockRect(&lr, nullptr, D3DLOCK_READONLY);
+    if (SUCCEEDED(hr))
+    {
+        // Big pictures are halved; small ones (the glow) kept at full size.
+        const UINT step = d.Width > 1200 ? 2 : 1;
+        const UINT w = d.Width / step, h = d.Height / step;
+        const UINT pitch = (w * 3 + 3) & ~3u;
+        std::vector<uint8_t> img(pitch * h);
+        float maxA = 0;
+        for (UINT y = 0; y < h; ++y)
+        {
+            // BMP rows run bottom to top
+            uint8_t *out = img.data() + (h - 1 - y) * pitch;
+            const uint8_t *row = static_cast<const uint8_t *>(lr.pBits) + (y * step) * lr.Pitch;
+            for (UINT x = 0; x < w; ++x)
+            {
+                const uint8_t *px = row + (x * step) * 4;
+                out[x * 3 + 0] = px[0];
+                out[x * 3 + 1] = px[1];
+                out[x * 3 + 2] = px[2];
+                maxA = std::max(maxA, (float)px[3]);
+            }
+        }
+        sys->UnlockRect();
+        std::string path = ModDir() + name + ".bmp";
+        if (FILE *f = fopen(path.c_str(), "wb"))
+        {
+            uint8_t hdr[54] = {'B', 'M'};
+            auto put32 = [&](int at, uint32_t v) { std::memcpy(hdr + at, &v, 4); };
+            put32(2, 54 + (uint32_t)img.size());
+            put32(10, 54);
+            put32(14, 40);
+            put32(18, w);
+            put32(22, h);
+            hdr[26] = 1;
+            hdr[28] = 24;
+            put32(34, (uint32_t)img.size());
+            fwrite(hdr, 1, 54, f);
+            fwrite(img.data(), 1, img.size(), f);
+            fclose(f);
+        }
+        IVR_LOG("dump %s: %p %ux%u ms%d format %d saved as %s (%ux%u)", name, (void *)src, d.Width, d.Height,
+                (int)d.MultiSampleType, (int)d.Format, path.c_str(), w, h);
+    }
+    else
+        IVR_LOG("dump %s: %p %ux%u ms%d format %d could not be read (0x%08lx)", name, (void *)src, d.Width, d.Height,
+                (int)d.MultiSampleType, (int)d.Format, (unsigned long)hr);
+    if (sys)
+        sys->Release();
+    if (rt)
+        rt->Release();
+}
+
+// Where on the HUD panel something is drawn (subtitles, hints): the 32x32 probe misses small text.
+// The first time something shows, the panel is also saved as infravr\hud_panel.bmp.
+void D3DVR::LogHudContent()
+{
+    if (!device || !hud.d3d)
+        return;
+    IDirect3DSurface9 *src = nullptr;
+    if (FAILED(hud.d3d->GetSurfaceLevel(0, &src)) || !src)
+        return;
+    D3DSURFACE_DESC d{};
+    src->GetDesc(&d);
+    IDirect3DSurface9 *sys = nullptr;
+    D3DLOCKED_RECT lr{};
+    if (SUCCEEDED(device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &sys, nullptr)) &&
+        SUCCEEDED(device->GetRenderTargetData(src, sys)) && SUCCEEDED(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY)))
+    {
+        if (d.Format == D3DFMT_A8R8G8B8)
+        {
+            int x0 = INT_MAX, y0 = INT_MAX, x1 = -1, y1 = -1, count = 0;
+            for (UINT y = 0; y < d.Height; ++y)
+            {
+                const uint8_t *row = static_cast<const uint8_t *>(lr.pBits) + y * lr.Pitch;
+                for (UINT x = 0; x < d.Width; ++x)
+                    if (row[x * 4 + 3] > 16)
+                    {
+                        ++count;
+                        x0 = std::min(x0, (int)x);
+                        x1 = std::max(x1, (int)x);
+                        y0 = std::min(y0, (int)y);
+                        y1 = std::max(y1, (int)y);
+                    }
+            }
+            if (count)
+                IVR_LOG("probe: HUD panel has %d drawn pixels in %d,%d-%d,%d of %ux%u", count, x0, y0, x1, y1, d.Width,
+                        d.Height);
+            else
+                IVR_LOG("probe: HUD panel is empty (%ux%u)", d.Width, d.Height);
+            static bool s_saved = false;
+            if (count && !s_saved)
+            {
+                s_saved = true;
+                const UINT w = d.Width / 2, h = d.Height / 2, pitch = (w * 3 + 3) & ~3u;
+                std::vector<uint8_t> img(pitch * h);
+                for (UINT y = 0; y < h; ++y)
+                {
+                    uint8_t *out = img.data() + (h - 1 - y) * pitch;
+                    const uint8_t *row = static_cast<const uint8_t *>(lr.pBits) + (y * 2) * lr.Pitch;
+                    for (UINT x = 0; x < w; ++x)
+                    {
+                        const uint8_t *px = row + x * 8;
+                        // over grey, so the panel's see-through parts show
+                        for (int c = 0; c < 3; ++c)
+                            out[x * 3 + c] = (uint8_t)((px[c] * px[3] + 64 * (255 - px[3])) / 255);
+                    }
+                }
+                std::string path = ModDir() + "hud_panel.bmp";
+                if (FILE *f = fopen(path.c_str(), "wb"))
+                {
+                    uint8_t hdr[54] = {'B', 'M'};
+                    auto put32 = [&](int at, uint32_t v) { std::memcpy(hdr + at, &v, 4); };
+                    put32(2, 54 + (uint32_t)img.size());
+                    put32(10, 54);
+                    put32(14, 40);
+                    put32(18, w);
+                    put32(22, h);
+                    hdr[26] = 1;
+                    hdr[28] = 24;
+                    put32(34, (uint32_t)img.size());
+                    fwrite(hdr, 1, 54, f);
+                    fwrite(img.data(), 1, img.size(), f);
+                    fclose(f);
+                    IVR_LOG("probe: HUD panel saved as %s", path.c_str());
+                }
+            }
+        }
+        else
+            IVR_LOG("probe: HUD panel format %d not checked", (int)d.Format);
+        sys->UnlockRect();
+    }
+    if (sys)
+        sys->Release();
+    src->Release();
+}
+
 void D3DVR::ProbeFrame(bool stereo, bool hudOn)
 {
     double now = NowSeconds();
@@ -747,10 +931,18 @@ void D3DVR::ProbeFrame(bool stereo, bool hudOn)
         }
         else
             m_blackEyeProbes = 0;
+        if (m_subsShown)
+        {
+            // raw = as the game left it, panel = what the headset gets (alpha rebuilt)
+            ProbeStats r = Probe(subsRaw, nullptr), p = Probe(subs, nullptr);
+            IVR_LOG("probe: subtitle panel brightness max %.0f; game alpha %.0f%% opaque, panel %.0f%% opaque", p.max,
+                    r.opaque * 100.0f, p.opaque * 100.0f);
+        }
         if (hudOn)
         {
             ProbeStats h = Probe(hud, nullptr);
             IVR_LOG("probe: HUD panel %.0f%% opaque", h.opaque * 100.0f);
+            LogHudContent();
             if (h.ok && h.opaque > 0.6f && !hudBroken)
             {
                 hudBroken = true;
@@ -894,6 +1086,7 @@ void D3DVR::OnPresent()
 
     bool stereo = g_Mod.eyesRendered && !g_Mod.menuMode && eye[0].Valid() && eye[1].Valid();
     bool hudOn = stereo && g_Mod.hudPainted && hud.Valid() && (!hudBroken || g_Mod.phoneMenu);
+    bool subsOn = stereo && g_Mod.subsPainted && subsRaw.Valid() && !g_VR.IsOpenXR();
     // Phone (pause) menu but no new 3D view this frame: show the last one again, tagged with the
     // head pose it was drawn for, so SteamVR keeps it fixed in the world while you look around.
     bool reuse = !stereo && g_Mod.phoneMenu && !g_Mod.menuMode && m_haveLastEyes && eye[0].Valid() &&
@@ -918,6 +1111,7 @@ void D3DVR::OnPresent()
         m_haveLastEyes = false;
     g_Mod.eyesRendered = false;
     g_Mod.hudPainted = false;
+    g_Mod.subsPainted = false;
     if (g_VR.IsOpenXR())
         XrHandOver();
     if (reuse && g_VR.IsOpenXR())
@@ -962,6 +1156,11 @@ void D3DVR::OnPresent()
     }
     else
         CopyBackBufferToMenu();
+    if (subsOn)
+        subsOn = BuildSubtitlePanel();
+    m_subsShown = subsOn;
+    if (!stereo)
+        g_Mod.ShowSubtitles(false);
     ProbeFrame(stereo, hudOn && !g_Mod.phoneMenu); // the pause menu may be opaque on purpose
     hudOn = hudOn && (!hudBroken || g_Mod.phoneMenu);
     if (!stereo)
@@ -982,7 +1181,7 @@ void D3DVR::OnPresent()
         return;
     }
 
-    VrTexture *list[3];
+    VrTexture *list[4];
     int n = 0;
     if (stereo)
     {
@@ -990,6 +1189,8 @@ void D3DVR::OnPresent()
         list[n++] = &eye[1];
         if (hudOn)
             list[n++] = &hud;
+        if (subsOn)
+            list[n++] = &subs;
     }
     else
     {
@@ -1020,6 +1221,13 @@ void D3DVR::OnPresent()
             vr::Texture_t th = {&h, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
             g_VR.Overlays()->SetOverlayTexture(g_Mod.hudOverlay, th);
         }
+        if (subsOn)
+        {
+            vr::VRVulkanTextureData_t sd = VulkanData(subs);
+            vr::Texture_t ts = {&sd, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
+            g_VR.Overlays()->SetOverlayTexture(g_Mod.subsOverlay, ts);
+        }
+        g_Mod.ShowSubtitles(subsOn);
     }
     else
     {

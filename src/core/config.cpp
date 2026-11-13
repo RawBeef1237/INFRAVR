@@ -113,6 +113,8 @@ void LoadConfig()
     c.mirrorFill = ini.GetBool("vr.mirror_fill", c.mirrorFill);
     c.antialiasing = ini.GetInt("vr.antialiasing", c.antialiasing);
     c.offCenterEyes = ini.GetBool("vr.offcenter_eyes", c.offCenterEyes);
+    c.motionBlur = ini.GetBool("vr.motion_blur", c.motionBlur);
+    c.clearStencil = ini.GetBool("vr.clear_stencil", c.clearStencil);
     if (c.antialiasing != 2 && c.antialiasing != 4 && c.antialiasing != 8)
         c.antialiasing = 0;
     c.multicore = ini.GetBool("vr.multicore", c.multicore);
@@ -124,6 +126,23 @@ void LoadConfig()
     c.hudDistance = ini.GetFloat("vr.hud_distance", c.hudDistance);
     c.hudWidth = ini.GetFloat("vr.hud_width", c.hudWidth);
     c.hudDown = ini.GetFloat("vr.hud_down", c.hudDown);
+    c.subtitles = ini.GetBool("subtitles.enabled", c.subtitles);
+    c.subtitlesDistance = ini.GetFloat("subtitles.distance", c.subtitlesDistance);
+    c.subtitlesWidth = ini.GetFloat("subtitles.width", c.subtitlesWidth);
+    c.subtitlesDown = ini.GetFloat("subtitles.down", c.subtitlesDown);
+    c.subtitlesGain = ini.GetFloat("subtitles.gain", c.subtitlesGain);
+    c.subtitlesBackground = std::clamp(ini.GetFloat("subtitles.background", c.subtitlesBackground), 0.0f, 1.0f);
+    c.subtitlesOnPhone = ini.GetBool("subtitles.on_phone", c.subtitlesOnPhone);
+    c.subtitlesHudPanel = ini.GetBool("subtitles.hud_panel", c.subtitlesHudPanel);
+    {
+        std::string r = ini.GetString("subtitles.region", "");
+        float v[4];
+        if (!r.empty() && std::sscanf(r.c_str(), "%f %f %f %f", &v[0], &v[1], &v[2], &v[3]) == 4 && v[2] > v[0] &&
+            v[3] > v[1])
+            std::copy(v, v + 4, c.subtitlesRegion);
+    }
+    if (c.subtitlesWidth < 0.05f)
+        c.subtitlesWidth = 0.05f;
     c.menuDistance = ini.GetFloat("vr.menu_distance", c.menuDistance);
     c.menuWidth = ini.GetFloat("vr.menu_width", c.menuWidth);
     c.postProcessing = ini.GetBool("vr.post_processing", c.postProcessing);
@@ -148,6 +167,24 @@ void LoadConfig()
     c.stickDeadzone = ini.GetFloat("movement.stick_deadzone", c.stickDeadzone);
 
     c.aimPitch = ini.GetFloat("aim.aim_pitch", c.aimPitch);
+    c.handUse = ini.GetBool("aim.hand_use", c.handUse);
+    c.holdInHand = ini.GetBool("aim.hold_in_hand", c.holdInHand);
+    {
+        std::string r = Lower(ini.GetString("aim.hold_rotation", "upright"));
+        c.holdRotation = r == "keep" ? Config::HoldKeep : r == "hand" ? Config::HoldHand : Config::HoldUpright;
+    }
+    c.holdOffset = ini.GetFloat("aim.hold_offset", c.holdOffset);
+    c.handoffRadius = ini.GetFloat("aim.handoff_radius", c.handoffRadius);
+    c.grabReach = ini.GetFloat("aim.grab_reach", c.grabReach);
+    c.heldNoCollide = ini.GetBool("aim.held_no_collide", c.heldNoCollide);
+    c.twoHandHold = ini.GetBool("aim.two_hand_hold", c.twoHandHold);
+    c.secondReach = ini.GetFloat("aim.second_reach", c.secondReach);
+    c.pointerTouch = ini.GetBool("aim.pointer_touch", c.pointerTouch);
+    c.pointerReach = ini.GetFloat("aim.pointer_reach", c.pointerReach);
+    c.pointerTipForward = ini.GetFloat("aim.pointer_tip_forward", c.pointerTipForward);
+    c.pointerTipUp = ini.GetFloat("aim.pointer_tip_up", c.pointerTipUp);
+    c.pointerIndexCurl = ini.GetFloat("aim.pointer_index_curl", c.pointerIndexCurl);
+    c.pointerOtherCurl = ini.GetFloat("aim.pointer_other_curl", c.pointerOtherCurl);
 
     c.holsters = ini.GetBool("holsters.enabled", c.holsters);
     c.hipHeight = ini.GetFloat("holsters.hip_height", c.hipHeight);

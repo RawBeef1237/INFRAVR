@@ -89,6 +89,23 @@ bool VRMod::Init()
             ov->SetOverlayTransformHeadRelative(hudOverlay, m);
             ov->SetOverlaySortOrder(hudOverlay, 1);
         }
+        if (SubtitleLayer())
+        {
+            if (ov->CreateOverlay("infravr.subtitles", "INFRA subtitles", &subsOverlay) != vr::VROverlayError_None)
+                IVR_ERR("CreateOverlay(subtitles) failed - subtitles stay on the HUD panel");
+            else
+            {
+                ov->SetOverlayWidthInMeters(subsOverlay, g_Config.subtitlesWidth);
+                vr::HmdMatrix34_t m = {
+                    {{1, 0, 0, 0}, {0, 1, 0, -g_Config.subtitlesDown}, {0, 0, 1, -g_Config.subtitlesDistance}}};
+                ov->SetOverlayTransformHeadRelative(subsOverlay, m);
+                ov->SetOverlaySortOrder(subsOverlay, 1);
+                IVR_LOG("Subtitles: own panel, %.2f m wide, %.2f m away, %.2f m down", g_Config.subtitlesWidth,
+                        g_Config.subtitlesDistance, g_Config.subtitlesDown);
+            }
+        }
+        else if (g_Config.subtitles)
+            IVR_LOG("Subtitles: no panel of their own (needs hud_mode = overlay and the OpenVR backend)");
     }
     m_active = true;
     return true;
@@ -97,6 +114,50 @@ bool VRMod::Init()
 int VRMod::Dominant() const { return g_Config.leftHanded ? HAND_LEFT : HAND_RIGHT; }
 
 bool VRMod::IsHoldingObject() const { return lastGrabUpdate > 0 && NowSeconds() - lastGrabUpdate < 0.25; }
+
+bool VRMod::HandUseActive() const { return g_Config.handUse && handUseServer; }
+
+void VRMod::UseRay(int hand, Vector &start, QAngle &angles) const
+{
+    constexpr float kBehind = 4.0f; // game units behind the controller
+    Pose p = AimWorld(hand);
+    start = p.pos - p.rot.Forward() * kBehind;
+    angles = p.Angles();
+}
+
+bool VRMod::IsPointing(int hand) const
+{
+    if (!g_Config.pointerTouch || hand < 0 || hand > 1 || !HandValid(hand))
+        return false;
+    const float *c = g_VR.fingerCurl[hand];
+    return c[1] < g_Config.pointerIndexCurl && c[2] > g_Config.pointerOtherCurl &&
+           c[3] > g_Config.pointerOtherCurl && c[4] > g_Config.pointerOtherCurl;
+}
+
+void VRMod::SetFingerTip(int hand, const Vector &p)
+{
+    if (hand < 0 || hand > 1 || !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+        return;
+    fingerTip[hand] = p;
+    fingerTipAt[hand] = NowSeconds();
+}
+
+Vector VRMod::PointerTip(int hand) const
+{
+    if (NowSeconds() - fingerTipAt[hand] < 0.2 && (fingerTip[hand] - handPos[hand]).Length() < 0.3f * m_scale)
+        return fingerTip[hand];
+    return handPos[hand] + handRot[hand] * Vector(g_Config.pointerTipForward * m_scale, 0,
+                                                  g_Config.pointerTipUp * m_scale);
+}
+
+bool VRMod::PointerUseActive() const { return pointerHand >= 0 && NowSeconds() < pointerUseUntil; }
+
+int VRMod::HeldObjectHand() const
+{
+    if (!g_Config.holdInHand || !holdInHandReady || menuMode || !IsHoldingObject())
+        return -1;
+    return HandValid(interactHand) ? interactHand : -1;
+}
 
 // --- tracking -> world -----------------------------------------------------------------
 Pose VRMod::HeadWorld() const
@@ -139,13 +200,16 @@ Pose VRMod::AimWorld(int hand) const
     return p;
 }
 
-// "Use" is traced by the game from the player's eye, not from the hand. Aiming that trace along
-// the hand's direction misses small things like keycard readers by the hand-to-eye offset, so
-// aim it from the eye at a point on the hand's ray, about where the hand is pointing.
+// With hand_use the game's use search itself starts at the hand (FindUseEntity hooks), so the
+// command just points where the hand points. Without those hooks "use" is traced from the
+// player's eye: aiming that trace along the hand's direction misses small things like keycard
+// readers by the hand-to-eye offset, so it is aimed from the eye at a point on the hand's ray.
 QAngle VRMod::UseAimAngles(int hand) const
 {
     constexpr float kReach = 48.0f; // units past the hand, about the game's use distance
     Pose p = AimWorld(hand);
+    if (HandUseActive())
+        return p.Angles();
     Vector target = p.pos + p.rot * Vector(kReach, 0, 0);
     Vector d = target - m_anchor;
     if (d.Length() < 1.0f)
@@ -387,11 +451,30 @@ void VRMod::OnCreateMove(CUserCmd *cmd)
         Pose hand = AimWorld(interactHand);
         grabHandPos = hand.pos;
         grabHandAngles = hand.Angles();
+        UseRay(interactHand, useStart, useAngles);
+        Pose grip = HandWorld(interactHand);
+        holdRot = grip.rot;
+        holdPos = grip.pos + grip.rot * Vector(g_Config.holdOffset * m_scale, 0, 0);
+        holdRel = holdPos - m_anchor;
     }
     else
     {
         grabHandPos = headW.pos;
         grabHandAngles = headAngles;
+        useStart = headW.pos;
+        useAngles = headAngles;
+        holdPos = headW.pos;
+        holdRot = headW.rot;
+        holdRel = holdPos - m_anchor;
+    }
+    for (int h = 0; h < 2; ++h)
+    {
+        Pose p = HandWorld(h);
+        handPos[h] = p.pos;
+        handRot[h] = p.rot;
+        holdRotH[h] = p.rot;
+        holdPosH[h] = p.pos + p.rot * Vector(g_Config.holdOffset * m_scale, 0, 0);
+        holdRelH[h] = holdPosH[h] - m_anchor;
     }
     if (g_Config.logInput && (cmd->buttons & (IN_USE | IN_ATTACK)))
         IVR_LOG("cmd %d buttons %x aim %.1f %.1f move %.0f %.0f", cmd->command_number, cmd->buttons, aim.x, aim.y,
@@ -569,8 +652,11 @@ Item VRMod::DetectItem()
 // INFRA shows its main menu over a live background level. Tell it apart from real levels by name:
 // Source background maps are called "background..."; otherwise the first level after start-up
 // (the game was not launched straight into a map) is the menu's.
+void ResetSecondHold(); // hooks_game.cpp: a new level forgets the second hand's grab
+
 void VRMod::OnLevelLoaded()
 {
+    ResetSecondHold();
     std::string map = g_Game.ConVarString("host_map");
     ++m_levelLoads;
     if (firstLevelAt < 0)
@@ -583,6 +669,11 @@ void VRMod::OnLevelLoaded()
         m_firstMap = lower;
     mainMenu = lower.find("background") != std::string::npos || lower.find("menu") != std::string::npos ||
                (!m_firstMap.empty() && lower == m_firstMap) || (map.empty() && m_levelLoads == 1 && !launchedIntoMap);
+    // Source's motion blur blurs along how far the view turned since the last frame it drew. In
+    // VR that is the other eye, so every frame was smeared sideways and down by a few pixels,
+    // which also left INFRA's selection outline (drawn after it, unblurred) off the object.
+    if (!g_Config.motionBlur)
+        QueueCommand("mat_motion_blur_enabled 0");
     IVR_LOG("Level loaded: \"%s\"%s", map.c_str(),
             mainMenu ? (g_Config.mainMenuInVR ? " (main menu, shown in VR)" : " (main menu, shown on the flat screen)")
                      : "");
@@ -729,6 +820,37 @@ void VRMod::ProcessGameInput(double now, double dt)
     // Grip = grab / hold: press "use" aimed from that hand; releasing drops (or throws).
     for (int h = 0; h < 2; ++h)
     {
+        if (grips[h]->pressed && !consumed[h] && HandValid(h) && m_grabbingHand >= 0 && m_grabbingHand != h &&
+            HeldObjectHand() == m_grabbingHand)
+        {
+            // Grip with the other hand near the held object: it passes to that hand.
+            Pose other = HandWorld(h);
+            float d = (other.pos - holdPos).Length() / m_scale;
+            if (d < g_Config.handoffRadius)
+            {
+                IVR_LOG("Hold in hand: passed from the %s hand to the %s hand (%.2f m apart)",
+                        m_grabbingHand ? "right" : "left", h ? "right" : "left", d);
+                interactHand = h;
+                m_grabbingHand = h;
+                continue;
+            }
+        }
+        if (grips[h]->released && secondHand == h)
+        {
+            secondRelease = true;
+            secondReleaseSpeed = g_VR.HandPose(h).velocity.Length();
+            continue;
+        }
+        if (grips[h]->pressed && !consumed[h] && HandValid(h) && secondHand != h && IsHoldingObject() &&
+            HeldObjectHand() >= 0 && HeldObjectHand() != h)
+        {
+            // The other hand already carries something and this one is not near it. INFRA holds one
+            // object at a time (a second "use" while carrying crashed in the physics code), so the
+            // mod's own grab controller picks up the second one.
+            if (g_Config.twoHandHold && secondHand < 0)
+                secondRequest = h;
+            continue;
+        }
         if (grips[h]->pressed && !consumed[h] && HandValid(h))
         {
             interactHand = h;
@@ -744,7 +866,10 @@ void VRMod::ProcessGameInput(double now, double dt)
             {
                 interactHand = h;
                 float speed = g_VR.HandPose(h).velocity.Length();
-                if (speed > 2.5f)
+                // Held in the hand, the object already moves with it: just letting go keeps that
+                // swing (the game only clears the velocity of an object touching something), so
+                // a fast release throws it where the hand was going instead of where you look.
+                if (HeldObjectHand() < 0 && speed > 2.5f)
                 {
                     m_attackTicks = 2; // throw
                     m_dropCheckAt = now + 0.3;
@@ -767,6 +892,23 @@ void VRMod::ProcessGameInput(double now, double dt)
             m_useTicks = 2; // attack did not throw it: just let go
             m_freeDropUntil = now + 0.6;
         }
+    }
+
+    // Pointer finger touched something usable (found by the outline search from the fingertip):
+    // press "use" once from that hand, searched from the fingertip only.
+    for (int h = 0; h < 2; ++h)
+    {
+        if (!pointerPress[h])
+            continue;
+        pointerPress[h] = false;
+        if (m_grabbingHand >= 0 || IsHoldingObject() || m_useTicks > 0)
+            continue;
+        interactHand = h;
+        pointerHand = h;
+        pointerUseUntil = now + 0.25;
+        m_useTicks = 2;
+        m_aimTicks = 2;
+        m_aimSource = 0;
     }
 
     // Triggers = "use" (buttons, doors, pick-ups) from that hand, or the camera shutter.
@@ -796,6 +938,26 @@ void VRMod::ProcessGameInput(double now, double dt)
 }
 
 // --- overlays / menus ----------------------------------------------------------------------
+// The subtitle panel needs our own D3D pass and an OpenVR overlay texture: the OpenXR helper
+// has a fixed set of layers (openxr_bridge.h), so there it stays on the HUD panel as before.
+bool VRMod::SubtitleLayer() const
+{
+    return g_Config.subtitles && g_Config.hudMode == HudMode::Overlay && !g_VR.IsOpenXR() &&
+           (subsOverlay != vr::k_ulOverlayHandleInvalid || !m_active);
+}
+
+void VRMod::ShowSubtitles(bool on)
+{
+    OverlayApi *ov = g_VR.Overlays();
+    if (!ov || subsOverlay == vr::k_ulOverlayHandleInvalid || on == m_subsShown)
+        return;
+    if (on)
+        ov->ShowOverlay(subsOverlay);
+    else
+        ov->HideOverlay(subsOverlay);
+    m_subsShown = on;
+}
+
 void VRMod::UpdateOverlays(bool showMenu, bool showHud, int menuWidth, int menuHeight)
 {
     OverlayApi *ov = g_VR.Overlays();

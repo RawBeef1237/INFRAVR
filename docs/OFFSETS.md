@@ -21,6 +21,7 @@ by RTTI vtable + slot or by a unique byte signature, and the RVA is the cross-ch
 | VMaterialSystem080 | materialsystem.dll | wine |
 | VGUI_Surface031 | vguimatsurface.dll | wine |
 | VGUI_InputInternal001 | vgui2.dll | not found under Wine (vgui2 needs the running game) |
+| VGUI_Panel009 (vgui::IPanel, VPanelWrapper) | vgui2.dll | static (string in vgui2.dll) |
 | VEngineModel016 (IVModelRender) | engine.dll | static |
 
 ## materialsystem.dll
@@ -56,6 +57,9 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 | C_BasePlayer::CalcViewModelView | 0x1ea9e0 | wine, headset |
 | CFlashlightEffect::UpdateLight | 0xcb160 | wine, headset |
 | C_INFRA_Player vtable / slot 243 | 0x4e0b2c / 0x52fa0 | wine |
+| C_INFRA_Player::FindUseEntity, vtable slot 260 (INFRA's override: point_viewproxy / point_viewcontrol cases, then a 16384-unit trace from EyePosition along EyeVectors, then a sphere search). INFRA's selection outline (`CINFRAUseSelectionOutline::Update`, 0x1b80a0) calls it every frame through slot 260 on the local player | 0x1c9430 | static |
+| C_INFRA_Player::EyePosition, slot 159 (Vector returned through a hidden pointer) | 0x2154f0 | static |
+| C_INFRA_Player::EyeAngles, slot 160 (EyeVectors 0x12be0 calls it through slot 160 when not in a vehicle) | 0x1e46c0 | static |
 | C_BaseAnimating bone array | +0xB10 | wine, headset |
 | mstudiobone_t size (MDL v49) | 216 | headset |
 | CViewSetup size / fov / origin / aspect | 0xF4 / 0x58 / 0x60 / 0x88 | static asserts, headset |
@@ -71,6 +75,16 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 | CGrabController::ComputeError | 0x3a7740 | wine |
 | CBasePlayer::EyeAngles | 0xd78f0 | wine, headset |
 | Weapon_ShootPosition | 0x34bbc0 | wine, headset |
+| CINFRA_Player::FindUseEntity, vtable slot 439 (same shape as the client's; found through the `sv_debug_player_use` ConVar at 0x1071ede8, which only it and CBasePlayer's 0x3511b0 read; CPortal_Player's slot 439 is 0xd8c20). Uses EyePosition (slot 128 through `[vt+0x200]`) as the search centre and EyeVectors (0xd7060, EyeAngles through `[vt+0x204]`) | 0x2bf390 | static |
+| CINFRA_Player::EyePosition, slot 128 (Weapon_ShootPosition returns it) | 0x34d7e0 | static |
+| CGrabController::SetTargetPosition(const Vector &, const QAngle &, bool), not virtual, signature unique: writes m_shadow.targetPosition +0x04 / targetRotation +0x10; called by UpdateObject at 0x3aae2c / 0x3aafa8 and by UpdateObjectVM | 0x3a7610 | static |
+| CGrabController m_attachedEntity (handle) / m_attachedPositionObjectSpace | +0x2054 / +0x2078 | static: UpdateObject reads the handle first, rotates +0x2078 by the hold angles (VectorRotate at 0x40f6c0) and subtracts it from the hold point before SetTargetPosition |
+| CBaseEntity m_vecAbsOrigin / m_angAbsRotation (server) | +0x1cc / +0x1d8 | static: datadesc entries for "m_vecAbsOrigin" (0x5184e8) and "m_angAbsRotation" (0x51847c) |
+| CBaseEntity m_Collision (CCollisionProperty) / m_CollisionGroup (server) | +0xe8 (mins +0x08, maxs +0x14, solid type +0x22) / +0x148 | static: datadesc "m_Collision" 0xe8, CCollisionProperty datadesc m_vecMins 8 / m_vecMaxs 0x14 / m_nSolidType 0x22, "m_CollisionGroup" 0x148 |
+| CBaseEntity::SetCollisionGroup(int) | 0xcba40 | wine: signature unique |
+| CINFRA_Player can-use check (entity) | 0x2be9e0 | wine: the call at FindUseEntity+0x2e2 |
+| CGrabController::DetachEntity(bool) | vtable 3 = 0x3ad220 | wine; restores the group AttachEntity saved at +0x20a8 |
+| ConVar player_held_object_collide_with_player (default "0") | 0x7f84c8 | wine: "mov eax, [cvar]" at ComputeError+0x5db; AttachEntity sets COLLISION_GROUP_PLAYER_HELD (23) when it is 0, which CGameRules::ShouldCollide (0x14dfa0) keeps apart from groups 5 and 8 |
 
 ## engine.dll / vguimatsurface.dll
 
@@ -78,6 +92,9 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 |---|---|---|
 | IVRenderView slot 38 (VGui_Paint) | RVA 0x11a040 | wine, headset |
 | IVEngineClient slot 104 (ExecuteClientCmd) | RVA 0x71140 | wine, headset |
+| ISurface slot 9 GetEmbeddedPanel / slot 118 PaintTraverseEx(VPANEL, bool) | CMatSystemSurface vtable 0x100bbecc: slot 9 `mov eax, [ecx+0x254]; ret`, slot 118 at 0x1000b2f0 tests `[ebp+0xc]` (paintPopups) and ends `ret 8`; macOS dylib symbols at the same indices | static (dll + dylib) |
+| vgui::IPanel slots (VGUI_Panel009) | VPanelWrapper vtable 0x100402d4 in vgui2.dll: GetSize 5, GetAbsPos 10, SetVisible 14, IsVisible 15, GetChildCount 17, GetChild 18, GetName 36. The dylib's VPanelWrapper symbols are one slot higher (GCC emits two destructors); every dll slot's `ret` size matches the dylib signature (SetPos/GetPos/GetSize `ret 0xc`, SetVisible/GetChild `ret 8`, IsVisible/GetChildCount/GetName `ret 4`, PaintTraverse 41 `ret 0xc`) | static (dll + dylib) |
+| INFRA's subtitle panels | `CHudCloseCaption` ("HudCloseCaption") and `CHudSubtitles` ("HudSubtitles", Portal 2 branch) in client.dll. They are painted with PAINT_UIPANELS, not PAINT_INGAMEPANELS: a headset run that painted only the in-game panels into the subtitle texture probed brightness max 0 every time, while subtitles still showed on the phone screen with only the UI panels painted there. Their parent chain and bounds are logged at the first find ("Subtitles: vgui panel ...") | static (client.dll strings, dylib symbols); in-game paint layer: headset (log) |
 | ISurface slot 56 (IsCursorVisible) | RVA 0x5850 | wine |
 | IVModelRender slot 26 ComputeLightingState(int count, const LightingQuery_t*, MaterialLightingState_t*, ITexture**) | RVA 0xe2da0 (0x100e2da0 at the preferred base), `__thiscall`, `ret 0x10` | static (engine.dll, cross-checked with the engine.dylib symbols) |
 | LightingQuery_t | 0x10 bytes: origin 0, instance (ushort, 0xFFFF = none) 0xC, ambient boost (bool) 0xE | static |

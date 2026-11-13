@@ -154,6 +154,20 @@ constexpr int IsCursorVisible = 56;
 constexpr int IsCursorLocked = 107;
 // IMatSystemSurface::DrawPanelIn3DSpace(VPANEL, const VMatrix &, int, int, float, float), same vtable
 constexpr int DrawPanelIn3DSpace = 164;
+// ISurface::GetEmbeddedPanel() (root VPANEL; `mov eax, [ecx+0x254]`) and
+// PaintTraverseEx(VPANEL, bool paintPopups) (`ret 8`), checked against CMatSystemSurface's vtable
+// in vguimatsurface.dll and the macOS dylib's symbols (same index: no virtual destructor first)
+constexpr int GetEmbeddedPanel = 9;
+constexpr int PaintTraverseEx = 118;
+// vgui::IPanel (vgui2.dll "VGUI_Panel009", VPanelWrapper). The dylib's indices are one higher
+// (GCC's two destructors); the dll's slots were matched by their `ret` sizes.
+constexpr int Panel_GetSize = 5;
+constexpr int Panel_GetAbsPos = 10;
+constexpr int Panel_SetVisible = 14;
+constexpr int Panel_IsVisible = 15;
+constexpr int Panel_GetChildCount = 17;
+constexpr int Panel_GetChild = 18;
+constexpr int Panel_GetName = 36;
 // vgui::IInputInternal (vgui2.dll VGUI_InputInternal001, checked against CInputWin32's vtable)
 constexpr int InternalKeyCodePressed = 74;
 constexpr int InternalKeyCodeReleased = 77;
@@ -211,6 +225,7 @@ struct Game
     void *surface = nullptr;
     void *screenClicker = nullptr; // INFRA's IINFRAScreenClicker (main menu screen cursor)
     void *vguiInput = nullptr; // vgui::IInputInternal
+    void *vguiPanel = nullptr; // vgui::IPanel (optional: subtitles panel)
     void *modelRender = nullptr; // IVModelRender ("VEngineModel016"), for world lighting
     size_t matGameStartedFlag = 0; // CMaterialSystem byte that blocks late RT allocation
 
@@ -228,6 +243,24 @@ struct Game
     void *fnGrabComputeError = nullptr;    // CGrabController::ComputeError (server)
     void *fnPlayerEyeAngles = nullptr;     // CBasePlayer::EyeAngles (server)
     void *fnPlayerShootPosition = nullptr; // CBasePlayer::Weapon_ShootPosition (server)
+    void *fnGrabSetTarget = nullptr;       // CGrabController::SetTargetPosition (server)
+    void *fnPlayerFindUseEntity = nullptr; // CINFRA_Player::FindUseEntity (server)
+    void *fnPlayerEyePosition = nullptr;   // CINFRA_Player::EyePosition (server)
+    void *fnPlayerCanUse = nullptr;        // CINFRA_Player's "can this entity be used" check (server)
+    void *fnSetCollisionGroup = nullptr;   // CBaseEntity::SetCollisionGroup(int) (server)
+    void *fnGrabDetach = nullptr;          // CGrabController::DetachEntity(bool) (server, vtable 3)
+    // Second object, held in the other hand (our own CGrabController, server):
+    void *fnGrabAttach = nullptr;          // CGrabController::AttachEntity (vtable 1)
+    void *fnCanPickupObject = nullptr;     // CBasePlayer::CanPickupObject(entity, mass, size), cdecl
+    void *fnIsHeldByPlayer = nullptr;      // entity thiscall check in PickupObject: already held
+    float pickupMass = 0, pickupSize = 0;  // PickupObject's limits
+    void *fnOnPhysGunPickup = nullptr;     // Pickup_OnPhysGunPickup(entity, player, reason), cdecl
+    void *fnOnPhysGunDrop = nullptr;       // Pickup_OnPhysGunDrop(entity, player, reason), cdecl
+    void *fnGameFrame = nullptr;           // CServerGameDLL::GameFrame(bool) (vtable 5)
+    void *heldCollideCvar = nullptr;       // ConVar player_held_object_collide_with_player (server)
+    void *fnClientFindUseEntity = nullptr; // C_INFRA_Player::FindUseEntity (client, selection outline)
+    void *fnClientEyePosition = nullptr;   // C_INFRA_Player::EyePosition (client)
+    void *fnClientEyeAngles = nullptr;     // C_INFRA_Player::EyeAngles (client)
 
     bool ready = false;
 
