@@ -357,6 +357,15 @@ ItemModel g_items[ITEM_COUNT] = {
     {"Flashlight model", kFlashlightFlag, "Bip001 L Hand", HAND_LEFT, MODEL_FLASHLIGHT},
     {"Phone model", kPhoneFlag, "Bip001 R Hand", HAND_RIGHT, MODEL_PHONE},
 };
+// The camera screen's corners in the world as last drawn (upper left, upper right, lower left).
+struct ScreenWorld
+{
+    bool valid = false;
+    Vector ul, ur, ll;
+    double at = 0;
+};
+ScreenWorld g_screenWorld;
+std::mutex g_screenLock;
 std::atomic<bool> g_phoneCall{false}; // INFRA shows its call screen on the phone
 std::mutex g_boneLock;
 
@@ -1250,11 +1259,24 @@ void BuildItem(DrawItem &it, int model, const std::vector<float> &pos, const std
     }
     if (!md.screenIndices.empty())
     {
+        Vector corner[2][2]; // [s][t] in the world, as the picture is shown (mirrored with the model)
+        int have = 0;
         for (uint16_t i : md.screenIndices)
         {
             Vector p, nn, tt;
             place(i, p, nn, tt);
             it.screen.push_back({p.x, p.y, p.z, 0xFFFFFFFF, md.screenST[i * 2], md.screenST[i * 2 + 1]});
+            float s = md.screenST[i * 2], t = md.screenST[i * 2 + 1];
+            if (it.mirrored)
+                s = 1.0f - s;
+            int si = s > 0.5f, ti = t > 0.5f;
+            corner[si][ti] = p;
+            have |= 1 << (si * 2 + ti);
+        }
+        if (have == 15)
+        {
+            std::lock_guard<std::mutex> lock(g_screenLock);
+            g_screenWorld = {true, corner[0][0], corner[1][0], corner[0][1], NowSeconds()};
         }
     }
 }
@@ -1660,10 +1682,10 @@ void Draw(const std::shared_ptr<Frame> &fr, const CViewSetup &v)
             dev->SetPixelShader(nullptr);
             dev->SetFVF(kFvf);
             float rect[4];
-            // INFRA's viewfinder panel is added on top (it draws additively): its focus marks and
-            // battery show over the picture. Its own copy of the view is drawn at a fifth of its
-            // brightness, so with the screen left dark under it the screen looked black.
-            IDirect3DTexture9 *screen = ScreenTexture(md.screenAspect, rect);
+            // INFRA's viewfinder panel, when it sits on the screen, shows the view itself (drawn
+            // additively, exactly over this screen: DrawPanelIn3DSpaceDetour): the screen stays dark
+            // under it, as on INFRA's own camera.
+            IDirect3DTexture9 *screen = it.panelOnScreen ? nullptr : ScreenTexture(md.screenAspect, rect);
             std::vector<FVertex> verts = it.screen;
             if (screen)
             {
@@ -1826,13 +1848,20 @@ bool ItemPanel(int item, const char *bone, const Vector &centre, const Mat3 &fra
         p.rot.SetCol(1, Cross(z, x));
         p.rot.SetCol(2, z);
     }
-    // The camera's screen sits at the front of its recess now (RaiseScreen): the panel goes there too,
-    // a hair in front of it, or the screen would hide it.
-    if (md.screenRaise > 0)
-        p.pos = p.pos + p.rot.Col(2) * (md.screenRaise * b.scale);
     g_items[item].panelFrame = g_eyeFrame.load();
     scale = b.scale;
     out = p;
+    return true;
+}
+
+bool CameraScreenCorners(Vector &ul, Vector &ur, Vector &ll)
+{
+    std::lock_guard<std::mutex> lock(g_screenLock);
+    if (!g_screenWorld.valid || NowSeconds() - g_screenWorld.at > 0.25)
+        return false;
+    ul = g_screenWorld.ul;
+    ur = g_screenWorld.ur;
+    ll = g_screenWorld.ll;
     return true;
 }
 

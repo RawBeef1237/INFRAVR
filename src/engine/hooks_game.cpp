@@ -929,6 +929,7 @@ struct PanelTarget
     Vector upperLeft, normal;
     float width = 0, height = 0, scale = 1;
     double at = 0;
+    int item = -1;
 };
 PanelTarget g_panelTarget;
 constexpr const char *kPanelScaleFlag = "panel_scale";
@@ -951,6 +952,35 @@ void IVR_FASTCALL DrawPanelIn3DSpaceDetour(void *self, void *edx, unsigned panel
                 IVR_LOG("Screen panel: drawn %.2f times INFRA's size on the mod's model", t.scale);
             if (++s_draws == 60) // a bad panel size would crash at once; INFRA closing later is fine
                 flags::End(kPanelScaleFlag);
+            // The camera's viewfinder goes exactly onto the screen as the mod drew it (raised out of
+            // its recess, see RaiseScreen), a hair in front of it. From INFRA's attachment it sat
+            // beside the screen, and the screen showed a second picture under it.
+            Vector ul, ur, ll;
+            if (t.item == hands::ITEM_CAMERA && hands::CameraScreenCorners(ul, ur, ll))
+            {
+                Vector x = ur - ul, down = ll - ul;
+                float sw = x.Length(), sh = down.Length();
+                if (sw > 0.01f && sh > 0.01f)
+                {
+                    x = x * (1.0f / sw);
+                    Vector y = down * (-1.0f / sh);
+                    Vector zz = Cross(x, y).Normalized();
+                    if (Dot(zz, z) < 0)
+                        zz = zz * -1.0f;
+                    Vector o = ul + zz * 0.02f;
+                    float mm[12] = {x.x, y.x, zz.x, o.x, x.y, y.y, zz.y, o.y, x.z, y.z, zz.z, o.z};
+                    static bool s_said = false;
+                    if (!s_said)
+                    {
+                        s_said = true;
+                        IVR_LOG("Screen panel: the camera's viewfinder placed on the mod's screen (%.2f x %.2f units, "
+                                "%.2f units from where INFRA put it)",
+                                sw, sh, (o - origin).Length());
+                    }
+                    hkDrawPanelIn3DSpace.original(self, edx, panel, mm, pw, ph, sw, sh);
+                    return;
+                }
+            }
             w *= t.scale;
             h *= t.scale;
         }
@@ -1047,7 +1077,7 @@ int PlaceScreenPanel(const uint8_t *studio, int item, matrix3x4_t *bones, int co
     Vector x = panel.rot.Col(0), y = panel.rot.Col(1);
     Vector upperLeft = panel.pos - x * (sp.width * scale * 0.5f) + y * (sp.height * scale * 0.5f);
     Vector corner = upperLeft - y * sp.height;
-    g_panelTarget = {true, upperLeft, panel.rot.Col(2), sp.width, sp.height, scale, NowSeconds()};
+    g_panelTarget = {true, upperLeft, panel.rot.Col(2), sp.width, sp.height, scale, NowSeconds(), item};
     // bone * attachment = (corner, panel axes): bone axes = panel axes * frame^T.
     Mat3 rot = panel.rot * sp.frame.Transposed();
     Vector t = corner - rot * sp.ll;
