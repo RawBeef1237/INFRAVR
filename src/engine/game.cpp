@@ -37,6 +37,11 @@ const FnSpec kFlashlightUpdate = {"CFlashlightEffect::UpdateLight", "client.dll"
 // Update(Vector origin, Quaternion orientation), both by value; fills a FlashlightState_t from them.
 const FnSpec kInfraFlashlightUpdate = {"INFRA flashlight update", "client.dll", 0x1afb60,
                                        "55 8B EC 81 EC 60 01 00 00 80 39 00 89 4D D8 0F 84 ? ? ? ? 56 6A FF"};
+// The camera's flash (C_INFRACameraFlashlight, infra_camera_flashlight_* convars): thiscall
+// UpdateLight(Vector origin, Quaternion orientation), both by value. C_INFRACamera::ClientThink
+// calls it with the owner's EyePosition / EyeAngles while the flash is lit.
+const FnSpec kCameraFlashUpdate = {"INFRA camera flash update", "client.dll", 0x1aead0,
+                                   "55 8B EC 81 EC 24 01 00 00 56 8B F1 80 3E 00 0F 84"};
 // C_BaseAnimating::BuildTransformations(CStudioHdr *, Vector *, Quaternion *, const matrix3x4_t &, int,
 // CBoneBitList &) - C_BaseAnimating vtable 178, VPROF "C_BaseAnimating::BuildTransformations".
 const FnSpec kBuildTransformations = {"C_BaseAnimating::BuildTransformations", "client.dll", 0x02b110,
@@ -137,6 +142,7 @@ bool Game::Init()
                 fnClientEyeAngles);
     }
     fnInfraFlashlightUpdate = Resolve(kInfraFlashlightUpdate);
+    fnCameraFlashUpdate = Resolve(kCameraFlashUpdate);
     fnBuildTransformations = Resolve(kBuildTransformations);
     if (void **vt = FindVTable("client.dll", ".?AVC_BaseAnimating@@"))
     {

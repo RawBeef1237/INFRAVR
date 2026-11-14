@@ -56,6 +56,7 @@ frame buffer. world_size.cpp answers with the eye size when the return address i
 | ClientModeShared::CreateMove | 0xa4910 | wine, headset |
 | C_BasePlayer::CalcViewModelView | 0x1ea9e0 | wine, headset |
 | CFlashlightEffect::UpdateLight | 0xcb160 | wine, headset |
+| C_INFRACameraFlashlight::UpdateLight(Vector, Quaternion), the camera's flash. Found from its only xref to the string `infra\c_infra_camera_flashlight.cpp` (split-screen guard); matches the symbol in client.dylib, whose only caller C_INFRACamera::ClientThink passes the owner's EyePosition / AngleQuaternion(EyeAngles). Ends `ret 0x1c`. Signature `55 8B EC 81 EC 24 01 00 00 56 8B F1 80 3E 00 0F 84` (one hit) | 0x1aead0 | static |
 | C_INFRA_Player vtable / slot 243 | 0x4e0b2c / 0x52fa0 | wine |
 | C_INFRA_Player::FindUseEntity, vtable slot 260 (INFRA's override: point_viewproxy / point_viewcontrol cases, then a 16384-unit trace from EyePosition along EyeVectors, then a sphere search). INFRA's selection outline (`CINFRAUseSelectionOutline::Update`, 0x1b80a0) calls it every frame through slot 260 on the local player | 0x1c9430 | static |
 | C_INFRA_Player::EyePosition, slot 159 (Vector returned through a hidden pointer) | 0x2154f0 | static |

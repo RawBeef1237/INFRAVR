@@ -236,6 +236,7 @@ struct Game
     void *fnCalcViewModelView = nullptr;   // C_BasePlayer::CalcViewModelView
     void *fnFlashlightUpdate = nullptr;    // CFlashlightEffect::UpdateLight
     void *fnInfraFlashlightUpdate = nullptr; // INFRA's own flashlight: Update(Vector origin, Quaternion)
+    void *fnCameraFlashUpdate = nullptr;   // the camera's flash: UpdateLight(Vector origin, Quaternion)
     void *fnBuildTransformations = nullptr; // C_BaseAnimating::BuildTransformations
     int boneArrayOffset = 0;               // C_BaseAnimating::m_BoneAccessor.m_pBones
     void *fnGrabUpdateObject = nullptr;    // CGrabController::UpdateObject (server)

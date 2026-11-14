@@ -49,6 +49,7 @@ Hook<UpdateLightFn> hkUpdateLight;
 Hook<BuildTransformationsFn> hkBuildTransformations;
 Hook<DrawPanelIn3DSpaceFn> hkDrawPanelIn3DSpace;
 Hook<InfraFlashlightFn> hkInfraFlashlight;
+Hook<InfraFlashlightFn> hkCameraFlash;
 Hook<UpdateObjectFn> hkUpdateObject;
 Hook<UpdateObjectVMFn> hkUpdateObjectVM;
 Hook<ComputeErrorFn> hkComputeError;
@@ -1267,6 +1268,28 @@ void IVR_FASTCALL InfraFlashlightDetour(void *self, void *edx, float ox, float o
     hkInfraFlashlight.original(self, edx, ox, oy, oz, qx, qy, qz, qw);
 }
 
+// The camera's flash: INFRA lights it from the eyes along the view; it leaves the lens of the camera
+// model in your hand instead, so it lights up what the camera is pointing at.
+void IVR_FASTCALL CameraFlashDetour(void *self, void *edx, float ox, float oy, float oz, float qx, float qy,
+                                    float qz, float qw)
+{
+    static bool s_logged = false;
+    if (g_Mod.Active() && !g_Mod.menuMode && g_Mod.activeItem == Item::Camera && g_Mod.HandValid(g_Mod.itemHand))
+    {
+        Pose p = g_Mod.LensWorld();
+        Vector P = p.pos;
+        Quat q = Mat3ToQuat(p.rot); // forward, left, up columns, as Source's AngleQuaternion
+        if (!s_logged)
+        {
+            s_logged = true;
+            IVR_LOG("Camera flash: moved from the eyes (%.0f %.0f %.0f) to the camera lens (%.0f %.0f %.0f)", ox, oy,
+                    oz, P.x, P.y, P.z);
+        }
+        return hkCameraFlash.original(self, edx, P.x, P.y, P.z, q.x, q.y, q.z, q.w);
+    }
+    hkCameraFlash.original(self, edx, ox, oy, oz, qx, qy, qz, qw);
+}
+
 // ---- server: hold grabbed objects in front of the hand instead of the eyes -----------------
 // CBaseEntity::m_vecAbsOrigin (server): read by FindUseEntity / UpdateObject at +0x1cc after
 // CalcAbsolutePosition when the dirty bit (0x800 in +0xc8) is set.
@@ -2360,6 +2383,8 @@ bool InstallClientHooks()
     if (g_Game.fnInfraFlashlightUpdate)
         hkInfraFlashlight.Install("INFRA flashlight update", g_Game.fnInfraFlashlightUpdate,
                                   (void *)&InfraFlashlightDetour);
+    if (g_Game.fnCameraFlashUpdate)
+        hkCameraFlash.Install("INFRA camera flash update", g_Game.fnCameraFlashUpdate, (void *)&CameraFlashDetour);
     if (g_Game.fnFlashlightUpdate)
         hkUpdateLight.Install("CFlashlightEffect::UpdateLight", g_Game.fnFlashlightUpdate,
                               (void *)&UpdateLightDetour);
