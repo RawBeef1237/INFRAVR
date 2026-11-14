@@ -113,6 +113,7 @@ struct Config
     float handoffRadius = 0.30f; // grip with the other hand this close (metres) to take a held object
     bool heldNoCollide = true;
     bool twoHandHold = true;   // a second physics object in the other hand
+    bool keepHeldOutOfCamera = false; // the game pushes a held object away from the view (off: it follows the hand)
     float secondReach = 0.15f; // metres from the hand to the object's box for that grab
     // Pointer finger: only the index finger out (finger tracking) and its tip touching an item uses it.
     bool pointerTouch = true;
