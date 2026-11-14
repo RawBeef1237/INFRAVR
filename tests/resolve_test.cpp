@@ -35,6 +35,8 @@ int main(int argc, char **argv)
            rva("server.dll", g_Game.fnGrabSetTarget), rva("server.dll", g_Game.fnPlayerFindUseEntity),
            rva("server.dll", g_Game.fnPlayerEyePosition), rva("client.dll", g_Game.fnClientFindUseEntity),
            rva("client.dll", g_Game.fnClientEyePosition), rva("client.dll", g_Game.fnClientEyeAngles));
+    printf("INFRA flashlight %x camera flash %x\n", rva("client.dll", g_Game.fnInfraFlashlightUpdate),
+           rva("client.dll", g_Game.fnCameraFlashUpdate));
     printf("CanUse %x SetCollisionGroup %x DetachEntity %x heldCollideCvar %x\n",
            rva("server.dll", g_Game.fnPlayerCanUse), rva("server.dll", g_Game.fnSetCollisionGroup),
            rva("server.dll", g_Game.fnGrabDetach), rva("server.dll", g_Game.heldCollideCvar));
