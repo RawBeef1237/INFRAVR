@@ -60,6 +60,9 @@ Hook<GrabSetTargetFn> hkGrabSetTarget;        // server
 using GrabDetachFn = void(IVR_FASTCALL *)(void *, void *, bool);
 Hook<GrabDetachFn> hkGrabDetach;              // server
 Hook<FindUseEntityFn> hkClientFindUseEntity;
+Hook<FindUseEntityFn> hkClientHeldEntity; // C_INFRA_Player's held-object getter (player +0x2518)
+void *g_outlineHeldCheck = nullptr;       // the return address of the outline's "carrying?" check
+bool g_outlineWhileHolding = false;       // FindUseEntity just gave the free hand's outline target
 Hook<ShootPositionFn> hkClientEyePosition;
 Hook<EyeAnglesFn> hkClientEyeAngles;
 
@@ -1546,32 +1549,48 @@ float ClientDistanceToBox(void *ent, const Vector &P)
 // The client's side of the second hand's search (outline only): the nearest physics prop whose box
 // is within second_reach of the hand, other than the one being carried.
 bool g_secondEnabled = false;
+// Walking the whole entity list every frame (with an RTTI name check per entity) is what made
+// carrying one object lag, so the list is walked ten times a second, the box distance (cheap)
+// comes before the name, and the frames in between only re-check the object found last.
 void *ClientNearestPickup(int hand)
 {
+    static double s_scanAt = 0.0;
+    static int s_index = 0;
+    static void *s_ent = nullptr;
     if (!g_Game.entityList || !g_Mod.HandValid(hand))
         return nullptr;
     const Vector P = g_Mod.handPos[hand];
     const float reach = std::max(0.05f, g_Config.secondReach) * g_Mod.UnitsPerMetre();
-    void *best = nullptr;
-    float bestD = 1e9f;
-    for (int i = 1; i < 2048; ++i)
+    const double now = NowSeconds();
+    if (now >= s_scanAt || now < s_scanAt - 1.0)
     {
-        if (i == g_Mod.heldEntIndex)
-            continue;
-        void *e = VCall<void *, int>(g_Game.entityList, vidx::GetClientEntity, i);
-        if (!e)
-            continue;
-        const char *n = RttiName(e);
-        if (!n || !strstr(n, "Phys"))
-            continue;
-        float d = ClientDistanceToBox(e, P);
-        if (d >= 0.0f && d <= reach && d < bestD)
+        s_scanAt = now + 0.1;
+        s_index = 0;
+        s_ent = nullptr;
+        float bestD = 1e9f;
+        for (int i = 1; i < 2048; ++i)
         {
-            best = e;
+            if (i == g_Mod.heldEntIndex)
+                continue;
+            void *e = VCall<void *, int>(g_Game.entityList, vidx::GetClientEntity, i);
+            if (!e)
+                continue;
+            float d = ClientDistanceToBox(e, P);
+            if (d < 0.0f || d > reach || d >= bestD)
+                continue;
+            const char *n = RttiName(e);
+            if (!n || !strstr(n, "Phys"))
+                continue;
+            s_index = i;
+            s_ent = e;
             bestD = d;
         }
     }
-    return best;
+    if (!s_index || s_index == g_Mod.heldEntIndex ||
+        VCall<void *, int>(g_Game.entityList, vidx::GetClientEntity, s_index) != s_ent)
+        return nullptr;
+    float d = ClientDistanceToBox(s_ent, P);
+    return d >= 0.0f && d <= reach * 1.2f ? s_ent : nullptr;
 }
 
 // A small item (switch plate, valve, cassette player): the outline problem shows on these, not
@@ -1637,6 +1656,41 @@ void *PointerSearch(void *self, void *edx)
     return outline;
 }
 
+// The selection outline calls FindUseEntity and then this; anything carried hides the outline.
+// Right after FindUseEntity handed it the free hand's target, the outline's own call sees nothing
+// carried. Every other caller gets the real answer.
+void *IVR_FASTCALL ClientHeldEntityDetour(void *self, void *edx)
+{
+    if (g_outlineWhileHolding && __builtin_return_address(0) == g_outlineHeldCheck)
+    {
+        g_outlineWhileHolding = false;
+        return nullptr;
+    }
+    return hkClientHeldEntity.original(self, edx);
+}
+
+// The outline's check: "call held; test eax,eax; je +7; mov dword [ebp-8], 0" after a call through
+// the player's vtable to FindUseEntity (+0x410). Found by its bytes in client.dll.
+void *FindOutlineHeldCheck(void *heldFn)
+{
+    ModuleInfo mi = GetModuleInfo("client.dll");
+    if (!mi.base || !heldFn)
+        return nullptr;
+    static const uint8_t tail[] = {0x85, 0xC0, 0x74, 0x07, 0xC7, 0x45, 0xF8, 0x00, 0x00, 0x00, 0x00};
+    void *found = nullptr;
+    int count = 0;
+    for (uint8_t *p = mi.base + 0x1000; p + 5 + sizeof(tail) < mi.base + mi.size; ++p)
+    {
+        if (p[0] != 0xE8 || memcmp(p + 5, tail, sizeof(tail)) != 0 || !IsReadable(p, 16))
+            continue;
+        if (CallTarget(p) != heldFn)
+            continue;
+        found = p + 5;
+        ++count;
+    }
+    return count == 1 ? found : nullptr;
+}
+
 void *IVR_FASTCALL ClientFindUseEntityDetour(void *self, void *edx)
 {
     if (g_clUsePlayer || !g_Mod.Active() || g_Mod.menuMode || !g_Config.handUse || !g_Mod.handUseClient)
@@ -1669,6 +1723,9 @@ void *IVR_FASTCALL ClientFindUseEntityDetour(void *self, void *edx)
     // Carrying one object: the free hand's outline marks the physics object it can take as well.
     if (!r && g_Config.twoHandHold && g_secondEnabled && g_Mod.HeldObjectHand() >= 0 && g_Mod.SecondHeldHand() < 0)
         r = ClientNearestPickup(1 - g_Mod.HeldObjectHand());
+    // The outline drops whatever FindUseEntity found while the player carries something; let the
+    // free hand's target through that check.
+    g_outlineWhileHolding = r && g_Mod.HeldObjectHand() >= 0;
     if (!any)
         return g_Mod.HeldObjectHand() >= 0 || g_Mod.SecondHeldHand() >= 0 ? nullptr
                                                                            : hkClientFindUseEntity.original(self, edx);
@@ -2343,6 +2400,13 @@ bool InstallClientHooks()
                                       (void *)&ClientEyeAnglesDetour) &&
             hkClientFindUseEntity.Install("C_INFRA_Player::FindUseEntity", g_Game.fnClientFindUseEntity,
                                           (void *)&ClientFindUseEntityDetour);
+        // FindUseEntity asks the same "held entity" getter at +0x2a.
+        void *held = g_Mod.handUseClient ? CallTarget(static_cast<uint8_t *>(g_Game.fnClientFindUseEntity) + 0x2a)
+                                         : nullptr;
+        g_outlineHeldCheck = FindOutlineHeldCheck(held);
+        IVR_LOG("client: held-object getter %p, outline check returns to %p", held, g_outlineHeldCheck);
+        if (held && g_outlineHeldCheck)
+            hkClientHeldEntity.Install("C_INFRA_Player::GetHeldEntity", held, (void *)&ClientHeldEntityDetour);
     }
     return ok;
 }

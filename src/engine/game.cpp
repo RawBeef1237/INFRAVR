@@ -69,14 +69,6 @@ const FnSpec kGrabSetTarget = {"CGrabController::SetTargetPosition", "server.dll
 const FnSpec kSetCollisionGroup = {"CBaseEntity::SetCollisionGroup", "server.dll", 0xcba40,
                                    "55 8B EC 53 56 57 8B 7D 08 8B D9 39 BB 48 01 00 00 74"};
 
-// The target of a rel32 call (E8) at `at`, if there is one there.
-void *CallTarget(const void *at)
-{
-    const uint8_t *p = static_cast<const uint8_t *>(at);
-    if (!p || !IsReadable(p, 5) || p[0] != 0xE8)
-        return nullptr;
-    return const_cast<uint8_t *>(p + 5 + *reinterpret_cast<const int32_t *>(p + 1));
-}
 
 void *Resolve(const FnSpec &s) { return ResolveFunction(s.what, s.module, s.rva, s.pattern); }
 
@@ -91,6 +83,15 @@ void *Require(const char *module, const char *name)
 }
 
 } // namespace
+
+// The target of a rel32 call (E8) at `at`, if there is one there.
+void *CallTarget(const void *at)
+{
+    const uint8_t *p = static_cast<const uint8_t *>(at);
+    if (!p || !IsReadable(p, 5) || p[0] != 0xE8)
+        return nullptr;
+    return const_cast<uint8_t *>(p + 5 + *reinterpret_cast<const int32_t *>(p + 1));
+}
 
 bool Game::Init()
 {
@@ -446,6 +447,13 @@ std::string Game::ConVarString(const char *name) const
 
 void Game::ForceConVar(const char *name, const char *value) const
 {
+    UnlockConVar(name);
+    std::string cmd = std::string(name) + " " + value;
+    ExecuteCommand(cmd.c_str());
+}
+
+void Game::UnlockConVar(const char *name) const
+{
     // ConVar: +28 m_pParent, +36 m_pszString (current value, kept in the parent)
     static std::map<std::string, uint8_t *> cache; // the module scan is slow-ish: once per name
     auto it = cache.find(name);
@@ -469,8 +477,6 @@ void Game::ForceConVar(const char *name, const char *value) const
             IVR_LOG("ConVar %s not found (setting it anyway)", name);
         cache[name] = cv;
     }
-    std::string cmd = std::string(name) + " " + value;
-    ExecuteCommand(cmd.c_str());
 }
 
 void Game::ApplyVRSettings() const

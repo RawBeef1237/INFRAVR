@@ -674,6 +674,14 @@ void VRMod::OnLevelLoaded()
     // which also left INFRA's selection outline (drawn after it, unblurred) off the object.
     if (!g_Config.motionBlur)
         QueueCommand("mat_motion_blur_enabled 0");
+    // The game moves what it carries out of the way of the flat camera (client-side, so only the object
+    // the game itself carries; the second hand's object never had it). In VR it pushed that object away
+    // from the hand whenever the hand came near the head.
+    if (!g_Config.keepHeldOutOfCamera)
+    {
+        g_Game.UnlockConVar("player_held_object_keep_out_of_camera"); // a cheat cvar
+        QueueCommand("player_held_object_keep_out_of_camera 0");
+    }
     IVR_LOG("Level loaded: \"%s\"%s", map.c_str(),
             mainMenu ? (g_Config.mainMenuInVR ? " (main menu, shown in VR)" : " (main menu, shown on the flat screen)")
                      : "");
