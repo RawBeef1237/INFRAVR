@@ -674,6 +674,14 @@ void VRMod::OnLevelLoaded()
     // which also left INFRA's selection outline (drawn after it, unblurred) off the object.
     if (!g_Config.motionBlur)
         QueueCommand("mat_motion_blur_enabled 0");
+    // The game moves what it carries out of the way of the flat camera (client-side, so only the object
+    // the game itself carries; the second hand's object never had it). In VR it pushed that object away
+    // from the hand whenever the hand came near the head.
+    if (!g_Config.keepHeldOutOfCamera)
+    {
+        g_Game.UnlockConVar("player_held_object_keep_out_of_camera"); // a cheat cvar
+        QueueCommand("player_held_object_keep_out_of_camera 0");
+    }
     IVR_LOG("Level loaded: \"%s\"%s", map.c_str(),
             mainMenu ? (g_Config.mainMenuInVR ? " (main menu, shown in VR)" : " (main menu, shown on the flat screen)")
                      : "");
@@ -832,6 +840,21 @@ void VRMod::ProcessGameInput(double now, double dt)
                         m_grabbingHand ? "right" : "left", h ? "right" : "left", d);
                 interactHand = h;
                 m_grabbingHand = h;
+                continue;
+            }
+        }
+        if (grips[h]->pressed && !consumed[h] && HandValid(h) && secondHand >= 0 && secondHand != h &&
+            HeldObjectHand() != h)
+        {
+            // Grip with the free hand near the second object: it passes to that hand (the game's own
+            // pickup never takes the mod's object).
+            Pose other = HandWorld(h);
+            float d = (other.pos - holdPosH[secondHand]).Length() / m_scale;
+            if (d < g_Config.handoffRadius)
+            {
+                IVR_LOG("Second hold: passing from the %s hand to the %s hand (%.2f m apart)",
+                        secondHand ? "right" : "left", h ? "right" : "left", d);
+                secondHandoff = h;
                 continue;
             }
         }

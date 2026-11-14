@@ -108,6 +108,7 @@ public:
     Vector holdPosH[2], holdRelH[2]; // each hand's hold point (as holdPos / holdRel)
     Mat3 holdRotH[2];
     int secondRequest = -1;       // hand that just gripped while the other one carries something
+    int secondHandoff = -1;       // hand that gripped next to the second object: it passes to that hand
     bool secondRelease = false;   // the second object's hand let go
     float secondReleaseSpeed = 0; // m/s, how fast that hand was moving (a throw)
     int secondHand = -1;          // the hand carrying the second object (set by the server), or -1

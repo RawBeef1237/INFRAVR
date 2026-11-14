@@ -215,6 +215,9 @@ struct MaterialLightingState_t
 };
 static_assert(sizeof(MaterialLightingState_t) == 0x1B8, "MaterialLightingState_t");
 
+// The target of a rel32 call (E8) at `at`, if there is one there.
+void *CallTarget(const void *at);
+
 struct Game
 {
     // interfaces
@@ -306,6 +309,8 @@ struct Game
     // Sets a console variable, first lifting its cheat/development-only flags (found by
     // scanning the game modules for the ConVar object; nothing is called).
     void ForceConVar(const char *name, const char *value) const;
+    // Clears FCVAR_CHEAT / FCVAR_DEVELOPMENTONLY so the console can set it (and the engine leaves it).
+    void UnlockConVar(const char *name) const;
     std::string ConVarString(const char *name) const; // current value, "" if not found
     // Console settings the stereo rendering needs (run at start and on every level load).
     void ApplyVRSettings() const;
