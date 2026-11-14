@@ -843,6 +843,21 @@ void VRMod::ProcessGameInput(double now, double dt)
                 continue;
             }
         }
+        if (grips[h]->pressed && !consumed[h] && HandValid(h) && secondHand >= 0 && secondHand != h &&
+            HeldObjectHand() != h)
+        {
+            // Grip with the free hand near the second object: it passes to that hand (the game's own
+            // pickup never takes the mod's object).
+            Pose other = HandWorld(h);
+            float d = (other.pos - holdPosH[secondHand]).Length() / m_scale;
+            if (d < g_Config.handoffRadius)
+            {
+                IVR_LOG("Second hold: passing from the %s hand to the %s hand (%.2f m apart)",
+                        secondHand ? "right" : "left", h ? "right" : "left", d);
+                secondHandoff = h;
+                continue;
+            }
+        }
         if (grips[h]->released && secondHand == h)
         {
             secondRelease = true;

@@ -2354,8 +2354,10 @@ void SecondHoldFrame()
     if (!g_second)
         return;
     const int req = g_Mod.secondRequest;
+    const int handoff = g_Mod.secondHandoff;
     const bool rel = g_Mod.secondRelease;
     const float speed = g_Mod.secondReleaseSpeed;
+    g_Mod.secondHandoff = -1;
     g_Mod.secondRequest = -1;
     g_Mod.secondRelease = false;
     SecondHold &s = *g_second;
@@ -2366,6 +2368,22 @@ void SecondHoldFrame()
     }
     if (s.attached && (rel || !g_Mod.Active() || g_Mod.menuMode || !g_Mod.HandValid(s.hand)))
         SecondLetGo(speed > 2.5f, rel ? (speed > 2.5f ? "thrown" : "dropped") : "hand lost");
+    if (s.attached && handoff >= 0 && handoff != s.hand && g_Mod.HandValid(handoff))
+    {
+        // Passed to the other hand: keep the way it is turned now, relative to that hand.
+        if (uint8_t *e = static_cast<uint8_t *>(ServerEntity(s.handle)))
+        {
+            Mat3 rot = AnglesToMatrix(*reinterpret_cast<const QAngle *>(e + kEntAbsAngles));
+            s.world = rot;
+            s.rel = g_Mod.holdRotH[handoff].Transposed() * rot;
+            s.yaw = UprightYaw(s.rel);
+        }
+        IVR_LOG("Second hold: object %08x passed to the %s hand", s.handle, handoff ? "right" : "left");
+        s.hand = handoff;
+        s.haveEye = false;
+        g_Mod.secondHand = handoff;
+        g_VR.Haptic(handoff, 0.04f, 160.0f, 0.7f);
+    }
     if (s.attached)
         SecondFollow();
     else if (req >= 0 && g_Mod.Active() && !g_Mod.menuMode)
