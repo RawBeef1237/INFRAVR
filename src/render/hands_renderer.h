@@ -57,6 +57,8 @@ bool PhoneScreen(Pose &out, float &width, float &height);
 // model is mirrored). Main thread, while the model is drawn.
 // Width / height of the camera model's screen.
 float CameraScreenAspect();
+// The camera model's screen in the world as last drawn: upper left, upper right and lower left corners.
+bool CameraScreenCorners(Vector &ul, Vector &ur, Vector &ll);
 // `scale`: how much bigger the model is drawn than INFRA's own viewmodel.
 bool ItemPanel(int item, const char *bone, const Vector &centre, const Mat3 &frame, Pose &out, float &scale);
 
