@@ -1714,7 +1714,7 @@ void *PointerSearch(void *self, void *edx)
 // carried. Every other caller gets the real answer.
 void *IVR_FASTCALL ClientHeldEntityDetour(void *self, void *edx)
 {
-    if (g_outlineWhileHolding && __builtin_return_address(0) == g_outlineHeldCheck)
+    if (g_outlineWhileHolding && IVR_RETURN_ADDRESS() == g_outlineHeldCheck)
     {
         g_outlineWhileHolding = false;
         return nullptr;
