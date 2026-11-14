@@ -1874,6 +1874,25 @@ void HeldNoCollide(uint32_t handle)
 void IVR_FASTCALL GrabDetachDetour(void *self, void *edx, bool clearVelocity)
 {
     hkGrabDetach.original(self, edx, clearVelocity);
+    // INFRA's DetachEntity can refuse while the player has its flag +0x139e set (the same refusal the
+    // second hand ran into): the object stays in the physics motion controller. Its only direct
+    // caller, CPlayerPickupController::Shutdown, ignores that and deletes itself, so the controller
+    // went on calling into freed memory and the physics step crashed later (vphysics+0x185be).
+    // Without the player it always lets go and destroys the controller.
+    uint8_t *g = static_cast<uint8_t *>(self);
+    if (IsReadable(g + 0x2054, 0x44) && *reinterpret_cast<void **>(g + 0x2084) != nullptr &&
+        *reinterpret_cast<uint32_t *>(g + 0x2054) != 0xFFFFFFFFu)
+    {
+        uint32_t &player = *reinterpret_cast<uint32_t *>(g + 0x2094);
+        const uint32_t saved = player;
+        player = 0xFFFFFFFFu;
+        hkGrabDetach.original(self, edx, clearVelocity);
+        player = saved;
+        static int s_logs = 0;
+        if (s_logs++ < 10)
+            IVR_ERR("Held object: the game's DetachEntity kept the object; let go of it without the player (%s)",
+                    *reinterpret_cast<void **>(g + 0x2084) ? "still attached!" : "done");
+    }
     RestoreHeldCollision();
     g_hold.handle = 0xFFFFFFFFu;
     if (self == g_primaryGrab)
@@ -1993,6 +2012,8 @@ struct SecondHold
     bool onTrial = false;
     bool releasing = false; // let go, but DetachEntity has not freed it yet
     bool releaseThrown = false;
+    Vector lastEye;
+    bool haveEye = false;
 };
 SecondHold *g_second = nullptr;
 
@@ -2245,6 +2266,7 @@ void SecondPickUp(int hand)
     s.hand = hand;
     s.player = player;
     s.farFrames = 0;
+    s.haveEye = false;
     s.savedGroup = -1;
     int now = *reinterpret_cast<int *>(e + kEntCollisionGroup);
     if (g_Config.heldNoCollide && now != kGroupPlayerHeld && g_Game.fnSetCollisionGroup)
@@ -2296,7 +2318,17 @@ void SecondFollow()
         Vector eye;
         Vector *pe = hkEyePosition.original(s.player, nullptr, &eye);
         if (pe && std::isfinite(pe->x) && (*pe + g_Mod.holdRelH[h] - g_Mod.holdPosH[h]).Length() < 64.0f)
-            hold = *pe + g_Mod.holdRelH[h];
+        {
+            // This runs at the start of the server frame, before the player moves this tick; the
+            // game's own carry is updated after. Without the step the player is about to take, the
+            // second object trailed behind the hand while walking.
+            Vector step = s.haveEye ? *pe - s.lastEye : Vector(0, 0, 0);
+            if (step.Length() > 24.0f) // a teleport or a level change, not a step
+                step = Vector(0, 0, 0);
+            s.lastEye = *pe;
+            s.haveEye = true;
+            hold = *pe + step + g_Mod.holdRelH[h];
+        }
     }
     Vector local = *reinterpret_cast<const Vector *>(s.grab + kGrabAttachedPosition);
     if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) || local.Length() > 512.0f)
