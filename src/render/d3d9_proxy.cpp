@@ -237,6 +237,103 @@ HRESULT STDMETHODCALLTYPE hkSetViewport(IDirect3DDevice9 *self, const D3DVIEWPOR
     return g_hkSetViewport.original(self, vp);
 }
 
+// A render target texture with a full mip chain that the device fills in itself.
+IDirect3DTexture9 *MakeMippedTarget(IDirect3DDevice9 *dev, IDirect3DTexture9 *&tex, UINT w, UINT h, D3DFORMAT fmt)
+{
+    D3DSURFACE_DESC d{};
+    if (tex && (FAILED(tex->GetLevelDesc(0, &d)) || d.Width != w || d.Height != h || d.Format != fmt))
+    {
+        tex->Release();
+        tex = nullptr;
+    }
+    if (!tex && FAILED(dev->CreateTexture(w, h, 0, D3DUSAGE_RENDERTARGET | D3DUSAGE_AUTOGENMIPMAP, fmt,
+                                          D3DPOOL_DEFAULT, &tex, nullptr)))
+        tex = nullptr;
+    if (tex)
+        tex->SetAutoGenFilterType(D3DTEXF_LINEAR);
+    return tex;
+}
+
+// Copies a surface into level 0 of a mipped texture and rebuilds the smaller levels.
+bool CopyIntoMipped(IDirect3DDevice9 *dev, IDirect3DSurface9 *src, IDirect3DTexture9 *tex)
+{
+    IDirect3DSurface9 *top = nullptr;
+    if (!tex || FAILED(tex->GetSurfaceLevel(0, &top)) || !top)
+        return false;
+    HRESULT hr = g_hkStretchRect.original(dev, src, nullptr, top, nullptr, D3DTEXF_NONE);
+    top->Release();
+    if (FAILED(hr))
+        return false;
+    tex->GenerateMipSubLevels();
+    return true;
+}
+
+// The mod's camera screen samples its own copy of the lens view (at the lens view's size, with
+// mipmaps): sampling INFRA's eye-sized texture, which the lens view was stretched over, on a screen
+// a few hundred pixels wide resampled it twice with no mipmaps, and the picture was soft and
+// shimmered.
+void UpdateScreenTexture(IDirect3DDevice9 *dev, LONG w, LONG h, D3DFORMAT fmt)
+{
+    static bool s_logged = false;
+    bool ok = g_D3D.cameraTemp && MakeMippedTarget(dev, g_D3D.screenTex, (UINT)w, (UINT)h, fmt) &&
+              CopyIntoMipped(dev, g_D3D.cameraTemp, g_D3D.screenTex);
+    if (!s_logged)
+    {
+        s_logged = true;
+        IVR_LOG("Camera screen: own %ldx%ld picture with mipmaps for the model's screen: %s", w, h,
+                ok ? "ok" : "failed, INFRA's texture is shown");
+    }
+    if (!ok && g_D3D.screenTex)
+    {
+        g_D3D.screenTex->Release();
+        g_D3D.screenTex = nullptr;
+    }
+}
+
+// INFRA takes a photo (C_INFRACamera::ClientThink, three frames after the shot) by copying
+// _rt_CameraWeapon into _rt_CameraWeaponFreezeFrame, but only the window-sized corner of it
+// (GetBackBufferDimensions: 1920x1080 of the 2564x2634 eye-sized texture), so the photo held the top
+// left of the stretched lens view and black below it. The copy takes the whole texture instead, and
+// the mod's screen shows the photo for [camera] photo_seconds.
+bool CopyCameraOut(IDirect3DDevice9 *self, IDirect3DSurface9 *src, const RECT *sr, IDirect3DSurface9 *dst,
+                   const RECT *dr, D3DTEXTUREFILTERTYPE f)
+{
+    D3DSURFACE_DESC sd{}, dd{};
+    if (!dst || dst == src || FAILED(src->GetDesc(&sd)) || FAILED(dst->GetDesc(&dd)))
+        return false;
+    int n = ++g_D3D.cameraReads;
+    if (n <= 10)
+        IVR_LOG("Camera screen: copy out of the camera texture (%ux%u) rect %ld,%ld-%ld,%ld into %p %ux%u rect "
+                "%ld,%ld-%ld,%ld",
+                sd.Width, sd.Height, sr ? sr->left : -1, sr ? sr->top : -1, sr ? sr->right : -1, sr ? sr->bottom : -1,
+                (void *)dst, dd.Width, dd.Height, dr ? dr->left : -1, dr ? dr->top : -1, dr ? dr->right : -1,
+                dr ? dr->bottom : -1);
+    // Only a partial copy at the corner into a texture as big as the camera's is a photo.
+    bool corner = sr && dr && sr->left == 0 && sr->top == 0 && dr->left == 0 && dr->top == 0 &&
+                  (sr->right < (LONG)sd.Width || sr->bottom < (LONG)sd.Height);
+    if (!corner || dd.Width != sd.Width || dd.Height != sd.Height || !(dd.Usage & D3DUSAGE_RENDERTARGET))
+        return false;
+    HRESULT hr = g_hkStretchRect.original(self, g_D3D.MapCopySource(src), nullptr, g_D3D.MapCopyDest(dst), nullptr, f);
+    if (FAILED(hr))
+        return false;
+    bool own = false;
+    if (g_D3D.screenTex && g_Config.cameraPhotoSeconds > 0)
+    {
+        IDirect3DSurface9 *top = nullptr;
+        D3DSURFACE_DESC td{};
+        if (SUCCEEDED(g_D3D.screenTex->GetSurfaceLevel(0, &top)) && top && SUCCEEDED(top->GetDesc(&td)) &&
+            MakeMippedTarget(self, g_D3D.photoTex, td.Width, td.Height, td.Format))
+            own = CopyIntoMipped(self, top, g_D3D.photoTex);
+        if (top)
+            top->Release();
+        if (own)
+            g_D3D.photoUntil = NowSeconds() + g_Config.cameraPhotoSeconds;
+    }
+    IVR_LOG("Camera photo: INFRA's copy of %ldx%ld widened to the whole %ux%u texture; shown on the screen for %.1f s%s",
+            sr->right, sr->bottom, sd.Width, sd.Height, g_Config.cameraPhotoSeconds, own ? "" : " (not: no picture yet)");
+    return true;
+}
+
 // INFRA's viewfinder shows all of _rt_CameraWeapon, which world_eye_size made eye-sized, while the
 // lens view only fills its top left: stretch it over the whole texture, or the rest keeps the eye
 // view copied in when the camera came out. The eye image is multisampled, so it is resolved at its
@@ -272,6 +369,8 @@ bool StretchLensView(IDirect3DDevice9 *self, IDirect3DSurface9 *src, const RECT 
                                   : E_FAIL;
     if (SUCCEEDED(hr))
         hr = g_hkStretchRect.original(self, g_D3D.cameraTemp, nullptr, g_D3D.MapCopyDest(dst), nullptr, D3DTEXF_LINEAR);
+    if (SUCCEEDED(hr))
+        UpdateScreenTexture(self, w, h, dd.Format);
     if (s_copies == 0)
         IVR_LOG("Camera screen: lens view %ldx%ld stretched over the whole %ux%u texture: %s", w, h, dd.Width, dd.Height,
                 SUCCEEDED(hr) ? "ok" : "refused, copied as INFRA does");
@@ -313,6 +412,8 @@ HRESULT STDMETHODCALLTYPE hkStretchRect(IDirect3DDevice9 *self, IDirect3DSurface
     }
     else if (g_D3D.blockCameraCopy && dst && dst == g_D3D.cameraSurface)
         return D3D_OK; // keep the picture from the camera lens
+    else if (src && src == g_D3D.cameraSurface && g_Config.cameraScreenView && CopyCameraOut(self, src, sr, dst, dr, f))
+        return D3D_OK;
     return g_hkStretchRect.original(self, g_D3D.MapCopySource(src), sr, g_D3D.MapCopyDest(dst), dr, f);
 }
 
@@ -595,6 +696,7 @@ void InitVROnce()
         return;
     g_vrInitDone = true;
     InstallGamepadHooks(); // before the engine's input system looks for controllers
+    flags::InstallExitHook();
 
     // DXVK options for VR (no vsync against the monitor, low latency) unless the user has their own.
     std::string conf = ModDir() + "cfg\\dxvk.conf";

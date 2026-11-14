@@ -157,6 +157,10 @@ struct Config
     float cameraScreenUV[4] = {0.113f, 0.134f, 0.486f, 0.404f};
     float cameraLensUV[3] = {0.891f, 0.716f, 0.044f};
     float cameraScreenBrightness = 1.0f;
+    // Bring the picture up out of the screen's recess so it fills the black opening.
+    bool cameraScreenFlush = true;
+    // How long the camera screen shows a photo you just took, in seconds.
+    float cameraPhotoSeconds = 2.0f;
 
     // [viewmodel]  offsets in game units: forward, left, up (in the hand's frame)
     Vector vmOffsetCamera{-14.0f, 2.0f, 5.0f};

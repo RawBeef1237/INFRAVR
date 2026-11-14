@@ -33,6 +33,8 @@ void InstallCrashLogger();
 // INFRA is exiting normally (not after a crash our filter saw): mechanisms still on trial are not
 // held against the next launch.
 void OnProcessExit();
+// Treats the engine's own TerminateProcess on quit as a normal exit too.
+void InstallExitHook();
 
 } // namespace flags
 } // namespace ivr

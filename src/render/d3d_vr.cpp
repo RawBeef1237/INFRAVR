@@ -133,6 +133,14 @@ void D3DVR::OnBeforeReset()
         cameraTemp->Release();
         cameraTemp = nullptr;
     }
+    for (IDirect3DTexture9 **t : {&screenTex, &photoTex})
+        if (*t)
+        {
+            (*t)->Release();
+            *t = nullptr;
+        }
+    photoUntil = 0;
+    cameraSurface = nullptr; // the engine recreates its render targets
     // Our own textures are D3DPOOL_DEFAULT and must go before a reset. Engine textures are
     // released by the engine itself (it recreates its render targets).
     blank.Reset();

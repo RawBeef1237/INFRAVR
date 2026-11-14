@@ -218,6 +218,8 @@ void LoadConfig()
         c.cameraLensUV[0] = l.x, c.cameraLensUV[1] = l.y, c.cameraLensUV[2] = l.z;
     }
     c.cameraScreenBrightness = ini.GetFloat("camera.screen_brightness", c.cameraScreenBrightness);
+    c.cameraScreenFlush = ini.GetBool("camera.screen_flush", c.cameraScreenFlush);
+    c.cameraPhotoSeconds = std::max(0.0f, ini.GetFloat("camera.photo_seconds", c.cameraPhotoSeconds));
 
     c.vmOffsetCamera = ini.GetVector("viewmodel.offset_camera", c.vmOffsetCamera);
     c.vmOffsetPhone = ini.GetVector("viewmodel.offset_phone", c.vmOffsetPhone);

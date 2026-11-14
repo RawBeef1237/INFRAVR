@@ -1,5 +1,6 @@
 #include "flags.h"
 #include "config.h"
+#include "hooks.h"
 
 #include <cstdio>
 #include <mutex>
@@ -163,6 +164,35 @@ void OnProcessExit()
     }
     g_active.clear();
     g_lock.unlock();
+}
+
+namespace {
+// INFRA's quit (also the phone menu's Quit) ends with the engine's Plat_ExitProcess, which calls
+// TerminateProcess on itself: DLL_PROCESS_DETACH never comes, and every mechanism still on trial was
+// taken for a crash on the next launch. A crash the filter saw still counts as one.
+using TerminateProcessFn = BOOL(WINAPI *)(HANDLE, UINT);
+Hook<TerminateProcessFn> g_hkTerminate;
+
+BOOL WINAPI TerminateProcessDetour(HANDLE process, UINT code)
+{
+    if (process == GetCurrentProcess() || GetProcessId(process) == GetCurrentProcessId())
+    {
+        IVR_LOG("INFRA is closing (TerminateProcess, code %u)%s", code, g_crashed ? " after a crash" : "");
+        OnProcessExit();
+    }
+    return g_hkTerminate.original(process, code);
+}
+} // namespace
+
+void InstallExitHook()
+{
+    if (g_hkTerminate.Installed())
+        return;
+    HMODULE k = GetModuleHandleA("kernelbase.dll");
+    void *fn = k ? reinterpret_cast<void *>(GetProcAddress(k, "TerminateProcess")) : nullptr;
+    if (!fn && (k = GetModuleHandleA("kernel32.dll")))
+        fn = reinterpret_cast<void *>(GetProcAddress(k, "TerminateProcess"));
+    g_hkTerminate.Install("TerminateProcess", fn, reinterpret_cast<void *>(&TerminateProcessDetour));
 }
 
 } // namespace flags
