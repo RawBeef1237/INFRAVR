@@ -262,8 +262,8 @@ void UpdateQueueMode()
             failed = true;
             return;
         }
-        if (flags::Begin(kMulticoreFlag))
-            g_multicoreSince = NowSeconds();
+        if (flags::Begin(kMulticoreFlag) && g_multicoreSince == 0)
+            g_multicoreSince = NowSeconds(); // trial time counts across menu toggles
     }
     g_Game.queueMode = want;
     g_Game.ExecuteCommand(want == 2 ? "mat_queue_mode 2" : "mat_queue_mode 0");
