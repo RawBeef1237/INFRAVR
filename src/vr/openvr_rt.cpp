@@ -285,14 +285,14 @@ void VrRuntime::SampleFramePoses()
         m_frameDuration = hz > 1.0f ? 1.0f / hz : 1.0f / 90.0f;
         m_vsyncToPhotons = m_system->GetFloatTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd,
                                                                    vr::Prop_SecondsFromVsyncToPhotons_Float);
-        IVR_LOG("Multicore poses: display %.1f Hz, vsync to photons %.1f ms", 1.0f / m_frameDuration,
-                m_vsyncToPhotons * 1000.0f);
+        IVR_LOG("Multicore poses: display %.1f Hz, vsync to photons %.1f ms, predicted %.2f frames ahead",
+                1.0f / m_frameDuration, m_vsyncToPhotons * 1000.0f, g_Config.multicorePredictFrames);
     }
     float sinceVsync = 0;
     m_system->GetTimeSinceLastVsync(&sinceVsync, nullptr);
-    // This frame is drawn now, played back and submitted by the render thread about a frame
-    // later, and shown at the vsync after that.
-    float predict = 2.0f * m_frameDuration - sinceVsync + m_vsyncToPhotons;
+    // Shown at the next vsync after the render thread submits it; [debug] multicore_predict_frames
+    // (default 1, as single-threaded) says how many frame intervals that is from now.
+    float predict = g_Config.multicorePredictFrames * m_frameDuration - sinceVsync + m_vsyncToPhotons;
     if (predict < 0)
         predict = 0;
     vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount];

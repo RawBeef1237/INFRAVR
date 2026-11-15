@@ -255,6 +255,7 @@ void LoadConfig()
     c.probe = ini.GetBool("debug.probe", c.probe);
     c.retrySkipped = ini.GetBool("debug.retry_skipped", c.retrySkipped);
     c.multicoreExperiment = ini.GetInt("debug.multicore_experiment", c.multicoreExperiment);
+    c.multicorePredictFrames = ini.GetFloat("debug.multicore_predict_frames", c.multicorePredictFrames);
 }
 
 } // namespace ivr

@@ -210,6 +210,8 @@ struct Config
     // Multicore rendering experiments (only while mat_queue_mode 2 runs): 0 = normal,
     // 1 = send nothing to the headset (no Submit; poses read without waiting).
     int multicoreExperiment = 0;
+    // Multicore: how many frames ahead the head and hands are predicted (plus vsync to photons).
+    float multicorePredictFrames = 1.0f;
 };
 
 extern Config g_Config;

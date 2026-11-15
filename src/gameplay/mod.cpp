@@ -1179,7 +1179,13 @@ void VRMod::PlaceHud(bool atHand, float aspect)
             m_phoneWidth = screenW;
         }
         if (framePhone.relative)
+        {
             ov->SetOverlayTransformDeviceRelative(hudOverlay, framePhone.device, framePhone.rel);
+            static int s_logged = 0;
+            if (s_logged++ % 600 == 0)
+                IVR_LOG("Phone menu panel: on controller %u, offset (%.3f %.3f %.3f) m", framePhone.device,
+                        framePhone.rel.m[0][3], framePhone.rel.m[1][3], framePhone.rel.m[2][3]);
+        }
         else
             ov->SetOverlayTransformAbsolute(hudOverlay, m_phoneXf);
         m_hudAtHand = true;
