@@ -306,6 +306,19 @@ void VrRuntime::SampleFramePoses()
     m_handPredict = predict;
 }
 
+bool VrRuntime::ControllerDevicePose(int hand, vr::HmdMatrix34_t &out, uint32_t &device) const
+{
+    if (m_backend == Backend::OpenXR || !Ok() || !m_system)
+        return false;
+    vr::TrackedDeviceIndex_t idx = m_system->GetTrackedDeviceIndexForControllerRole(
+        hand == HAND_LEFT ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand);
+    if (idx >= vr::k_unMaxTrackedDeviceCount || !m_poses[idx].bPoseIsValid)
+        return false;
+    out = m_poses[idx].mDeviceToAbsoluteTracking;
+    device = idx;
+    return true;
+}
+
 void VrRuntime::ReadAction(DigitalAction &a)
 {
     vr::InputDigitalActionData_t d{};

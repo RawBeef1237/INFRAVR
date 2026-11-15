@@ -95,6 +95,8 @@ public:
     // drawn and tagged for SteamVR with one consistent set of poses.
     void WaitPosesDeferred();
     void SampleFramePoses();
+    // The raw pose of the controller in that hand's role from the last poses read (standing space).
+    bool ControllerDevicePose(int hand, vr::HmdMatrix34_t &out, uint32_t &device) const;
     void UpdateInput();
 
     const TrackedPose &Head() const { return m_head; }

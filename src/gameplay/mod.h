@@ -132,6 +132,11 @@ public:
         bool ok = false;
         vr::HmdMatrix34_t xf{};
         float width = 0;
+        // Multicore: the panel relative to the phone hand's controller, so SteamVR keeps it on the
+        // controller at display time (the picture is drawn for that time; the panel would trail).
+        bool relative = false;
+        uint32_t device = 0;
+        vr::HmdMatrix34_t rel{};
     };
     PhonePanel FramePhonePanel() const;
     PhonePanel framePhone; // set by the frame's queued call, read in UpdateOverlays

@@ -1144,6 +1144,19 @@ VRMod::PhonePanel VRMod::FramePhonePanel() const
     PhonePanel p;
     if (phoneMenu && !g_Config.phoneMenuInWorld)
         p.ok = PhoneScreenPanel(m_phoneAspect, p.xf, p.width);
+    vr::HmdMatrix34_t dev;
+    if (p.ok && g_Game.queueMode == 2 && g_VR.ControllerDevicePose(itemHand, dev, p.device))
+    {
+        // rel = inverse(dev) * xf (rigid transforms: rotation part transposed)
+        for (int r = 0; r < 3; ++r)
+        {
+            for (int c = 0; c < 3; ++c)
+                p.rel.m[r][c] = dev.m[0][r] * p.xf.m[0][c] + dev.m[1][r] * p.xf.m[1][c] + dev.m[2][r] * p.xf.m[2][c];
+            p.rel.m[r][3] = dev.m[0][r] * (p.xf.m[0][3] - dev.m[0][3]) + dev.m[1][r] * (p.xf.m[1][3] - dev.m[1][3]) +
+                            dev.m[2][r] * (p.xf.m[2][3] - dev.m[2][3]);
+        }
+        p.relative = true;
+    }
     return p;
 }
 
@@ -1165,7 +1178,10 @@ void VRMod::PlaceHud(bool atHand, float aspect)
             ov->SetOverlaySortOrder(hudOverlay, 1);
             m_phoneWidth = screenW;
         }
-        ov->SetOverlayTransformAbsolute(hudOverlay, m_phoneXf);
+        if (framePhone.relative)
+            ov->SetOverlayTransformDeviceRelative(hudOverlay, framePhone.device, framePhone.rel);
+        else
+            ov->SetOverlayTransformAbsolute(hudOverlay, m_phoneXf);
         m_hudAtHand = true;
     }
     else if (atHand)

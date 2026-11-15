@@ -44,6 +44,11 @@ public:
         if (Valid(h))
             m_ov->SetOverlayTransformTrackedDeviceRelative(h, vr::k_unTrackedDeviceIndex_Hmd, &xf);
     }
+    void SetOverlayTransformDeviceRelative(vr::VROverlayHandle_t h, uint32_t device, const vr::HmdMatrix34_t &xf) override
+    {
+        if (Valid(h))
+            m_ov->SetOverlayTransformTrackedDeviceRelative(h, device, &xf);
+    }
     void ShowOverlay(vr::VROverlayHandle_t h) override
     {
         if (Valid(h))
