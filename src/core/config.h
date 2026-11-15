@@ -208,8 +208,7 @@ struct Config
     bool probe = true; // log what the headset images contain every few seconds
     bool retrySkipped = false; // forget infravr_skip.txt and try every mechanism again
     // Multicore rendering experiments (only while mat_queue_mode 2 runs): 0 = normal,
-    // 1 = send nothing to the headset (no Submit; poses read without waiting),
-    // 2 = wait for the poses on the render thread right after Present instead of the main thread.
+    // 1 = send nothing to the headset (no Submit; poses read without waiting).
     int multicoreExperiment = 0;
 };
 

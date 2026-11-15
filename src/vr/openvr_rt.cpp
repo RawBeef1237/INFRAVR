@@ -264,6 +264,35 @@ void VrRuntime::LatestPoses()
         m_head = ConvertPose(hmd.mDeviceToAbsoluteTracking);
 }
 
+void VrRuntime::WaitPosesDeferred()
+{
+    if (m_backend == Backend::OpenXR || !Ok())
+        return;
+    vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount];
+    m_compositor->WaitGetPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+    {
+        std::lock_guard<std::mutex> lock(m_parkedLock);
+        std::memcpy(m_parked, poses, sizeof(poses));
+        m_parkedNew = true;
+    }
+    m_havePoses = true;
+}
+
+bool VrRuntime::ApplyDeferredPoses()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_parkedLock);
+        if (!m_parkedNew)
+            return false;
+        std::memcpy(m_poses, m_parked, sizeof(m_poses));
+        m_parkedNew = false;
+    }
+    const vr::TrackedDevicePose_t &hmd = m_poses[vr::k_unTrackedDeviceIndex_Hmd];
+    if (hmd.bPoseIsValid)
+        m_head = ConvertPose(hmd.mDeviceToAbsoluteTracking);
+    return true;
+}
+
 void VrRuntime::ReadAction(DigitalAction &a)
 {
     vr::InputDigitalActionData_t d{};

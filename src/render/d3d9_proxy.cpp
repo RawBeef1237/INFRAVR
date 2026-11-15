@@ -841,9 +841,11 @@ void AfterPresent()
     // WaitGetPoses right after Present hands the frame over by itself; only when the poses are read
     // somewhere else (multicore) does SteamVR need the explicit handoff.
     bool posesLater = g_Game.mainThread && g_Game.presentThread != g_Game.mainThread;
-    if (posesLater && g_Game.queueMode == 2 && g_Config.multicoreExperiment == 2)
+    if (posesLater && g_Game.queueMode == 2 && g_Config.multicoreExperiment != 1 && !g_VR.IsOpenXR())
     {
-        g_VR.WaitPoses(); // experiment: every compositor call on this (the render) thread
+        // Multicore: WaitGetPoses on the thread that just submitted (waiting on the engine thread
+        // while a render worker submits lost the GPU device), parked for the engine thread.
+        g_VR.WaitPosesDeferred();
         posesLater = false;
     }
     if (g_VR.UsesSteamVR() && (posesLater || g_Config.explicitHandoff))

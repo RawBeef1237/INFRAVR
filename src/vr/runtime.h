@@ -14,6 +14,8 @@
 #include "common.h"
 #include "mathlib.h"
 
+#include <mutex>
+
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
@@ -89,6 +91,11 @@ public:
     // Per frame -------------------------------------------------------------------------
     void WaitPoses();     // blocks until the compositor wants the next frame
     void LatestPoses();   // the newest poses without waiting (OpenVR GetLastPoses)
+    // Multicore rendering: the render thread waits for the poses right after Present and parks
+    // them; the engine thread takes them over once at the start of its frame, so one frame is
+    // drawn (and tagged for SteamVR) with one consistent set of poses.
+    void WaitPosesDeferred();
+    bool ApplyDeferredPoses(); // false if no new poses arrived since the last call
     void UpdateInput();
 
     const TrackedPose &Head() const { return m_head; }
@@ -183,6 +190,9 @@ private:
     void *(__cdecl *m_getGenericInterface)(const char *, vr::EVRInitError *) = nullptr;
 
     vr::TrackedDevicePose_t m_poses[vr::k_unMaxTrackedDeviceCount]{};
+    std::mutex m_parkedLock;
+    vr::TrackedDevicePose_t m_parked[vr::k_unMaxTrackedDeviceCount]{};
+    bool m_parkedNew = false;
     vr::VRActionSetHandle_t m_actionSet = vr::k_ulInvalidActionSetHandle;
     vr::VRActionHandle_t m_poseAction[2]{vr::k_ulInvalidActionHandle, vr::k_ulInvalidActionHandle};
     vr::VRActionHandle_t m_hapticAction[2]{vr::k_ulInvalidActionHandle, vr::k_ulInvalidActionHandle};
