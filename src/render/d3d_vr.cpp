@@ -1,6 +1,7 @@
 #include "d3d_vr.h"
 #include "config.h"
 #include "mod.h"
+#include "game.h"
 #include "overlay_api.h"
 #include "world_size.h"
 #include "hands_renderer.h"
@@ -1120,6 +1121,19 @@ void D3DVR::OnPresent()
     g_Mod.eyesRendered = false;
     g_Mod.hudPainted = false;
     g_Mod.subsPainted = false;
+    if (g_Config.multicoreExperiment == 1 && g_Game.queueMode == 2)
+    {
+        // Experiment: no Vulkan access and no Submit while the engine renders on its own thread.
+        if (stereo && g_Config.mirrorToDesktop)
+            MirrorEyeToBackBuffer();
+        static bool s_logged = false;
+        if (!s_logged)
+        {
+            s_logged = true;
+            IVR_LOG("multicore experiment 1: nothing is sent to the headset while multicore runs");
+        }
+        return;
+    }
     if (g_VR.IsOpenXR())
         XrHandOver();
     if (reuse && g_VR.IsOpenXR())

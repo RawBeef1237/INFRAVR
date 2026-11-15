@@ -88,6 +88,7 @@ public:
 
     // Per frame -------------------------------------------------------------------------
     void WaitPoses();     // blocks until the compositor wants the next frame
+    void LatestPoses();   // the newest poses without waiting (OpenVR GetLastPoses)
     void UpdateInput();
 
     const TrackedPose &Head() const { return m_head; }

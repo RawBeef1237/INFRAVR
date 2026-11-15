@@ -20,6 +20,7 @@
 
 namespace ivr {
 void Defer(std::function<void()> fn);
+volatile LONG g_deferredRuns = 0; // queued calls the render thread has run (multicore diagnostics)
 
 namespace {
 
@@ -147,6 +148,7 @@ void *IVR_FASTCALL QcDestroy(QueuedCall *self, void *, int flags)
 }
 void IVR_FASTCALL QcCall(QueuedCall *self, void *)
 {
+    InterlockedIncrement(&g_deferredRuns);
     if (self->fn)
         self->fn();
 }

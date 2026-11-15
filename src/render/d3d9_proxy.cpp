@@ -31,6 +31,7 @@ using namespace ivr;
 namespace ivr {
 bool InstallClientHooks();
 void ResetStereoGuard();
+extern volatile LONG g_deferredRuns; // hooks_game.cpp
 bool InstallServerHooks();
 } // namespace ivr
 
@@ -797,6 +798,36 @@ void OnPresent()
     g_D3D.OnPresent();
 }
 
+// Multicore diagnostics: the first presents after mat_queue_mode 2 starts, and any failed one.
+void LogThreadedPresent(HRESULT hr)
+{
+    static int s_lastMode = 0, s_count = 0, s_failures = 0;
+    static LONG s_lastRuns = 0;
+    int mode = g_Game.queueMode;
+    if (mode != s_lastMode)
+    {
+        s_lastMode = mode;
+        s_count = 0;
+        s_lastRuns = g_deferredRuns;
+    }
+    if (FAILED(hr) && s_failures < 20)
+    {
+        ++s_failures;
+        IVR_ERR("Present failed: 0x%08lx (%s) on thread %lu, mat_queue_mode %d", (unsigned long)hr,
+                hr == D3DERR_DEVICELOST ? "device lost" : hr == D3DERR_DEVICEREMOVED ? "device removed" : "?",
+                GetCurrentThreadId(), mode);
+    }
+    if (mode != 2 || s_count >= 120)
+        return;
+    ++s_count;
+    LONG runs = g_deferredRuns;
+    if (s_count <= 10 || s_count % 20 == 0)
+        IVR_LOG("multicore: present %d on thread %lu (main %lu), hr 0x%08lx, %ld queued calls ran since the last",
+                s_count, GetCurrentThreadId(), (unsigned long)g_Game.mainThread, (unsigned long)hr,
+                (long)(runs - s_lastRuns));
+    s_lastRuns = runs;
+}
+
 void AfterPresent()
 {
     if (!g_VR.Ok() || !g_Mod.Active())
@@ -810,6 +841,11 @@ void AfterPresent()
     // WaitGetPoses right after Present hands the frame over by itself; only when the poses are read
     // somewhere else (multicore) does SteamVR need the explicit handoff.
     bool posesLater = g_Game.mainThread && g_Game.presentThread != g_Game.mainThread;
+    if (posesLater && g_Game.queueMode == 2 && g_Config.multicoreExperiment == 2)
+    {
+        g_VR.WaitPoses(); // experiment: every compositor call on this (the render) thread
+        posesLater = false;
+    }
     if (g_VR.UsesSteamVR() && (posesLater || g_Config.explicitHandoff))
         g_VR.m_compositor->PostPresentHandoff();
     if (!g_Game.mainThread || g_Game.presentThread == g_Game.mainThread)
@@ -830,6 +866,7 @@ HRESULT STDMETHODCALLTYPE hkPresent(IDirect3DDevice9 *self, const RECT *src, con
         return g_hkPresent.original(self, src, dst, wnd, dirty);
     OnPresent();
     HRESULT hr = g_hkPresent.original(self, src, dst, wnd, dirty);
+    LogThreadedPresent(hr);
     AfterPresent();
     return hr;
 }
@@ -841,6 +878,7 @@ HRESULT STDMETHODCALLTYPE hkPresentEx(IDirect3DDevice9Ex *self, const RECT *src,
         return g_hkPresentEx.original(self, src, dst, wnd, dirty, flags);
     OnPresent();
     HRESULT hr = g_hkPresentEx.original(self, src, dst, wnd, dirty, flags);
+    LogThreadedPresent(hr);
     AfterPresent();
     return hr;
 }

@@ -490,7 +490,12 @@ void VRMod::OnFrame()
     double dt = m_lastFrame > 0 ? std::min(0.1, now - m_lastFrame) : 0.0;
     m_lastFrame = now;
 
-    g_VR.WaitPoses();
+    // Multicore rendering runs Present (and the frame hand-over) on the render thread.
+    bool threaded = g_Game.queueMode == 2 && g_Game.presentThread && g_Game.presentThread != GetCurrentThreadId();
+    if (threaded && g_Config.multicoreExperiment == 1)
+        g_VR.LatestPoses(); // experiment: nothing is submitted, so do not wait for the compositor
+    else if (!(threaded && g_Config.multicoreExperiment == 2)) // 2: read after Present instead
+        g_VR.WaitPoses();
     g_VR.UpdateInput();
 
     const TrackedPose &head = g_VR.Head();
