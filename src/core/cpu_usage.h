@@ -24,8 +24,9 @@ void NoteProcessor(Role role);
 
 // Writes a report if the interval has passed. Call from the engine's main thread once per frame.
 // queueMode is the mat_queue_mode in effect (what the mod asked for), multicoreWanted whether the
-// game's own "multicore rendering" option is on; mainTid / renderTid are the two thread ids.
-void Report(int queueMode, bool multicoreWanted, DWORD mainTid, DWORD renderTid);
+// game's own "multicore rendering" option is on; mainTid / renderTid are the two thread ids;
+// queued whether the material system really hands out a queued render context (its call queue).
+void Report(int queueMode, bool multicoreWanted, bool queued, DWORD mainTid, DWORD renderTid);
 
 // Starts a fresh measurement (e.g. when mat_queue_mode changes), so a report covers one mode only.
 void Restart();

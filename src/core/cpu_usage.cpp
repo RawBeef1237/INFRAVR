@@ -84,10 +84,14 @@ uint64_t TakeMask(Role role)
     return lo | (hi << 32);
 }
 
+// The processors a thread ran on. Windows moves a busy thread between cores all the time, so a
+// long list does not mean the work was spread out: only separate threads can do that.
 std::string MaskList(uint64_t mask)
 {
     if (!mask)
         return g_getProc ? "?" : "n/a";
+    if (CountBits(mask) > 4)
+        return std::to_string(CountBits(mask)) + " different cpus";
     std::string s;
     for (int i = 0; i < kMaxProcs; ++i)
         if (mask & ((uint64_t)1 << i))
@@ -142,7 +146,7 @@ void Restart()
     TakeMask(RenderThread);
 }
 
-void Report(int queueMode, bool multicoreWanted, DWORD mainTid, DWORD renderTid)
+void Report(int queueMode, bool multicoreWanted, bool queued, DWORD mainTid, DWORD renderTid)
 {
     double now = NowSeconds();
     if (g_prevWall == 0)
@@ -211,15 +215,17 @@ void Report(int queueMode, bool multicoreWanted, DWORD mainTid, DWORD renderTid)
 
     char renderPart[160];
     if (split)
-        snprintf(renderPart, sizeof(renderPart), "render thread %lu %.0f%% on cpu %s", (unsigned long)renderTid,
+        snprintf(renderPart, sizeof(renderPart), "render thread %lu %.0f%% (ran on %s)", (unsigned long)renderTid,
                  renderUse * 100, MaskList(renderMask).c_str());
-    else
+    else if (renderTid)
         snprintf(renderPart, sizeof(renderPart), "Present on the main thread (no separate render thread)");
+    else
+        snprintf(renderPart, sizeof(renderPart), "no Present seen yet");
 
-    IVR_LOG("CPU: %.2f cores' worth in use, %d busy thread(s); main thread %lu %.0f%% on cpu %s; %s; "
-            "other busy:%s; cpus used by main+render: %d [mat_queue_mode %d, multicore option %s]",
+    IVR_LOG("CPU: %.2f cores' worth in use, %d busy thread(s); main thread %lu %.0f%% (ran on %s); %s; "
+            "other busy:%s [mat_queue_mode %d, material system queue %s, multicore option %s]",
             total, (int)busy.size(), (unsigned long)mainTid, mainUse * 100, MaskList(mainMask).c_str(), renderPart,
-            others.empty() ? " none" : others.c_str(), CountBits(mainMask | renderMask), queueMode,
+            others.empty() ? " none" : others.c_str(), queueMode, queued ? "active" : "not active",
             multicoreWanted ? "on" : "off");
 
     if (queueMode == 2)
@@ -228,8 +234,11 @@ void Report(int queueMode, bool multicoreWanted, DWORD mainTid, DWORD renderTid)
             IVR_LOG("CPU: multicore rendering is working - the engine and the render thread run in parallel "
                     "(%.0f%% + %.0f%% of a core)",
                     mainUse * 100, renderUse * 100);
+        else if (!queued)
+            IVR_LOG("CPU: multicore rendering is NOT working - mat_queue_mode is 2 but the material system "
+                    "kept rendering single-threaded (no queued render context)");
         else
-            IVR_LOG("CPU: multicore rendering was asked for but %s",
+            IVR_LOG("CPU: multicore rendering is NOT working - the material system queues its work but %s",
                     split ? "the render thread is nearly idle" : "Present still runs on the main thread");
     }
 

@@ -527,7 +527,8 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
         UpdateQueueMode();
         cpu::NoteProcessor(cpu::MainThread);
         if (!g_Mod.menuMode)
-            cpu::Report(g_Game.queueMode, g_Game.multicoreOption, g_Game.mainThread, g_Game.presentThread);
+            cpu::Report(g_Game.queueMode, g_Game.multicoreOption, RenderQueue() != nullptr, g_Game.mainThread,
+                        g_Game.presentThread);
     }
     if (g_renderDepth > 0 || !g_Mod.Active() || g_Mod.menuMode || !IsMainView(view) || !EnsureTextures())
         return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);
