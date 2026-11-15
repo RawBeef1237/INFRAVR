@@ -495,7 +495,7 @@ void VRMod::OnFrame()
     if (threaded && g_Config.multicoreExperiment == 1)
         g_VR.LatestPoses(); // experiment: nothing is submitted, so do not wait for the compositor
     else if (threaded && !g_VR.IsOpenXR())
-        g_VR.ApplyDeferredPoses(); // waited for on the render thread after Present
+        g_VR.SampleFramePoses(); // head and hands together, for when this frame is shown
     else
         g_VR.WaitPoses();
     g_VR.UpdateInput();
