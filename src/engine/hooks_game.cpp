@@ -735,7 +735,9 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
             PaintHud(hudView, PAINT_INGAMEPANELS);
     }
     vr::HmdMatrix34_t pose = g_VR.Head().raw; // what this frame was drawn for
-    Defer([hud, subs, pose] {
+    VRMod::PhonePanel phone = g_Mod.FramePhonePanel(); // where this frame's phone screen is
+    Defer([hud, subs, pose, phone] {
+        g_Mod.framePhone = phone;
         g_Mod.subsPainted = subs;
         g_D3D.SetRenderPose(pose);
         world::OnStereoFrame();

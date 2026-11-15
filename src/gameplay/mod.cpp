@@ -1139,13 +1139,24 @@ bool VRMod::PhoneScreenPanel(float aspect, vr::HmdMatrix34_t &xf, float &width) 
     return true;
 }
 
+VRMod::PhonePanel VRMod::FramePhonePanel() const
+{
+    PhonePanel p;
+    if (phoneMenu && !g_Config.phoneMenuInWorld)
+        p.ok = PhoneScreenPanel(m_phoneAspect, p.xf, p.width);
+    return p;
+}
+
 void VRMod::PlaceHud(bool atHand, float aspect)
 {
     OverlayApi *ov = g_VR.Overlays();
     vr::HmdMatrix34_t screenXf;
     float screenW = 0;
-    if (atHand && PhoneScreenPanel(aspect, screenXf, screenW))
+    (void)aspect; // the frame's panel was fitted with the last known aspect
+    if (atHand && framePhone.ok)
     {
+        screenXf = framePhone.xf;
+        screenW = framePhone.width;
         // On the phone model's screen, wherever INFRA's animation holds it.
         m_phoneXf = screenXf;
         if (!m_hudAtHand || std::fabs(screenW - m_phoneWidth) > 0.001f)
