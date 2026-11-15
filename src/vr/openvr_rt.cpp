@@ -127,6 +127,19 @@ void VrRuntime::SetProjection(const float l[2], const float r[2], const float t[
     float growY = (2.0f * tanY) / std::max(0.1f, (b[0] - t[0]));
     renderWidth = (uint32_t)std::lround(recW * growX * g_Config.renderScale) & ~1u;
     renderHeight = (uint32_t)std::lround(recH * growY * g_Config.renderScale) & ~1u;
+    // Cap the eye size: every eye-sized buffer (and ~40 engine buffers with world_at_eye_size)
+    // grows with it, and past the GPU's memory the driver loses the device mid-level.
+    double pixels = (double)renderWidth * renderHeight;
+    double cap = (double)g_Config.maxEyeMegapixels * 1e6;
+    if (cap > 0 && pixels > cap)
+    {
+        double s = std::sqrt(cap / pixels);
+        uint32_t w = (uint32_t)(renderWidth * s) & ~1u, h = (uint32_t)(renderHeight * s) & ~1u;
+        IVR_LOG("Projection: %ux%u (%.1f MP) is over max_eye_megapixels %.1f - rendering %ux%u instead",
+                renderWidth, renderHeight, pixels / 1e6, g_Config.maxEyeMegapixels, w, h);
+        renderWidth = w;
+        renderHeight = h;
+    }
     renderWidth = std::min<uint32_t>(std::max<uint32_t>(renderWidth, 256), 8192);
     renderHeight = std::min<uint32_t>(std::max<uint32_t>(renderHeight, 256), 8192);
 

@@ -33,6 +33,10 @@ struct Config
     // [vr]
     float worldScale = 1.0f;   // multiplies 39.37 game units per metre
     float renderScale = 1.0f;  // multiplies SteamVR's recommended per-eye resolution
+    // Upper limit for the per-eye render size in megapixels (0 = no limit). High-resolution headsets
+    // (PSVR2: 4490x3468 = 15.6 MP after the symmetric frustum) otherwise run the GPU out of memory
+    // once world_at_eye_size makes ~40 engine buffers that big, and the driver drops the device.
+    float maxEyeMegapixels = 8.0f;
     float zNear = 3.0f;
     bool leftHanded = false;
     bool mirrorToDesktop = true;
