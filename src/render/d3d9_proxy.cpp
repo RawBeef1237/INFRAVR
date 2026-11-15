@@ -8,6 +8,7 @@
 //      the Source engine (see hooks_game.cpp).
 #include "common.h"
 #include "config.h"
+#include "cpu_usage.h"
 #include "flags.h"
 #include "world_size.h"
 #include "hands_renderer.h"
@@ -805,6 +806,7 @@ void AfterPresent()
     // With multicore rendering Present runs on the engine's render thread; the VR logic (poses,
     // input) then runs on the main thread at the start of each RenderView instead.
     g_Game.presentThread = GetCurrentThreadId();
+    cpu::NoteProcessor(cpu::RenderThread);
     // WaitGetPoses right after Present hands the frame over by itself; only when the poses are read
     // somewhere else (multicore) does SteamVR need the explicit handoff.
     bool posesLater = g_Game.mainThread && g_Game.presentThread != g_Game.mainThread;

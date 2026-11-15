@@ -117,7 +117,6 @@ void LoadConfig()
     c.clearStencil = ini.GetBool("vr.clear_stencil", c.clearStencil);
     if (c.antialiasing != 2 && c.antialiasing != 4 && c.antialiasing != 8)
         c.antialiasing = 0;
-    c.multicore = ini.GetBool("vr.multicore", c.multicore);
     c.dxvk = Lower(ini.GetString("vr.dxvk", c.dxvk));
     c.backend = Lower(ini.GetString("vr.backend", c.backend));
     c.worldAtEyeSize = ini.GetBool("vr.world_at_eye_size", c.worldAtEyeSize);

@@ -1,6 +1,7 @@
 // INFRA VR - Source engine detours: stereo rendering, input, viewmodel, camera lens,
 // flashlight and the server-side grab controller.
 #include "config.h"
+#include "cpu_usage.h"
 #include "glb_model.h"
 #include "hands_renderer.h"
 #include "flags.h"
@@ -180,16 +181,44 @@ void Defer(std::function<void()> fn)
 
 namespace {
 
+// The game's video options write mat_queue_mode (-1 = multicore on, 0 = off). Anything other than
+// the value the mod last set means the option (or the console) changed it.
+double g_watchNext = 0;
+
+void WatchMulticoreOption()
+{
+    double now = NowSeconds();
+    if (now < g_watchNext)
+        return;
+    g_watchNext = now + 0.5;
+    std::string v = g_Game.ConVarString("mat_queue_mode");
+    if (v.empty())
+        return;
+    int mode = atoi(v.c_str());
+    if (mode == g_Game.queueMode)
+        return;
+    bool on = mode != 0;
+    if (on != g_Game.multicoreOption)
+        g_Game.SetMulticoreOption(on, "changed in the game's video options");
+    // Put back what the mod needs right now (0 in menus); UpdateQueueMode switches to 2 in a level.
+    g_Game.ExecuteCommand(g_Game.queueMode == 2 ? "mat_queue_mode 2" : "mat_queue_mode 0");
+    g_watchNext = now + 1.0; // give the command time to land before looking again
+}
+
 // mat_queue_mode 2 only while we are in a level with the eye images made (creating render
-// targets and the menus keep the engine single threaded).
+// targets and the menus keep the engine single threaded), and only if the game's multicore
+// rendering option is on.
 void UpdateQueueMode()
 {
-    int want = (g_Config.multicore && !g_Mod.menuMode && g_D3D.eye[0].Valid() && g_D3D.eye[1].Valid()) ? 2 : 0;
+    WatchMulticoreOption();
+    int want = (g_Game.multicoreOption && !g_Mod.menuMode && g_D3D.eye[0].Valid() && g_D3D.eye[1].Valid()) ? 2 : 0;
     if (want == g_Game.queueMode)
         return;
     g_Game.queueMode = want;
     g_Game.ExecuteCommand(want == 2 ? "mat_queue_mode 2" : "mat_queue_mode 0");
+    g_watchNext = NowSeconds() + 1.0; // our own change, not the video options
     IVR_LOG("Multicore rendering %s", want == 2 ? "on" : "off");
+    cpu::Restart(); // the next CPU report covers the new mode only
 }
 
 // Stereo once per Present (Black Mesa VR's rule): with mat_queue_mode 0 a second main view before
@@ -496,6 +525,9 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
             g_Mod.OnFrame();
         g_Mod.OnSafePoint(); // queued console commands
         UpdateQueueMode();
+        cpu::NoteProcessor(cpu::MainThread);
+        if (!g_Mod.menuMode)
+            cpu::Report(g_Game.queueMode, g_Game.multicoreOption, g_Game.mainThread, g_Game.presentThread);
     }
     if (g_renderDepth > 0 || !g_Mod.Active() || g_Mod.menuMode || !IsMainView(view) || !EnsureTextures())
         return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);

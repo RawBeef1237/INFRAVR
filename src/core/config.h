@@ -41,7 +41,6 @@ struct Config
     bool motionBlur = false;   // keep INFRA's motion blur (smears the image in VR)
     bool clearStencil = true;  // clear the eyes' stencil buffer with their depth buffer (selection glow)
     bool offCenterEyes = true; // OpenXR: draw each eye with only its own field of view (off-center)
-    bool multicore = false; // let the engine render on its own thread (mat_queue_mode 2)
     std::string dxvk = "stock"; // stock = dxvk_d3d9.dll (DXVK 2.7.1), gplall = dxvk_d3d9_gplall.dll
     // VR runtime: "openvr" (SteamVR, in this process) or "openxr" (the 64-bit infravr_openxr.exe
     // helper talks to the headset's own OpenXR runtime; falls back to OpenVR if it cannot start).
