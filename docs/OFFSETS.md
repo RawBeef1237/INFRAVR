@@ -37,7 +37,10 @@ by RTTI vtable + slot or by a unique byte signature, and the RVA is the cross-ch
 | IMaterial slot 0 GetName, slot 11 FindVar(name, found*, complain) | CMaterial vtable RVA 0x92c5c: slot 0 `add ecx,0x18; jmp` (name symbol), slot 11 `ret 0xc` | static (Windows and macOS agree) |
 | IMaterialVar slot 0 GetTextureValue, ITexture slot 0 GetName | CMaterialVar vtable RVA 0x962d4, CTexture vtable RVA 0x983ec | static (Windows and macOS agree) |
 | IMatRenderContext slot 144 / 145 Set/GetToneMappingScaleLinear (145 returns a Vector through a hidden result pointer, `ret 4`; the queued context copies its +0x1c0) | slot numbers | static (MaterialSystem.dll and the macOS materialsystem.dylib symbols agree) |
-| vtable slot 13: a two-int setter writing +0x2ac4 / +0x2ac8 | probably SetAdapter, not a size override | static |
+| vtable slot 13: a two-int setter writing +0x2ac4 / +0x2ac8 | SetThreadMode(mode, serviceThread): AllowThreading calls it with (2, thread); EndFrame uses +0x2ac4 when mat_queue_mode is -1. Not a size override | static |
+| vtable slot 134 AllowThreading(bool, int serviceThread) | RVA 0xde00, starts `55 8B EC 53 56 8B F1 8A 9E CD 2B 00 00` (flag +0x2bcd, the "Queued Material System: ENABLED!" message); checked by the mod before calling | static |
+| EndFrame thread mode choice | RVA ~0x111c3: mode = mat_queue_mode (or +0x2ac4 if negative), forced single threaded unless shader API slot 0x23c/4 (device ready) and +0x2bcd (allow) | static |
+| Who allows threading | engine.dll Host_AllowQueuedMaterialSystem (RVA 0x184120: stores a flag, calls materials slot 134 with engine global thread 0). Called with true at RVA 0x8df6d only when mat_queue_mode is non-zero at that moment (level fully connected); with false at RVA 0x7047e (map load). The mod holds mat_queue_mode 0 then, so it calls slot 134 itself before setting mat_queue_mode 2. Log before the fix: mat_queue_mode 2 but no call queue, Present on the main thread | static |
 | SetRenderTargetFrameBufferSizeOverrides (what Black Mesa VR uses) | not present in INFRA | verified-fail |
 | CTexture::ApplyRenderTargetSizeMode | RVA 0x2e3b0, 0x138 bytes up to its jump table (0x1002e4e8 at the preferred base) | static, wine (one signature hit) |
 | its signature | `55 8B EC 0F B7 41 34 56 8B 75 08 89 06 0F B7 51 36 57 8B 7D 0C 89 17 8B 41 50 48 83 F8 05` | wine |

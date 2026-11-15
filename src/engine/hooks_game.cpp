@@ -205,6 +205,39 @@ void WatchMulticoreOption()
     g_watchNext = now + 1.0; // give the command time to land before looking again
 }
 
+// The engine allows the queued material system only at the moment a level is fully connected, and
+// only if mat_queue_mode is non-zero right then. The mod holds mat_queue_mode 0 through loads, so
+// it has to allow threading itself, or mat_queue_mode 2 is ignored (CMaterialSystem::EndFrame
+// stays single threaded while its "allow queued rendering" flag is off). AllowThreading only sets
+// that flag and the ideal mode; the switch itself happens at the material system's next EndFrame.
+constexpr const char *kMulticoreFlag = "multicore";
+double g_multicoreSince = 0; // when mat_queue_mode 2 started (crash-sticky trial)
+
+bool AllowEngineThreading()
+{
+    static int state = 0; // 0 unknown, 1 ok, -1 unusable
+    if (state == 0)
+    {
+        state = -1;
+        void *fn = g_Game.materials ? VTable(g_Game.materials)[vidx::AllowThreading] : nullptr;
+        // push ebp; mov ebp,esp; push ebx; push esi; mov esi,ecx; mov bl,[esi+...]
+        static const uint8_t kStart[] = {0x55, 0x8B, 0xEC, 0x53, 0x56, 0x8B, 0xF1, 0x8A, 0x9E};
+        if (!fn || !IsReadable(fn, sizeof(kStart)) || std::memcmp(fn, kStart, sizeof(kStart)) != 0)
+            IVR_ERR("Multicore: CMaterialSystem::AllowThreading (vtable slot %d) does not look as expected - "
+                    "multicore rendering stays off",
+                    vidx::AllowThreading);
+        else if (!flags::Allowed(kMulticoreFlag))
+            IVR_ERR("Multicore: skipped after an earlier crash (see infravr_skip.txt)");
+        else
+            state = 1;
+    }
+    if (state != 1)
+        return false;
+    bool was = VCall<bool, bool, int>(g_Game.materials, vidx::AllowThreading, true, 0);
+    IVR_LOG("Multicore: allowed the queued material system (it was %s)", was ? "allowed" : "not allowed");
+    return true;
+}
+
 // mat_queue_mode 2 only while we are in a level with the eye images made (creating render
 // targets and the menus keep the engine single threaded), and only if the game's multicore
 // rendering option is on.
@@ -212,8 +245,24 @@ void UpdateQueueMode()
 {
     WatchMulticoreOption();
     int want = (g_Game.multicoreOption && !g_Mod.menuMode && g_D3D.eye[0].Valid() && g_D3D.eye[1].Valid()) ? 2 : 0;
+    if (g_multicoreSince > 0 && g_Game.queueMode == 2 && NowSeconds() - g_multicoreSince > 30)
+    {
+        g_multicoreSince = 0;
+        flags::End(kMulticoreFlag); // 30 s threaded without a crash
+    }
     if (want == g_Game.queueMode)
         return;
+    if (want == 2)
+    {
+        static bool failed = false;
+        if (failed || !AllowEngineThreading())
+        {
+            failed = true;
+            return;
+        }
+        if (flags::Begin(kMulticoreFlag))
+            g_multicoreSince = NowSeconds();
+    }
     g_Game.queueMode = want;
     g_Game.ExecuteCommand(want == 2 ? "mat_queue_mode 2" : "mat_queue_mode 0");
     g_watchNext = NowSeconds() + 1.0; // our own change, not the video options

@@ -124,6 +124,9 @@ constexpr int BeginRenderTargetAllocation = 91;
 constexpr int EndRenderTargetAllocation = 92;
 constexpr int CreateNamedRenderTargetTextureEx = 96;
 constexpr int GetRenderContext = 112;
+// bool AllowThreading(bool allow, int serviceThread): the engine calls it with true only once a level
+// is fully connected AND mat_queue_mode is non-zero then; without it mat_queue_mode 2 does nothing.
+constexpr int AllowThreading = 134;
 constexpr int FindMaterial = 81; // IMaterial* (const char *name, const char *group, bool complain, const char *prefix)
 // IMaterial / IMaterialVar
 constexpr int MAT_GetName = 0;
