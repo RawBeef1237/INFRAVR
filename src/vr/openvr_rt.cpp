@@ -127,8 +127,8 @@ void VrRuntime::SetProjection(const float l[2], const float r[2], const float t[
     float growY = (2.0f * tanY) / std::max(0.1f, (b[0] - t[0]));
     renderWidth = (uint32_t)std::lround(recW * growX * g_Config.renderScale) & ~1u;
     renderHeight = (uint32_t)std::lround(recH * growY * g_Config.renderScale) & ~1u;
-    // Cap the eye size: every eye-sized buffer (and ~40 engine buffers with world_at_eye_size)
-    // grows with it, and past the GPU's memory the driver loses the device mid-level.
+    // Cap the eye size: eyes above about 8 MP lost the GPU device as the first level loaded, on
+    // PSVR2 and on Quest 3 alike (see max_eye_megapixels in config.h).
     double pixels = (double)renderWidth * renderHeight;
     double cap = (double)g_Config.maxEyeMegapixels * 1e6;
     if (cap > 0 && pixels > cap)
