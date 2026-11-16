@@ -107,6 +107,7 @@ void LoadConfig()
     Config &c = g_Config;
     c.worldScale = ini.GetFloat("vr.world_scale", c.worldScale);
     c.renderScale = ini.GetFloat("vr.render_scale", c.renderScale);
+    c.maxEyeMegapixels = ini.GetFloat("vr.max_eye_megapixels", c.maxEyeMegapixels);
     c.zNear = ini.GetFloat("vr.znear", c.zNear);
     c.leftHanded = ini.GetBool("vr.left_handed", c.leftHanded);
     c.mirrorToDesktop = ini.GetBool("vr.mirror_to_desktop", c.mirrorToDesktop);

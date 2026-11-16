@@ -33,6 +33,10 @@ struct Config
     // [vr]
     float worldScale = 1.0f;   // multiplies 39.37 game units per metre
     float renderScale = 1.0f;  // multiplies SteamVR's recommended per-eye resolution
+    // Upper limit for the per-eye render size in megapixels (0 = no limit). Larger eyes lose the GPU
+    // device (VK_ERROR_DEVICE_LOST) on an RTX 4070 SUPER: PSVR2 at 3218x2484 (8.0 MP) and Quest 3 at
+    // 3100x3206 (9.9 MP) both did, while Quest 3 at 2542x2630 and 2564x2634 (6.7 MP) ran fine.
+    float maxEyeMegapixels = 6.5f;
     float zNear = 3.0f;
     bool leftHanded = false;
     bool mirrorToDesktop = true;
