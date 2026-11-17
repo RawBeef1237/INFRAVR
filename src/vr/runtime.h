@@ -78,8 +78,6 @@ public:
     const char *BackendName() const;
     bool UsesSteamVR() const { return m_backend == Backend::OpenVR; } // IVRCompositor etc. are there
     bool IsOpenXR() const { return m_backend == Backend::OpenXR; }
-    // OpenVR: hand SteamVR D3D11 copies of the frames instead of Vulkan images (vr.openvr_textures).
-    bool preferD3D11Textures = false;
     // Overlay panels (menu, HUD, pointer) for whichever backend runs; never null after Init.
     OverlayApi *Overlays() const { return m_overlays; }
     // GPU the headset runtime wants the game to render on.

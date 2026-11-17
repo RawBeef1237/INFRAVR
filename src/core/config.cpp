@@ -121,7 +121,6 @@ void LoadConfig()
     c.multicore = ini.GetBool("vr.multicore", c.multicore);
     c.dxvk = Lower(ini.GetString("vr.dxvk", c.dxvk));
     c.backend = Lower(ini.GetString("vr.backend", c.backend));
-    c.openvrTextures = Lower(ini.GetString("vr.openvr_textures", c.openvrTextures));
     c.worldAtEyeSize = ini.GetBool("vr.world_at_eye_size", c.worldAtEyeSize);
     std::string hud = Lower(ini.GetString("vr.hud_mode", "overlay"));
     c.hudMode = hud == "eyes" ? HudMode::Eyes : hud == "off" ? HudMode::Off : HudMode::Overlay;

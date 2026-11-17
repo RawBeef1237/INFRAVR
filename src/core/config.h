@@ -50,9 +50,6 @@ struct Config
     // VR runtime: "openvr" (SteamVR, in this process) or "openxr" (the 64-bit infravr_openxr.exe
     // helper talks to the headset's own OpenXR runtime; falls back to OpenVR if it cannot start).
     std::string backend = "openvr";
-    // OpenVR: how frames are handed to SteamVR. "vulkan" = DXVK's own images, "d3d11" = copies in
-    // D3D11 textures, "auto" = d3d11 on PSVR2 (Vulkan images lost the GPU device there), else vulkan.
-    std::string openvrTextures = "auto";
     // Make the engine allocate its full-frame and post-processing buffers at the eye size (the
     // Black Mesa VR fix), so post-processing works in the headset. Crash-sticky ("world_eye_size").
     bool worldAtEyeSize = true;
