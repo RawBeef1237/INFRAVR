@@ -114,6 +114,15 @@ public:
     int secondHand = -1;          // the hand carrying the second object (set by the server), or -1
     int secondEntIndex = -1;      // its entity index
     int SecondHeldHand() const { return menuMode ? -1 : secondHand; }
+    // How fast the hand was really moving just before now (m/s): the fastest it went over the last
+    // tenth of a second, measured from its tracked positions over at least 40 ms and leaving out the
+    // last 20 ms, when opening the hand jerks the controller. A runtime's own velocity can spike for a
+    // frame (and OpenXR may not give one at all), so it is not used to tell a throw from setting down.
+    float ReleaseSpeed(int hand) const;
+    // A grip let go slowly, until this time: the game's DetachEntity then clears the object's velocity
+    // (GrabDetachDetour), so it is set down where it is instead of flying off with what the physics
+    // controller last gave it.
+    double gentleReleaseUntil = -1.0;
     Vector lensPos;
     QAngle lensAngles;
 
@@ -200,6 +209,15 @@ private:
     int m_grabbingHand = -1;     // hand whose grip is held after starting a grab
     int m_freeDropTicks = 0;     // dropping an object nobody holds a grip on
     double m_freeDropUntil = -1.0;
+    // Each hand's recent tracked positions (tracking space, metres), for ReleaseSpeed.
+    static constexpr int kTrailSize = 48;
+    struct Trail
+    {
+        Vector pos[kTrailSize];
+        double t[kTrailSize] = {};
+        int count = 0, head = 0;
+    } m_trail[2];
+    void RecordTrail(double now);
 
     struct Pending
     {

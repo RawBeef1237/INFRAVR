@@ -152,6 +152,64 @@ Vector VRMod::PointerTip(int hand) const
 
 bool VRMod::PointerUseActive() const { return pointerHand >= 0 && NowSeconds() < pointerUseUntil; }
 
+void VRMod::RecordTrail(double now)
+{
+    for (int h = 0; h < 2; ++h)
+    {
+        Trail &tr = m_trail[h];
+        const TrackedPose &c = g_VR.HandPose(h);
+        if (!c.valid || !std::isfinite(c.pos.x) || !std::isfinite(c.pos.y) || !std::isfinite(c.pos.z))
+        {
+            tr.count = 0; // lost: never measure across the gap
+            continue;
+        }
+        const int last = (tr.head + kTrailSize - 1) % kTrailSize;
+        if (tr.count > 0 && now - tr.t[last] < 0.002)
+            continue; // the same poses twice in a frame
+        tr.pos[tr.head] = c.pos;
+        tr.t[tr.head] = now;
+        tr.head = (tr.head + 1) % kTrailSize;
+        tr.count = std::min(tr.count + 1, kTrailSize);
+    }
+}
+
+float VRMod::ReleaseSpeed(int hand) const
+{
+    if (hand < 0 || hand > 1)
+        return 0.0f;
+    const Trail &tr = m_trail[hand];
+    if (tr.count < 2)
+        return 0.0f;
+    auto at = [&](int k) { return (tr.head - 1 - k + 2 * kTrailSize) % kTrailSize; }; // k = 0: newest
+    const double newest = tr.t[at(0)];
+    float best = -1.0f;
+    for (int k = 0; k < tr.count; ++k)
+    {
+        const int i = at(k);
+        const double age = newest - tr.t[i];
+        if (age > 0.10)
+            break;
+        if (age < 0.02)
+            continue;
+        for (int m = k + 1; m < tr.count; ++m)
+        {
+            const int j = at(m);
+            const double span = tr.t[i] - tr.t[j];
+            if (span < 0.04)
+                continue;
+            if (span <= 0.25) // a longer gap is a hitch, not a measurement
+                best = std::max(best, (tr.pos[i] - tr.pos[j]).Length() / (float)span);
+            break;
+        }
+    }
+    if (best >= 0.0f)
+        return best;
+    // Too few frames yet (just picked up, or tracking came back): the newest against the oldest.
+    const int o = at(tr.count - 1);
+    const double span = newest - tr.t[o];
+    return span > 0.01 && span <= 0.25 ? (tr.pos[at(0)] - tr.pos[o]).Length() / (float)span : 0.0f;
+}
+
 int VRMod::HeldObjectHand() const
 {
     if (!g_Config.holdInHand || !holdInHandReady || menuMode || !IsHoldingObject())
@@ -492,6 +550,7 @@ void VRMod::OnFrame()
 
     g_VR.WaitPoses();
     g_VR.UpdateInput();
+    RecordTrail(now);
 
     const TrackedPose &head = g_VR.Head();
     if (!head.valid)
@@ -861,7 +920,10 @@ void VRMod::ProcessGameInput(double now, double dt)
         if (grips[h]->released && secondHand == h)
         {
             secondRelease = true;
-            secondReleaseSpeed = g_VR.HandPose(h).velocity.Length();
+            secondReleaseSpeed = ReleaseSpeed(h);
+            IVR_LOG("Second hold: %s grip let go, hand at %.2f m/s (runtime says %.2f) - %s",
+                    h ? "right" : "left", secondReleaseSpeed, g_VR.HandPose(h).velocity.Length(),
+                    secondReleaseSpeed > g_Config.throwSpeed ? "thrown" : "set down");
             continue;
         }
         if (grips[h]->pressed && !consumed[h] && HandValid(h) && secondHand != h && IsHoldingObject() &&
@@ -888,17 +950,30 @@ void VRMod::ProcessGameInput(double now, double dt)
             if (IsHoldingObject())
             {
                 interactHand = h;
-                float speed = g_VR.HandPose(h).velocity.Length();
+                const float speed = ReleaseSpeed(h);
+                const bool inHand = HeldObjectHand() >= 0;
                 // Held in the hand, the object already moves with it: just letting go keeps that
                 // swing (the game only clears the velocity of an object touching something), so
                 // a fast release throws it where the hand was going instead of where you look.
-                if (HeldObjectHand() < 0 && speed > 2.5f)
+                // A slow release clears it instead: the physics controller's last push (a hitch,
+                // a tracking jump, the hand opening) used to fling objects that were being set down.
+                if (!inHand && speed > 2.5f)
                 {
                     m_attackTicks = 2; // throw
                     m_dropCheckAt = now + 0.3;
                 }
                 else
+                {
                     m_useTicks = 2;    // drop
+                    gentleReleaseUntil = speed > g_Config.throwSpeed ? -1.0 : now + 0.6;
+                }
+                static int s_releaseLogs = 0;
+                if (s_releaseLogs++ < 40)
+                    IVR_LOG("Let go (%s hand, %s): hand at %.2f m/s (runtime says %.2f) - %s", h ? "right" : "left",
+                            inHand ? "in the hand" : "in front", speed, g_VR.HandPose(h).velocity.Length(),
+                            !inHand && speed > 2.5f            ? "thrown"
+                            : gentleReleaseUntil > 0          ? "set down"
+                                                              : "let go with its swing");
                 m_freeDropUntil = now + 0.6; // already letting go: grip_to_carry must not press "use" again
                 m_aimTicks = 2;
                 m_aimSource = 0;
