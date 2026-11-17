@@ -672,4 +672,128 @@ void D3DVR::XrShowEyes(bool on)
         s->eyesVisible = on ? 1 : 0;
 }
 
+// ---- OpenVR with D3D11 textures --------------------------------------------------------------
+
+bool D3DVR::OvrUseD3D11()
+{
+    if (m_ovrMode >= 0)
+        return m_ovrMode == 1;
+    m_ovrMode = g_VR.preferD3D11Textures ? 1 : 0;
+    if (m_ovrMode == 1)
+    {
+        if (!XrInitInterop())
+        {
+            m_ovrMode = 2;
+            IVR_ERR("OpenVR: D3D11 textures are not available - handing SteamVR DXVK's Vulkan images instead");
+            return false;
+        }
+        IVR_LOG("OpenVR: frames go to SteamVR as D3D11 textures (vr.openvr_textures)");
+    }
+    return m_ovrMode == 1;
+}
+
+// Copies each src[i] into the D3D11 texture of slot[i] on DXVK's queue and waits until the GPU has
+// done it; out[i] is the D3D11 texture to hand to SteamVR.
+bool D3DVR::OvrShare(VrTexture *const *src, const int *slot, int count, ID3D11Texture2D **out)
+{
+    for (int i = 0; i < count; ++i)
+    {
+        OvrShared &o = m_ovr[slot[i]];
+        if (o.img.image && (o.w != src[i]->width || o.h != src[i]->height))
+        {
+            XrDestroyCopier(o.copier);
+            XrDestroyImage(o.img);
+            o = OvrShared();
+        }
+        if (!o.img.image)
+        {
+            if (!XrCreateCopier(o.copier) || !XrCreateImage(src[i]->width, src[i]->height, o.img))
+            {
+                XrDestroyCopier(o.copier);
+                XrDestroyImage(o.img);
+                o = OvrShared();
+                return false;
+            }
+            o.w = src[i]->width;
+            o.h = src[i]->height;
+            IVR_LOG("OpenVR: D3D11 copy %d is %ux%u", slot[i], o.w, o.h);
+        }
+    }
+    // Eyes are copied as a pair (one submit), everything else one at a time.
+    for (int i = 0; i < count;)
+    {
+        int n = (i + 1 < count && slot[i] <= 1 && slot[i + 1] <= 1 && src[i]->width == src[i + 1]->width &&
+                 src[i]->height == src[i + 1]->height)
+                    ? 2
+                    : 1;
+        OvrShared &o = m_ovr[slot[i]];
+        const VrTexture *s[2] = {src[i], n > 1 ? src[i + 1] : nullptr};
+        XrImage *d[2] = {&o.img, n > 1 ? &m_ovr[slot[i + 1]].img : nullptr};
+        if (!XrCopy(o.copier, s, d, n, src[i]->width, src[i]->height))
+            return false;
+        if (g_vk.waitForFences(m_vkDevice, 1, &o.copier.fence, VK_TRUE, 1000000000ull) != VK_SUCCESS)
+            return false;
+        o.copier.submitted = false;
+        for (int k = 0; k < n; ++k)
+            out[i + k] = m_ovr[slot[i + k]].img.d3d11;
+        i += n;
+    }
+    return true;
+}
+
+void D3DVR::OvrWaitD3D11()
+{
+    if (!m_xrD3D11)
+        return;
+    // A few hundred frames handed over without a crash: trust the D3D11 device (crash-sticky flag).
+    static int s_frames = 0;
+    if (!m_xrTrusted && ++s_frames > 600)
+    {
+        m_xrTrusted = true;
+        flags::End(kFlag);
+    }
+    ID3D11DeviceContext *ctx = nullptr;
+    m_xrD3D11->GetImmediateContext(&ctx);
+    if (!ctx)
+        return;
+    D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT, 0};
+    ID3D11Query *q = nullptr;
+    if (SUCCEEDED(m_xrD3D11->CreateQuery(&qd, &q)) && q)
+    {
+        ctx->End(q);
+        ctx->Flush();
+        BOOL done = FALSE;
+        double until = NowSeconds() + 0.1;
+        while (ctx->GetData(q, &done, sizeof(done), 0) == S_FALSE && NowSeconds() < until)
+            SwitchToThread();
+        q->Release();
+    }
+    else
+        ctx->Flush();
+    ctx->Release();
+}
+
+void D3DVR::OvrRelease()
+{
+    if (m_xrInit > 0)
+        for (auto &o : m_ovr)
+        {
+            XrDestroyCopier(o.copier);
+            XrDestroyImage(o.img);
+            o = OvrShared();
+        }
+}
+
+void D3DVR::OvrForget()
+{
+    for (auto &o : m_ovr)
+    {
+        if (o.img.d3d11)
+            o.img.d3d11->Release();
+        o = OvrShared();
+    }
+    if (m_ovrMode == 2)
+        m_ovrMode = -1;
+}
+
 } // namespace ivr

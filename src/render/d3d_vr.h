@@ -236,6 +236,23 @@ private:
     void XrRelease();
     void XrForgetDevice(); // a new D3D9 device: the old Vulkan objects went with the old one
 
+    // OpenVR with D3D11 textures (vr.openvr_textures): SteamVR is handed copies of the eye, HUD and
+    // menu images in D3D11 textures (made and imported like the OpenXR ones above) instead of DXVK's
+    // own Vulkan images. On PSVR2 every hand-over of a Vulkan image lost the GPU device
+    // (VK_ERROR_DEVICE_LOST) around the first level load, while the OpenXR helper's D3D11 path ran.
+    struct OvrShared
+    {
+        XrImage img;
+        XrCopier copier;
+        UINT w = 0, h = 0;
+    } m_ovr[6]; // left eye, right eye, HUD, subtitles, blank, menu
+    int m_ovrMode = -1; // -1 not decided, 0 Vulkan, 1 D3D11, 2 D3D11 failed (back to Vulkan)
+    bool OvrUseD3D11();
+    bool OvrShare(VrTexture *const *src, const int *slot, int count, ID3D11Texture2D **out);
+    void OvrWaitD3D11(); // SteamVR's reads of the D3D11 copies are finished
+    void OvrRelease();
+    void OvrForget();
+
     ID3D9VkInteropDevice *m_interop = nullptr;
     VkInstance m_instance = VK_NULL_HANDLE;
     VkPhysicalDevice m_physDev = VK_NULL_HANDLE;

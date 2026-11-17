@@ -4,6 +4,7 @@
 #include "overlay_api.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 
 namespace ivr {
@@ -189,6 +190,24 @@ bool VrRuntime::InitOpenVR()
     m_vrInput = static_cast<vr::IVRInput *>(Interface(vr::IVRInput_Version));
     if (!m_system || !m_compositor)
         return false;
+
+    // --- headset ------------------------------------------------------------------------
+    char trackingSystem[128] = {}, model[128] = {}, maker[128] = {};
+    m_system->GetStringTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_TrackingSystemName_String,
+                                             trackingSystem, sizeof(trackingSystem), nullptr);
+    m_system->GetStringTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_ModelNumber_String, model,
+                                             sizeof(model), nullptr);
+    m_system->GetStringTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_ManufacturerName_String,
+                                             maker, sizeof(maker), nullptr);
+    std::string who = std::string(trackingSystem) + " " + model + " " + maker;
+    std::transform(who.begin(), who.end(), who.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+    bool psvr2 = who.find("playstation") != std::string::npos || who.find("psvr") != std::string::npos ||
+                 who.find("sony") != std::string::npos;
+    const std::string &mode = g_Config.openvrTextures;
+    preferD3D11Textures = mode == "d3d11" || (mode != "vulkan" && psvr2);
+    IVR_LOG("Headset: \"%s\" / \"%s\" / \"%s\"%s - frames go to SteamVR as %s (openvr_textures = %s)",
+            trackingSystem, model, maker, psvr2 ? " (PSVR2)" : "", preferD3D11Textures ? "D3D11 textures" : "Vulkan images",
+            mode.c_str());
 
     // --- projection -------------------------------------------------------------------
     uint32_t recW = 0, recH = 0;

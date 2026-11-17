@@ -68,7 +68,10 @@ void VrTexture::Reset()
 void D3DVR::OnDeviceCreated(IDirect3DDevice9 *dev)
 {
     if (device && device != dev)
+    {
+        OvrForget();
         XrForgetDevice();
+    }
     device = dev;
     interopOk = false;
     if (m_interop)
@@ -126,6 +129,7 @@ void D3DVR::OnBeforeReset()
     IVR_LOG("D3D9 device reset");
     ReleaseHelpers();
     ReleaseMsaa();
+    OvrRelease();
     XrRelease();
     hands::OnDeviceReset();
     if (cameraTemp)
@@ -1132,21 +1136,30 @@ void D3DVR::OnPresent()
     if (reuse)
     {
         VrTexture *eyes[2] = {&eye[0], &eye[1]};
-        BeginVulkanAccess(eyes, 2);
+        ID3D11Texture2D *dx[2] = {nullptr, nullptr};
+        static const int kEyeSlots[2] = {0, 1};
+        bool viaD3D11 = OvrUseD3D11();
+        if (viaD3D11 && !OvrShare(eyes, kEyeSlots, 2, dx))
+            return;
+        if (!viaD3D11)
+            BeginVulkanAccess(eyes, 2);
         vr::EVRCompositorError err[2];
         for (int e = 0; e < 2; ++e)
         {
             vr::VRVulkanTextureData_t d = VulkanData(eye[e]);
             vr::VRTextureWithPose_t t{};
-            t.handle = &d;
-            t.eType = vr::TextureType_Vulkan;
+            t.handle = viaD3D11 ? (void *)dx[e] : (void *)&d;
+            t.eType = viaD3D11 ? vr::TextureType_DirectX : vr::TextureType_Vulkan;
             t.eColorSpace = vr::ColorSpace_Auto;
             t.mDeviceToAbsoluteTracking = m_lastEyePose;
             vr::VRTextureBounds_t b = g_VR.ViewBounds(e);
             err[e] = g_VR.m_compositor->Submit(e == 0 ? vr::Eye_Left : vr::Eye_Right, &t, &b,
                                                vr::Submit_TextureWithPose);
         }
-        EndVulkanAccess(eyes, 2);
+        if (viaD3D11)
+            OvrWaitD3D11();
+        else
+            EndVulkanAccess(eyes, 2);
         static int s_reuseErrors = 0;
         if ((err[0] != vr::VRCompositorError_None || err[1] != vr::VRCompositorError_None) && s_reuseErrors < 5)
         {
@@ -1190,32 +1203,64 @@ void D3DVR::OnPresent()
     }
 
     VrTexture *list[4];
+    int slots[4];
     int n = 0;
     if (stereo)
     {
+        slots[n] = 0;
         list[n++] = &eye[0];
+        slots[n] = 1;
         list[n++] = &eye[1];
         if (hudOn)
+        {
+            slots[n] = 2;
             list[n++] = &hud;
+        }
         if (subsOn)
+        {
+            slots[n] = 3;
             list[n++] = &subs;
+        }
     }
     else
     {
+        slots[n] = 4;
         list[n++] = &blank;
+        slots[n] = 5;
         list[n++] = &menu;
     }
 
     static int s_errors = 0;
-    BeginVulkanAccess(list, n);
+    // D3D11 copies (vr.openvr_textures): dx[i] is list[i]'s copy, handed over instead of the Vulkan image.
+    ID3D11Texture2D *dx[4] = {nullptr, nullptr, nullptr, nullptr};
+    bool viaD3D11 = OvrUseD3D11();
+    if (viaD3D11 && !OvrShare(list, slots, n, dx))
+    {
+        static int s_shareErrors = 0;
+        if (s_shareErrors++ < 5)
+            IVR_ERR("OpenVR: copying the frame into D3D11 textures failed - frame skipped");
+        g_Mod.UpdateOverlays(!stereo, hudOn, (int)m_bbWidth, (int)m_bbHeight);
+        return;
+    }
+    auto texOf = [&](const VrTexture &t, vr::VRVulkanTextureData_t &vk) -> vr::Texture_t {
+        if (viaD3D11)
+            for (int i = 0; i < n; ++i)
+                if (list[i] == &t)
+                    return {dx[i], vr::TextureType_DirectX, vr::ColorSpace_Auto};
+        vk = VulkanData(t);
+        return {&vk, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
+    };
+    if (!viaD3D11)
+        BeginVulkanAccess(list, n);
     vr::EVRCompositorError e0, e1;
     if (stereo)
     {
-        vr::VRVulkanTextureData_t l = VulkanData(eye[0]), r = VulkanData(eye[1]);
+        vr::VRVulkanTextureData_t l{}, r{};
+        vr::Texture_t xl = texOf(eye[0], l), xr = texOf(eye[1], r);
         vr::VRTextureWithPose_t tl{}, tr{};
-        tl.handle = &l;
-        tr.handle = &r;
-        tl.eType = tr.eType = vr::TextureType_Vulkan;
+        tl.handle = xl.handle;
+        tr.handle = xr.handle;
+        tl.eType = tr.eType = xl.eType;
         tl.eColorSpace = tr.eColorSpace = vr::ColorSpace_Auto;
         tl.mDeviceToAbsoluteTracking = tr.mDeviceToAbsoluteTracking = m_lastEyePose;
         vr::EVRSubmitFlags flags = m_haveRenderPose ? vr::Submit_TextureWithPose : vr::Submit_Default;
@@ -1225,28 +1270,31 @@ void D3DVR::OnPresent()
         ++m_submits;
         if (hudOn)
         {
-            vr::VRVulkanTextureData_t h = VulkanData(hud);
-            vr::Texture_t th = {&h, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
+            vr::VRVulkanTextureData_t h{};
+            vr::Texture_t th = texOf(hud, h);
             g_VR.Overlays()->SetOverlayTexture(g_Mod.hudOverlay, th);
         }
         if (subsOn)
         {
-            vr::VRVulkanTextureData_t sd = VulkanData(subs);
-            vr::Texture_t ts = {&sd, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
+            vr::VRVulkanTextureData_t sd{};
+            vr::Texture_t ts = texOf(subs, sd);
             g_VR.Overlays()->SetOverlayTexture(g_Mod.subsOverlay, ts);
         }
         g_Mod.ShowSubtitles(subsOn);
     }
     else
     {
-        vr::VRVulkanTextureData_t b = VulkanData(blank), m = VulkanData(menu);
-        vr::Texture_t tb = {&b, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
-        vr::Texture_t tm = {&m, vr::TextureType_Vulkan, vr::ColorSpace_Auto};
+        vr::VRVulkanTextureData_t b{}, m{};
+        vr::Texture_t tb = texOf(blank, b);
+        vr::Texture_t tm = texOf(menu, m);
         e0 = g_VR.m_compositor->Submit(vr::Eye_Left, &tb, nullptr, vr::Submit_Default);
         e1 = g_VR.m_compositor->Submit(vr::Eye_Right, &tb, nullptr, vr::Submit_Default);
         g_VR.Overlays()->SetOverlayTexture(g_Mod.menuOverlay, tm);
     }
-    EndVulkanAccess(list, n);
+    if (viaD3D11)
+        OvrWaitD3D11();
+    else
+        EndVulkanAccess(list, n);
 
     if ((e0 != vr::VRCompositorError_None || e1 != vr::VRCompositorError_None) && s_errors < 20)
     {
