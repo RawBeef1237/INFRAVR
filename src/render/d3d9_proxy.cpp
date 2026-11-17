@@ -32,6 +32,7 @@ namespace ivr {
 bool InstallClientHooks();
 void ResetStereoGuard();
 extern volatile LONG g_deferredRuns; // hooks_game.cpp
+void SeqEvent(char kind, int arg); // hooks_game.cpp
 bool InstallServerHooks();
 } // namespace ivr
 
@@ -832,6 +833,7 @@ void AfterPresent()
 {
     if (!g_VR.Ok() || !g_Mod.Active())
         return;
+    SeqEvent('A', 0);
     ResetStereoGuard();
     g_D3D.OnAfterPresent();
     // With multicore rendering Present runs on the engine's render thread; the VR logic (poses,

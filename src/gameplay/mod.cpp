@@ -105,7 +105,7 @@ bool VRMod::Init()
             }
         }
         else if (g_Config.subtitles)
-            IVR_LOG("Subtitles: no panel of their own (needs hud_mode = overlay and the OpenVR backend)");
+            IVR_LOG("Subtitles: no panel of their own (needs hud_mode = overlay)");
     }
     m_active = true;
     return true;
@@ -968,11 +968,11 @@ void VRMod::ProcessGameInput(double now, double dt)
 }
 
 // --- overlays / menus ----------------------------------------------------------------------
-// The subtitle panel needs our own D3D pass and an OpenVR overlay texture: the OpenXR helper
-// has a fixed set of layers (openxr_bridge.h), so there it stays on the HUD panel as before.
+// The subtitle panel needs our own D3D pass and an overlay of its own (with OpenXR one of the
+// helper's extra layers, openxr_bridge.h version 2).
 bool VRMod::SubtitleLayer() const
 {
-    return g_Config.subtitles && g_Config.hudMode == HudMode::Overlay && !g_VR.IsOpenXR() &&
+    return g_Config.subtitles && g_Config.hudMode == HudMode::Overlay &&
            (subsOverlay != vr::k_ulOverlayHandleInvalid || !m_active);
 }
 

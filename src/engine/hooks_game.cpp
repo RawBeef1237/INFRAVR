@@ -277,10 +277,80 @@ void UpdateQueueMode()
 // again and the first pair would never be seen. Later views in the same frame are drawn flat.
 volatile LONG g_stereoSincePresent = 0;
 int g_stereoSkipped = 0;
+CViewSetup g_stereoView{}; // the engine's view the last stereo pair was drawn for
+int g_stereoDraw = 0, g_stereoClear = 0;
 
 } // namespace
 
 void ResetStereoGuard() { InterlockedExchange(&g_stereoSincePresent, 0); }
+
+// Order of render views and Presents around a second main view: a ring of the last events, logged
+// with the events that follow when a second view turns up (the first few times).
+namespace {
+struct SeqEv
+{
+    double t;
+    char kind;
+    int arg;
+    DWORD thread;
+};
+SeqEv g_seq[24];
+unsigned g_seqN = 0;
+int g_seqDumps = 0, g_seqAfter = 0;
+CRITICAL_SECTION *SeqLock()
+{
+    static CRITICAL_SECTION cs;
+    static bool init = (InitializeCriticalSection(&cs), true);
+    (void)init;
+    return &cs;
+}
+const char *SeqName(char k)
+{
+    switch (k)
+    {
+    case 'S': return "3D view";
+    case 'F': return "second view, flat";
+    case 'P': return "Present";
+    case 'A': return "after Present";
+    default: return "?";
+    }
+}
+void SeqLog(const SeqEv &e)
+{
+    IVR_LOG("  seq %.1f ms thread %lu: %s%s", e.t * 1000.0, e.thread, SeqName(e.kind),
+            e.kind == 'P' ? (e.arg == 1 ? " (new 3D view)" : e.arg == 2 ? " (no new view: last one kept)" : " (no view)")
+                          : "");
+}
+} // namespace
+
+void SeqEvent(char kind, int arg)
+{
+    if (g_seqDumps >= 3 && !g_seqAfter)
+        return;
+    EnterCriticalSection(SeqLock());
+    SeqEv e{NowSeconds(), kind, arg, GetCurrentThreadId()};
+    if (g_seqAfter > 0)
+    {
+        SeqLog(e);
+        if (--g_seqAfter == 0)
+            IVR_LOG("  seq: end");
+    }
+    else if (kind == 'F' && g_seqDumps < 3)
+    {
+        ++g_seqDumps;
+        IVR_LOG("Second main view: the events before it, and after");
+        unsigned n = g_seqN < 24 ? g_seqN : 24;
+        for (unsigned i = g_seqN - n; i != g_seqN; ++i)
+            SeqLog(g_seq[i % 24]);
+        SeqLog(e);
+        g_seqAfter = 12;
+    }
+    g_seq[g_seqN++ % 24] = e;
+    LeaveCriticalSection(SeqLock());
+}
+
+// Flat main-sized views since the last stats line: [0] not the main view, [1] a second view before Present.
+volatile LONG g_flatViews[2] = {};
 
 namespace {
 
@@ -581,15 +651,41 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
             cpu::Report(g_Game.queueMode, g_Game.multicoreOption, RenderQueue() != nullptr, g_Game.mainThread,
                         g_Game.presentThread);
     }
+    if (g_renderDepth == 0 && g_Mod.Active() && !g_Mod.menuMode && !IsMainView(view))
+    {
+        // Not counted as the player's view: drawn flat. Logged so a flat view that should have been
+        // the 3D one (the desktop then shows it between 3D frames) can be found.
+        InterlockedIncrement(&g_flatViews[0]);
+        static int s_logged = 0;
+        if (s_logged < 5)
+        {
+            ++s_logged;
+            int bw = 0, bh = 0;
+            g_Game.BackBufferSize(bw, bh);
+            IVR_LOG("A view that is not the main one, drawn flat: %d,%d %dx%d (window %dx%d)", view->x, view->y,
+                    view->width, view->height, bw, bh);
+        }
+    }
     if (g_renderDepth > 0 || !g_Mod.Active() || g_Mod.menuMode || !IsMainView(view) || !EnsureTextures())
         return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);
     if (g_Game.queueMode == 0 && g_stereoSincePresent > 0)
     {
-        if (g_stereoSkipped++ < 5)
-            IVR_LOG("A second main view before Present - drawn flat (stereo once per Present)");
+        InterlockedIncrement(&g_flatViews[1]);
+        SeqEvent('F', 0);
+        if (g_stereoSkipped++ < 12)
+            IVR_LOG("A second main view before Present - drawn flat (stereo once per Present): this one at "
+                    "(%.0f %.0f %.0f) fov %.1f draw 0x%x clear 0x%x %dx%d; the 3D one at (%.0f %.0f %.0f) fov %.1f "
+                    "draw 0x%x clear 0x%x",
+                    view->origin.x, view->origin.y, view->origin.z, view->fov, whatToDraw, clearFlags, view->width,
+                    view->height, g_stereoView.origin.x, g_stereoView.origin.y, g_stereoView.origin.z,
+                    g_stereoView.fov, g_stereoDraw, g_stereoClear);
         return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);
     }
+    SeqEvent('S', 0);
     InterlockedIncrement(&g_stereoSincePresent);
+    g_stereoView = *view;
+    g_stereoDraw = whatToDraw;
+    g_stereoClear = clearFlags;
 
     ++g_renderDepth;
     g_engineView = *view;

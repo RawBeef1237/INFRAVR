@@ -44,7 +44,7 @@ struct Config
     int antialiasing = 4;   // MSAA samples for the eye images: 0 (off), 2, 4 or 8
     bool motionBlur = false;   // keep INFRA's motion blur (smears the image in VR)
     bool clearStencil = true;  // clear the eyes' stencil buffer with their depth buffer (selection glow)
-    bool offCenterEyes = true; // OpenXR: draw each eye with only its own field of view (off-center)
+    bool offCenterEyes = false; // OpenXR: draw each eye with only its own field of view (off-center)
     std::string dxvk = "stock"; // stock = dxvk_d3d9.dll (DXVK 2.7.1), gplall = dxvk_d3d9_gplall.dll
     // VR runtime: "openvr" (SteamVR, in this process) or "openxr" (the 64-bit infravr_openxr.exe
     // helper talks to the headset's own OpenXR runtime; falls back to OpenVR if it cannot start).
@@ -56,8 +56,7 @@ struct Config
     float hudDistance = 1.2f, hudWidth = 1.0f, hudDown = 0.10f;
     float menuDistance = 2.2f, menuWidth = 2.4f;
     // Subtitles (INFRA's close captions) on a panel of their own, head-locked below your view, so
-    // they show in normal play and not only on the phone menu. Only with hud_mode = overlay and the
-    // OpenVR backend. The panel is cut out of the in-game HUD: region is left top right bottom in
+    // they show in normal play and not only on the phone menu. Only with hud_mode = overlay. The panel is cut out of the in-game HUD: region is left top right bottom in
     // HudLayout.res units (x from the screen centre, y from the top, 480 = screen height).
     bool subtitles = true;
     float subtitlesDistance = 1.4f, subtitlesWidth = 1.0f, subtitlesDown = 0.40f;
