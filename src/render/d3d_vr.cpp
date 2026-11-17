@@ -16,6 +16,7 @@
 namespace ivr {
 
 D3DVR g_D3D;
+extern volatile LONG g_flatViews[2]; // hooks_game.cpp
 
 // --- VrTexture ---------------------------------------------------------------------------------
 bool VrTexture::Attach(IDirect3DTexture9 *tex, bool takeOwnership)
@@ -976,8 +977,10 @@ void D3DVR::LogCompositorStats()
         double now = NowSeconds();
         if (m_xrStatsAt > 0)
             IVR_LOG("OpenXR: %.1f eye pairs/s sent to the helper; skipped %u (copy still running), %u (no free slot); "
-                    "%u Presents without a new 3D view kept the last one",
-                    (m_submits - m_xrLastSubmits) / (now - m_xrStatsAt), m_xrBusy, m_xrNoSlot, m_xrReused);
+                    "%u Presents without a new 3D view kept the last one (flat views: %ld not the main view, "
+                    "%ld second views)",
+                    (m_submits - m_xrLastSubmits) / (now - m_xrStatsAt), m_xrBusy, m_xrNoSlot, m_xrReused,
+                    InterlockedExchange(&g_flatViews[0], 0), InterlockedExchange(&g_flatViews[1], 0));
         m_xrStatsAt = now;
         m_xrLastSubmits = m_submits;
         m_xrBusy = m_xrNoSlot = m_xrReused = 0;
@@ -1128,6 +1131,10 @@ void D3DVR::OnPresent()
     g_Mod.subsPainted = false;
     if (g_VR.IsOpenXR())
         XrHandOver();
+    // The desktop window: the game drew a flat view (or nothing new) into it this frame. Show the last
+    // 3D view there too, or the window flickers between the flat picture and the headset's view.
+    if (reuse && g_Config.mirrorToDesktop)
+        MirrorEyeToBackBuffer();
     if (reuse && g_VR.IsOpenXR())
     {
         // The helper keeps showing the last eye pair with the pose it was drawn for.

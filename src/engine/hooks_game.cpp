@@ -202,6 +202,9 @@ int g_stereoSkipped = 0;
 
 void ResetStereoGuard() { InterlockedExchange(&g_stereoSincePresent, 0); }
 
+// Flat main-sized views since the last stats line: [0] not the main view, [1] a second view before Present.
+volatile LONG g_flatViews[2] = {};
+
 namespace {
 
 bool g_rtLost = false; // the game stopped drawing into our eye images: make new ones
@@ -497,10 +500,26 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
         g_Mod.OnSafePoint(); // queued console commands
         UpdateQueueMode();
     }
+    if (g_renderDepth == 0 && g_Mod.Active() && !g_Mod.menuMode && !IsMainView(view))
+    {
+        // Not counted as the player's view: drawn flat. Logged so a flat view that should have been
+        // the 3D one (the desktop then shows it between 3D frames) can be found.
+        InterlockedIncrement(&g_flatViews[0]);
+        static int s_logged = 0;
+        if (s_logged < 5)
+        {
+            ++s_logged;
+            int bw = 0, bh = 0;
+            g_Game.BackBufferSize(bw, bh);
+            IVR_LOG("A view that is not the main one, drawn flat: %d,%d %dx%d (window %dx%d)", view->x, view->y,
+                    view->width, view->height, bw, bh);
+        }
+    }
     if (g_renderDepth > 0 || !g_Mod.Active() || g_Mod.menuMode || !IsMainView(view) || !EnsureTextures())
         return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);
     if (g_Game.queueMode == 0 && g_stereoSincePresent > 0)
     {
+        InterlockedIncrement(&g_flatViews[1]);
         if (g_stereoSkipped++ < 5)
             IVR_LOG("A second main view before Present - drawn flat (stereo once per Present)");
         return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);
