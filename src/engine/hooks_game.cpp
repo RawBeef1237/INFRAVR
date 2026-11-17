@@ -2005,6 +2005,21 @@ void HeldNoCollide(uint32_t handle)
 
 void IVR_FASTCALL GrabDetachDetour(void *self, void *edx, bool clearVelocity)
 {
+    // A grip let go slowly (VRMod::ReleaseSpeed under throw_speed): set the object down. Otherwise
+    // DetachEntity keeps the velocity the physics controller last gave it, which flung objects being
+    // set down whenever the controller had just pushed them hard (a frame hitch, a tracking jump, the
+    // hand opening) - CPlayerPickupController::Shutdown only clears it for an object touching something.
+    if (g_Mod.gentleReleaseUntil > 0)
+    {
+        if (!clearVelocity && NowSeconds() < g_Mod.gentleReleaseUntil)
+        {
+            clearVelocity = true;
+            static int s_logs = 0;
+            if (s_logs++ < 20)
+                IVR_LOG("Held object: let go slowly - set down without the physics controller's velocity");
+        }
+        g_Mod.gentleReleaseUntil = -1.0;
+    }
     hkGrabDetach.original(self, edx, clearVelocity);
     // INFRA's DetachEntity can refuse while the player has its flag +0x139e set (the same refusal the
     // second hand ran into): the object stays in the physics motion controller. Its only direct
@@ -2198,11 +2213,12 @@ bool SecondHoldReady()
 // code. Without the player it always takes the path that frees the object and destroys the motion
 // controller (m_controller +0x2084), which is checked.
 constexpr size_t kGrabController = 0x2084;
-bool SecondDetach(SecondHold &s)
+// clearVelocity: set down (DetachEntity clears its velocity) rather than keep the swing of a throw.
+bool SecondDetach(SecondHold &s, bool clearVelocity)
 {
     uint32_t *player = reinterpret_cast<uint32_t *>(s.grab + kGrabPlayerHandle);
     *player = 0xFFFFFFFFu;
-    hkGrabDetach.original(s.grab, nullptr, false);
+    hkGrabDetach.original(s.grab, nullptr, clearVelocity);
     const bool done = *reinterpret_cast<uint32_t *>(s.grab + kGrabAttachedEntity) == 0xFFFFFFFFu &&
                       *reinterpret_cast<void **>(s.grab + kGrabController) == nullptr;
     if (!done)
@@ -2215,7 +2231,7 @@ void SecondLetGo(bool thrown, const char *why)
 {
     SecondHold &s = *g_second;
     void *ent = ServerEntity(s.handle);
-    if (s.attached && !SecondDetach(s))
+    if (s.attached && !SecondDetach(s, !thrown))
     {
         s.releasing = true; // keep it until the controller is gone; never reuse the grab before
         s.releaseThrown = thrown;
@@ -2499,7 +2515,10 @@ void SecondHoldFrame()
         return;
     }
     if (s.attached && (rel || !g_Mod.Active() || g_Mod.menuMode || !g_Mod.HandValid(s.hand)))
-        SecondLetGo(speed > 2.5f, rel ? (speed > 2.5f ? "thrown" : "dropped") : "hand lost");
+    {
+        const bool thrown = rel && speed > g_Config.throwSpeed;
+        SecondLetGo(thrown, rel ? (thrown ? "thrown" : "set down") : "hand lost");
+    }
     if (s.attached && handoff >= 0 && handoff != s.hand && g_Mod.HandValid(handoff))
     {
         // Passed to the other hand: keep the way it is turned now, relative to that hand.

@@ -176,6 +176,7 @@ void LoadConfig()
     }
     c.holdOffset = ini.GetFloat("aim.hold_offset", c.holdOffset);
     c.handoffRadius = ini.GetFloat("aim.handoff_radius", c.handoffRadius);
+    c.throwSpeed = std::max(0.0f, ini.GetFloat("aim.throw_speed", c.throwSpeed));
     c.grabReach = ini.GetFloat("aim.grab_reach", c.grabReach);
     c.heldNoCollide = ini.GetBool("aim.held_no_collide", c.heldNoCollide);
     c.twoHandHold = ini.GetBool("aim.two_hand_hold", c.twoHandHold);

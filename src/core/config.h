@@ -114,6 +114,10 @@ struct Config
     int holdRotation = HoldUpright;
     float holdOffset = 0.04f; // metres in front of the controller where the held point sits
     float handoffRadius = 0.30f; // grip with the other hand this close (metres) to take a held object
+    // Letting go of a held object with the hand slower than this (metres per second, measured over the
+    // last tenth of a second before letting go) sets it down: its velocity is cleared, so a hitch, a
+    // tracking jump or the hand opening cannot fling it. Faster keeps the object's swing (a throw).
+    float throwSpeed = 1.2f;
     bool heldNoCollide = true;
     bool twoHandHold = true;   // a second physics object in the other hand
     bool keepHeldOutOfCamera = false; // the game pushes a held object away from the view (off: it follows the hand)
