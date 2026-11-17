@@ -57,8 +57,7 @@ struct Config
     float hudDistance = 1.2f, hudWidth = 1.0f, hudDown = 0.10f;
     float menuDistance = 2.2f, menuWidth = 2.4f;
     // Subtitles (INFRA's close captions) on a panel of their own, head-locked below your view, so
-    // they show in normal play and not only on the phone menu. Only with hud_mode = overlay and the
-    // OpenVR backend. The panel is cut out of the in-game HUD: region is left top right bottom in
+    // they show in normal play and not only on the phone menu. Only with hud_mode = overlay. The panel is cut out of the in-game HUD: region is left top right bottom in
     // HudLayout.res units (x from the screen centre, y from the top, 480 = screen height).
     bool subtitles = true;
     float subtitlesDistance = 1.4f, subtitlesWidth = 1.0f, subtitlesDown = 0.40f;

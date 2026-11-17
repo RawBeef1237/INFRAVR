@@ -214,9 +214,10 @@ private:
         XrImage img;
         XrCopier copier;
         UINT w = 0, h = 0;
-    } m_xrPanels[2];
+    } m_xrPanels[3]; // menu, HUD, subtitles
     bool m_xrFailed = false;
-    uint32_t m_xrBusy = 0, m_xrNoSlot = 0, m_xrLastSubmits = 0; // eye pairs not sent (pacing log)
+    bool m_lastHudOn = false; // OpenXR: HUD panel shown with the last eye pair
+    uint32_t m_xrBusy = 0, m_xrNoSlot = 0, m_xrReused = 0, m_xrLastSubmits = 0; // eye pairs not sent (pacing log)
     double m_xrStatsAt = 0;
     bool m_xrTrusted = false;               // the crash-sticky flag has been cleared
     int m_xrInit = 0;                       // 0 not tried, 1 ready, -1 failed
