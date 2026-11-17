@@ -1,6 +1,7 @@
 // INFRA VR - Source engine detours: stereo rendering, input, viewmodel, camera lens,
 // flashlight and the server-side grab controller.
 #include "config.h"
+#include "cpu_usage.h"
 #include "glb_model.h"
 #include "hands_renderer.h"
 #include "flags.h"
@@ -19,6 +20,7 @@
 
 namespace ivr {
 void Defer(std::function<void()> fn);
+volatile LONG g_deferredRuns = 0; // queued calls the render thread has run (multicore diagnostics)
 
 namespace {
 
@@ -146,6 +148,7 @@ void *IVR_FASTCALL QcDestroy(QueuedCall *self, void *, int flags)
 }
 void IVR_FASTCALL QcCall(QueuedCall *self, void *)
 {
+    InterlockedIncrement(&g_deferredRuns);
     if (self->fn)
         self->fn();
 }
@@ -180,16 +183,93 @@ void Defer(std::function<void()> fn)
 
 namespace {
 
+// The game's video options write mat_queue_mode (-1 = multicore on, 0 = off). Anything other than
+// the value the mod last set means the option (or the console) changed it.
+double g_watchNext = 0;
+
+void WatchMulticoreOption()
+{
+    double now = NowSeconds();
+    if (now < g_watchNext)
+        return;
+    g_watchNext = now + 0.5;
+    std::string v = g_Game.ConVarString("mat_queue_mode");
+    if (v.empty())
+        return;
+    int mode = atoi(v.c_str());
+    if (mode == g_Game.queueMode)
+        return;
+    bool on = mode != 0;
+    if (on != g_Game.multicoreOption)
+        g_Game.SetMulticoreOption(on, "changed in the game's video options");
+    // Put back what the mod needs right now (0 in menus); UpdateQueueMode switches to 2 in a level.
+    g_Game.ExecuteCommand(g_Game.queueMode == 2 ? "mat_queue_mode 2" : "mat_queue_mode 0");
+    g_watchNext = now + 1.0; // give the command time to land before looking again
+}
+
+// The engine allows the queued material system only at the moment a level is fully connected, and
+// only if mat_queue_mode is non-zero right then. The mod holds mat_queue_mode 0 through loads, so
+// it has to allow threading itself, or mat_queue_mode 2 is ignored (CMaterialSystem::EndFrame
+// stays single threaded while its "allow queued rendering" flag is off). AllowThreading only sets
+// that flag and the ideal mode; the switch itself happens at the material system's next EndFrame.
+constexpr const char *kMulticoreFlag = "multicore";
+double g_multicoreSince = 0; // when mat_queue_mode 2 started (crash-sticky trial)
+
+bool AllowEngineThreading()
+{
+    static int state = 0; // 0 unknown, 1 ok, -1 unusable
+    if (state == 0)
+    {
+        state = -1;
+        void *fn = g_Game.materials ? VTable(g_Game.materials)[vidx::AllowThreading] : nullptr;
+        // push ebp; mov ebp,esp; push ebx; push esi; mov esi,ecx; mov bl,[esi+...]
+        static const uint8_t kStart[] = {0x55, 0x8B, 0xEC, 0x53, 0x56, 0x8B, 0xF1, 0x8A, 0x9E};
+        if (!fn || !IsReadable(fn, sizeof(kStart)) || std::memcmp(fn, kStart, sizeof(kStart)) != 0)
+            IVR_ERR("Multicore: CMaterialSystem::AllowThreading (vtable slot %d) does not look as expected - "
+                    "multicore rendering stays off",
+                    vidx::AllowThreading);
+        else if (!flags::Allowed(kMulticoreFlag))
+            IVR_ERR("Multicore: skipped after an earlier crash (see infravr_skip.txt)");
+        else
+            state = 1;
+    }
+    if (state != 1)
+        return false;
+    bool was = VCall<bool, bool, int>(g_Game.materials, vidx::AllowThreading, true, 0);
+    IVR_LOG("Multicore: allowed the queued material system (it was %s)", was ? "allowed" : "not allowed");
+    return true;
+}
+
 // mat_queue_mode 2 only while we are in a level with the eye images made (creating render
-// targets and the menus keep the engine single threaded).
+// targets and the menus keep the engine single threaded), and only if the game's multicore
+// rendering option is on.
 void UpdateQueueMode()
 {
-    int want = (g_Config.multicore && !g_Mod.menuMode && g_D3D.eye[0].Valid() && g_D3D.eye[1].Valid()) ? 2 : 0;
+    WatchMulticoreOption();
+    int want = (g_Game.multicoreOption && !g_Mod.menuMode && g_D3D.eye[0].Valid() && g_D3D.eye[1].Valid()) ? 2 : 0;
+    if (g_multicoreSince > 0 && g_Game.queueMode == 2 && NowSeconds() - g_multicoreSince > 30)
+    {
+        g_multicoreSince = 0;
+        flags::End(kMulticoreFlag); // 30 s threaded without a crash
+    }
     if (want == g_Game.queueMode)
         return;
+    if (want == 2)
+    {
+        static bool failed = false;
+        if (failed || !AllowEngineThreading())
+        {
+            failed = true;
+            return;
+        }
+        if (flags::Begin(kMulticoreFlag) && g_multicoreSince == 0)
+            g_multicoreSince = NowSeconds(); // trial time counts across menu toggles
+    }
     g_Game.queueMode = want;
     g_Game.ExecuteCommand(want == 2 ? "mat_queue_mode 2" : "mat_queue_mode 0");
+    g_watchNext = NowSeconds() + 1.0; // our own change, not the video options
     IVR_LOG("Multicore rendering %s", want == 2 ? "on" : "off");
+    cpu::Restart(); // the next CPU report covers the new mode only
 }
 
 // Stereo once per Present (Black Mesa VR's rule): with mat_queue_mode 0 a second main view before
@@ -197,10 +277,80 @@ void UpdateQueueMode()
 // again and the first pair would never be seen. Later views in the same frame are drawn flat.
 volatile LONG g_stereoSincePresent = 0;
 int g_stereoSkipped = 0;
+CViewSetup g_stereoView{}; // the engine's view the last stereo pair was drawn for
+int g_stereoDraw = 0, g_stereoClear = 0;
 
 } // namespace
 
 void ResetStereoGuard() { InterlockedExchange(&g_stereoSincePresent, 0); }
+
+// Order of render views and Presents around a second main view: a ring of the last events, logged
+// with the events that follow when a second view turns up (the first few times).
+namespace {
+struct SeqEv
+{
+    double t;
+    char kind;
+    int arg;
+    DWORD thread;
+};
+SeqEv g_seq[24];
+unsigned g_seqN = 0;
+int g_seqDumps = 0, g_seqAfter = 0;
+CRITICAL_SECTION *SeqLock()
+{
+    static CRITICAL_SECTION cs;
+    static bool init = (InitializeCriticalSection(&cs), true);
+    (void)init;
+    return &cs;
+}
+const char *SeqName(char k)
+{
+    switch (k)
+    {
+    case 'S': return "3D view";
+    case 'F': return "second view, flat";
+    case 'P': return "Present";
+    case 'A': return "after Present";
+    default: return "?";
+    }
+}
+void SeqLog(const SeqEv &e)
+{
+    IVR_LOG("  seq %.1f ms thread %lu: %s%s", e.t * 1000.0, e.thread, SeqName(e.kind),
+            e.kind == 'P' ? (e.arg == 1 ? " (new 3D view)" : e.arg == 2 ? " (no new view: last one kept)" : " (no view)")
+                          : "");
+}
+} // namespace
+
+void SeqEvent(char kind, int arg)
+{
+    if (g_seqDumps >= 3 && !g_seqAfter)
+        return;
+    EnterCriticalSection(SeqLock());
+    SeqEv e{NowSeconds(), kind, arg, GetCurrentThreadId()};
+    if (g_seqAfter > 0)
+    {
+        SeqLog(e);
+        if (--g_seqAfter == 0)
+            IVR_LOG("  seq: end");
+    }
+    else if (kind == 'F' && g_seqDumps < 3)
+    {
+        ++g_seqDumps;
+        IVR_LOG("Second main view: the events before it, and after");
+        unsigned n = g_seqN < 24 ? g_seqN : 24;
+        for (unsigned i = g_seqN - n; i != g_seqN; ++i)
+            SeqLog(g_seq[i % 24]);
+        SeqLog(e);
+        g_seqAfter = 12;
+    }
+    g_seq[g_seqN++ % 24] = e;
+    LeaveCriticalSection(SeqLock());
+}
+
+// Flat main-sized views since the last stats line: [0] not the main view, [1] a second view before Present.
+volatile LONG g_flatViews[2] = {};
 
 namespace {
 
@@ -496,16 +646,46 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
             g_Mod.OnFrame();
         g_Mod.OnSafePoint(); // queued console commands
         UpdateQueueMode();
+        cpu::NoteProcessor(cpu::MainThread);
+        if (!g_Mod.menuMode)
+            cpu::Report(g_Game.queueMode, g_Game.multicoreOption, RenderQueue() != nullptr, g_Game.mainThread,
+                        g_Game.presentThread);
+    }
+    if (g_renderDepth == 0 && g_Mod.Active() && !g_Mod.menuMode && !IsMainView(view))
+    {
+        // Not counted as the player's view: drawn flat. Logged so a flat view that should have been
+        // the 3D one (the desktop then shows it between 3D frames) can be found.
+        InterlockedIncrement(&g_flatViews[0]);
+        static int s_logged = 0;
+        if (s_logged < 5)
+        {
+            ++s_logged;
+            int bw = 0, bh = 0;
+            g_Game.BackBufferSize(bw, bh);
+            IVR_LOG("A view that is not the main one, drawn flat: %d,%d %dx%d (window %dx%d)", view->x, view->y,
+                    view->width, view->height, bw, bh);
+        }
     }
     if (g_renderDepth > 0 || !g_Mod.Active() || g_Mod.menuMode || !IsMainView(view) || !EnsureTextures())
         return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);
     if (g_Game.queueMode == 0 && g_stereoSincePresent > 0)
     {
-        if (g_stereoSkipped++ < 5)
-            IVR_LOG("A second main view before Present - drawn flat (stereo once per Present)");
+        InterlockedIncrement(&g_flatViews[1]);
+        SeqEvent('F', 0);
+        if (g_stereoSkipped++ < 12)
+            IVR_LOG("A second main view before Present - drawn flat (stereo once per Present): this one at "
+                    "(%.0f %.0f %.0f) fov %.1f draw 0x%x clear 0x%x %dx%d; the 3D one at (%.0f %.0f %.0f) fov %.1f "
+                    "draw 0x%x clear 0x%x",
+                    view->origin.x, view->origin.y, view->origin.z, view->fov, whatToDraw, clearFlags, view->width,
+                    view->height, g_stereoView.origin.x, g_stereoView.origin.y, g_stereoView.origin.z,
+                    g_stereoView.fov, g_stereoDraw, g_stereoClear);
         return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);
     }
+    SeqEvent('S', 0);
     InterlockedIncrement(&g_stereoSincePresent);
+    g_stereoView = *view;
+    g_stereoDraw = whatToDraw;
+    g_stereoClear = clearFlags;
 
     ++g_renderDepth;
     g_engineView = *view;
@@ -651,7 +831,9 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
             PaintHud(hudView, PAINT_INGAMEPANELS);
     }
     vr::HmdMatrix34_t pose = g_VR.Head().raw; // what this frame was drawn for
-    Defer([hud, subs, pose] {
+    VRMod::PhonePanel phone = g_Mod.FramePhonePanel(); // where this frame's phone screen is
+    Defer([hud, subs, pose, phone] {
+        g_Mod.framePhone = phone;
         g_Mod.subsPainted = subs;
         g_D3D.SetRenderPose(pose);
         world::OnStereoFrame();

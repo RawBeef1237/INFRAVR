@@ -15,8 +15,10 @@
 namespace ivrxr {
 
 constexpr uint32_t kMagic = 0x52585649; // "IVXR"
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;              // 2: extraLayers (subtitle panel)
 constexpr int kLayers = 4;              // menu screen, HUD/phone panel, pointer dot, pointer beam
+constexpr int kExtraLayers = 2;         // appended in version 2 (subtitle panel, one spare)
+constexpr int kAllLayers = kLayers + kExtraLayers;
 constexpr uint32_t kRawBytes = 64 * 1024; // pixels of a small overlay (RGBA8)
 constexpr int kEyeSlots = 3;              // eye image pairs in flight
 
@@ -105,6 +107,13 @@ struct alignas(8) Shared
     volatile uint32_t eyesVisible; // 0 while the game shows a flat menu: no projection layer
     uint32_t perEyeFov;            // 1: each eye was drawn with renderFovEye[eye], not renderFov
     float renderFovEye[2][4];      // per eye: tan left, right, up, down
+    // ---- version 2 ----------------------------------------------------------------------------
+    Layer extraLayers[kExtraLayers]; // layers kLayers.. (LayerAt)
+    uint8_t extraRaw[kExtraLayers][kRawBytes];
 };
+
+// Layer i of all kAllLayers (the first kLayers live in layers[], the rest in extraLayers[]).
+inline Layer &LayerAt(Shared &s, int i) { return i < kLayers ? s.layers[i] : s.extraLayers[i - kLayers]; }
+inline uint8_t *RawAt(Shared &s, int i) { return i < kLayers ? s.raw[i] : s.extraRaw[i - kLayers]; }
 
 } // namespace ivrxr

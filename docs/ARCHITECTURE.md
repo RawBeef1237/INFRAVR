@@ -61,6 +61,13 @@ With multicore (`mat_queue_mode 2`), `Present` runs on the render thread: poses 
 read at the start of `RenderView` on the main thread instead, and D3D work the hooks need is
 queued with `Defer` so it runs in order with the engine's own commands.
 
+Multicore is switched by the game's own "multicore rendering" video option, not the ini: the mod
+keeps `mat_queue_mode 0` in menus and loads, reads any other value the options write as the option
+changing, remembers it in `infravr\infravr_multicore.txt` and sets `mat_queue_mode 2` in levels
+while it is on. `src/core/cpu_usage.cpp` writes a `CPU:` line to the log every 15 s in a level
+(per-thread CPU time, the processors the main and render threads ran on) to show whether the work
+really spreads over more than one core.
+
 ## Eye-size engine buffers (`world_at_eye_size`)
 
 INFRA sizes its full-frame buffers from `CMaterialSystem::GetBackBufferDimensions`, i.e. the

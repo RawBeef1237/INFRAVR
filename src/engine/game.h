@@ -124,6 +124,9 @@ constexpr int BeginRenderTargetAllocation = 91;
 constexpr int EndRenderTargetAllocation = 92;
 constexpr int CreateNamedRenderTargetTextureEx = 96;
 constexpr int GetRenderContext = 112;
+// bool AllowThreading(bool allow, int serviceThread): the engine calls it with true only once a level
+// is fully connected AND mat_queue_mode is non-zero then; without it mat_queue_mode 2 does nothing.
+constexpr int AllowThreading = 134;
 constexpr int FindMaterial = 81; // IMaterial* (const char *name, const char *group, bool complain, const char *prefix)
 // IMaterial / IMaterialVar
 constexpr int MAT_GetName = 0;
@@ -272,6 +275,12 @@ struct Game
     // and the thread that calls Present, which is the material system's render thread then.
     volatile DWORD mainThread = 0, presentThread = 0;
     mutable int queueMode = 0; // the mat_queue_mode we last asked for
+    // The game's own "multicore rendering" option (Options > Video > Advanced, which sets
+    // mat_queue_mode -1 or 0). The mod keeps mat_queue_mode 0 in menus and during loads and turns
+    // it to 2 in levels only while this is on. It is remembered in infravr\infravr_multicore.txt,
+    // because the game saves mat_queue_mode as the mod last set it (0 in the menu you quit from).
+    mutable bool multicoreOption = false;
+    void SetMulticoreOption(bool on, const char *why) const;
 
     bool Init();
     void FindScreenClicker();

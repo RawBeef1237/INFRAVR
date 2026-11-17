@@ -4,6 +4,8 @@
 #include "config.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 
@@ -485,11 +487,45 @@ void Game::UnlockConVar(const char *name) const
     }
 }
 
+namespace {
+std::string MulticoreFile() { return ModDir() + "infravr_multicore.txt"; }
+} // namespace
+
+void Game::SetMulticoreOption(bool on, const char *why) const
+{
+    multicoreOption = on;
+    IVR_LOG("Multicore rendering option %s (%s)", on ? "on" : "off", why);
+    if (FILE *f = fopen(MulticoreFile().c_str(), "w"))
+    {
+        fprintf(f, "%d\n; INFRA's \"multicore rendering\" video option as last seen by INFRA VR. Change it in\n"
+                   "; the game's Options > Video > Advanced, not here.\n",
+                on ? 1 : 0);
+        fclose(f);
+    }
+}
+
 void Game::ApplyVRSettings() const
 {
-    IVR_LOG("ConVar mat_queue_mode was \"%s\"", ConVarString("mat_queue_mode").c_str());
-    // mat_queue_mode 0 is queued by the caller (console commands only run at a safe point);
-    // [vr] multicore switches to 2 once the eye images exist.
+    std::string mqm = ConVarString("mat_queue_mode");
+    IVR_LOG("ConVar mat_queue_mode was \"%s\"", mqm.c_str());
+    // The game's multicore option: on if the game starts with it on, or if it was on when the mod
+    // last saw it (the mod itself leaves mat_queue_mode 0 behind in the menu).
+    int saved = -1;
+    if (FILE *f = fopen(MulticoreFile().c_str(), "r"))
+    {
+        if (fscanf(f, "%d", &saved) != 1)
+            saved = -1;
+        fclose(f);
+    }
+    bool gameOn = !mqm.empty() && atoi(mqm.c_str()) != 0;
+    if (gameOn)
+        SetMulticoreOption(true, "set in the game's video options");
+    else if (saved == 1)
+        SetMulticoreOption(true, "remembered from the last session");
+    else
+        SetMulticoreOption(false, "set in the game's video options");
+    // mat_queue_mode 0 is queued by the caller (console commands only run at a safe point); it
+    // switches to 2 in levels once the eye images exist, if the multicore option is on.
     queueMode = 0;
     bool postOk = world::Active() || g_Config.renderFitWindow;
     if (g_Config.postProcessing && !postOk)

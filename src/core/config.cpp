@@ -107,6 +107,7 @@ void LoadConfig()
     Config &c = g_Config;
     c.worldScale = ini.GetFloat("vr.world_scale", c.worldScale);
     c.renderScale = ini.GetFloat("vr.render_scale", c.renderScale);
+    c.maxEyeMegapixels = ini.GetFloat("vr.max_eye_megapixels", c.maxEyeMegapixels);
     c.zNear = ini.GetFloat("vr.znear", c.zNear);
     c.leftHanded = ini.GetBool("vr.left_handed", c.leftHanded);
     c.mirrorToDesktop = ini.GetBool("vr.mirror_to_desktop", c.mirrorToDesktop);
@@ -117,7 +118,6 @@ void LoadConfig()
     c.clearStencil = ini.GetBool("vr.clear_stencil", c.clearStencil);
     if (c.antialiasing != 2 && c.antialiasing != 4 && c.antialiasing != 8)
         c.antialiasing = 0;
-    c.multicore = ini.GetBool("vr.multicore", c.multicore);
     c.dxvk = Lower(ini.GetString("vr.dxvk", c.dxvk));
     c.backend = Lower(ini.GetString("vr.backend", c.backend));
     c.worldAtEyeSize = ini.GetBool("vr.world_at_eye_size", c.worldAtEyeSize);
@@ -255,6 +255,8 @@ void LoadConfig()
     c.logInput = ini.GetBool("debug.log_input", c.logInput);
     c.probe = ini.GetBool("debug.probe", c.probe);
     c.retrySkipped = ini.GetBool("debug.retry_skipped", c.retrySkipped);
+    c.multicoreExperiment = ini.GetInt("debug.multicore_experiment", c.multicoreExperiment);
+    c.multicorePredictFrames = ini.GetFloat("debug.multicore_predict_frames", c.multicorePredictFrames);
 }
 
 } // namespace ivr

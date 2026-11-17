@@ -123,6 +123,44 @@ void Skip(const char *name, const char *reason)
 void SetStage(const char *stage) { g_stage = stage; }
 const char *Stage() { return g_stage; }
 
+// The crash address alone names only the module (e.g. vrclient.dll), not which of the mod's calls led
+// there. Return addresses that point into this DLL sit on the crashing thread's stack: list them as
+// offsets into d3d9.dll, so they can be looked up in the build's link map.
+static void LogCrashStack(EXCEPTION_POINTERS *ep)
+{
+#if defined(_M_IX86) || defined(__i386__)
+    if (!ep->ContextRecord)
+        return;
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(&LogCrashStack), &self))
+        return;
+    const uint8_t *base = reinterpret_cast<const uint8_t *>(self);
+    const IMAGE_NT_HEADERS *nt =
+        reinterpret_cast<const IMAGE_NT_HEADERS *>(base + reinterpret_cast<const IMAGE_DOS_HEADER *>(base)->e_lfanew);
+    uintptr_t lo = (uintptr_t)base, hi = lo + nt->OptionalHeader.SizeOfImage;
+    const NT_TIB *tib = reinterpret_cast<const NT_TIB *>(NtCurrentTeb());
+    uintptr_t sp = (uintptr_t)ep->ContextRecord->Esp, top = (uintptr_t)tib->StackBase;
+    if (sp < (uintptr_t)tib->StackLimit || sp >= top)
+        return;
+    char line[512];
+    int len = snprintf(line, sizeof(line), "Crash stack (thread %lu): d3d9.dll return addresses", GetCurrentThreadId());
+    int found = 0;
+    for (uintptr_t p = sp; p + 4 <= top && p < sp + 16384 && found < 24; p += 4)
+    {
+        uintptr_t v = *reinterpret_cast<const uintptr_t *>(p);
+        if (v <= lo || v >= hi)
+            continue;
+        ++found;
+        if (len < (int)sizeof(line) - 16)
+            len += snprintf(line + len, sizeof(line) - len, " +0x%lx", (unsigned long)(v - lo));
+    }
+    IVR_ERR("%s%s", line, found ? "" : " (none)");
+#else
+    (void)ep;
+#endif
+}
+
 static LONG WINAPI CrashFilter(EXCEPTION_POINTERS *ep)
 {
     static volatile LONG s_once = 0;
@@ -139,6 +177,7 @@ static LONG WINAPI CrashFilter(EXCEPTION_POINTERS *ep)
                 (unsigned long)ep->ExceptionRecord->ExceptionCode, addr, name,
                 mod ? (unsigned long)(static_cast<uint8_t *>(addr) - reinterpret_cast<uint8_t *>(mod)) : 0ul,
                 g_stage);
+        LogCrashStack(ep);
     }
     return g_prevFilter ? g_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
 }

@@ -127,6 +127,19 @@ void VrRuntime::SetProjection(const float l[2], const float r[2], const float t[
     float growY = (2.0f * tanY) / std::max(0.1f, (b[0] - t[0]));
     renderWidth = (uint32_t)std::lround(recW * growX * g_Config.renderScale) & ~1u;
     renderHeight = (uint32_t)std::lround(recH * growY * g_Config.renderScale) & ~1u;
+    // Cap the eye size: eyes above about 8 MP lost the GPU device as the first level loaded, on
+    // PSVR2 and on Quest 3 alike (see max_eye_megapixels in config.h).
+    double pixels = (double)renderWidth * renderHeight;
+    double cap = (double)g_Config.maxEyeMegapixels * 1e6;
+    if (cap > 0 && pixels > cap)
+    {
+        double s = std::sqrt(cap / pixels);
+        uint32_t w = (uint32_t)(renderWidth * s) & ~1u, h = (uint32_t)(renderHeight * s) & ~1u;
+        IVR_LOG("Projection: %ux%u (%.1f MP) is over max_eye_megapixels %.1f - rendering %ux%u instead",
+                renderWidth, renderHeight, pixels / 1e6, g_Config.maxEyeMegapixels, w, h);
+        renderWidth = w;
+        renderHeight = h;
+    }
     renderWidth = std::min<uint32_t>(std::max<uint32_t>(renderWidth, 256), 8192);
     renderHeight = std::min<uint32_t>(std::max<uint32_t>(renderHeight, 256), 8192);
 
@@ -246,9 +259,77 @@ void VrRuntime::WaitPoses()
         return;
     m_compositor->WaitGetPoses(m_poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
     m_havePoses = true;
+    m_handsRelative = false;
     const vr::TrackedDevicePose_t &hmd = m_poses[vr::k_unTrackedDeviceIndex_Hmd];
     if (hmd.bPoseIsValid)
         m_head = ConvertPose(hmd.mDeviceToAbsoluteTracking);
+}
+
+void VrRuntime::LatestPoses()
+{
+    if (m_backend == Backend::OpenXR || !Ok())
+        return;
+    vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount];
+    m_compositor->GetLastPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+    std::memcpy(m_poses, poses, sizeof(poses));
+    m_havePoses = true;
+    const vr::TrackedDevicePose_t &hmd = m_poses[vr::k_unTrackedDeviceIndex_Hmd];
+    if (hmd.bPoseIsValid)
+        m_head = ConvertPose(hmd.mDeviceToAbsoluteTracking);
+}
+
+void VrRuntime::WaitPosesDeferred()
+{
+    if (m_backend == Backend::OpenXR || !Ok())
+        return;
+    vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount];
+    m_compositor->WaitGetPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+    m_havePoses = true;
+}
+
+void VrRuntime::SampleFramePoses()
+{
+    if (m_backend == Backend::OpenXR || !Ok() || !m_system)
+        return;
+    if (m_frameDuration <= 0)
+    {
+        float hz = m_system->GetFloatTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd,
+                                                           vr::Prop_DisplayFrequency_Float);
+        m_frameDuration = hz > 1.0f ? 1.0f / hz : 1.0f / 90.0f;
+        m_vsyncToPhotons = m_system->GetFloatTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd,
+                                                                   vr::Prop_SecondsFromVsyncToPhotons_Float);
+        IVR_LOG("Multicore poses: display %.1f Hz, vsync to photons %.1f ms, predicted %.2f frames ahead",
+                1.0f / m_frameDuration, m_vsyncToPhotons * 1000.0f, g_Config.multicorePredictFrames);
+    }
+    float sinceVsync = 0;
+    m_system->GetTimeSinceLastVsync(&sinceVsync, nullptr);
+    // Shown at the next vsync after the render thread submits it; [debug] multicore_predict_frames
+    // (default 1, as single-threaded) says how many frame intervals that is from now.
+    float predict = g_Config.multicorePredictFrames * m_frameDuration - sinceVsync + m_vsyncToPhotons;
+    if (predict < 0)
+        predict = 0;
+    vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount];
+    m_system->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding, predict, poses,
+                                              vr::k_unMaxTrackedDeviceCount);
+    std::memcpy(m_poses, poses, sizeof(poses));
+    const vr::TrackedDevicePose_t &hmd = m_poses[vr::k_unTrackedDeviceIndex_Hmd];
+    if (hmd.bPoseIsValid)
+        m_head = ConvertPose(hmd.mDeviceToAbsoluteTracking);
+    m_handsRelative = true;
+    m_handPredict = predict;
+}
+
+bool VrRuntime::ControllerDevicePose(int hand, vr::HmdMatrix34_t &out, uint32_t &device) const
+{
+    if (m_backend == Backend::OpenXR || !Ok() || !m_system)
+        return false;
+    vr::TrackedDeviceIndex_t idx = m_system->GetTrackedDeviceIndexForControllerRole(
+        hand == HAND_LEFT ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand);
+    if (idx >= vr::k_unMaxTrackedDeviceCount || !m_poses[idx].bPoseIsValid)
+        return false;
+    out = m_poses[idx].mDeviceToAbsoluteTracking;
+    device = idx;
+    return true;
 }
 
 void VrRuntime::ReadAction(DigitalAction &a)
@@ -286,8 +367,13 @@ void VrRuntime::ReadHandPose(int hand)
     TrackedPose &out = m_hands[hand];
     vr::InputPoseActionData_t pd{};
     if (m_inputOk && m_poseAction[hand] != vr::k_ulInvalidActionHandle &&
-        m_vrInput->GetPoseActionDataForNextFrame(m_poseAction[hand], vr::TrackingUniverseStanding, &pd, sizeof(pd),
-                                                 vr::k_ulInvalidInputValueHandle) == vr::VRInputError_None &&
+        (m_handsRelative
+             ? m_vrInput->GetPoseActionDataRelativeToNow(m_poseAction[hand], vr::TrackingUniverseStanding,
+                                                         m_handPredict, &pd, sizeof(pd),
+                                                         vr::k_ulInvalidInputValueHandle)
+             : m_vrInput->GetPoseActionDataForNextFrame(m_poseAction[hand], vr::TrackingUniverseStanding, &pd,
+                                                        sizeof(pd), vr::k_ulInvalidInputValueHandle)) ==
+            vr::VRInputError_None &&
         pd.bActive && pd.pose.bPoseIsValid)
     {
         out = ConvertPose(pd.pose.mDeviceToAbsoluteTracking);

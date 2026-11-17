@@ -21,6 +21,14 @@ public:
     virtual void SetOverlayTransformAbsolute(vr::VROverlayHandle_t h, const vr::HmdMatrix34_t &xf) = 0;
     // Placement relative to the headset.
     virtual void SetOverlayTransformHeadRelative(vr::VROverlayHandle_t h, const vr::HmdMatrix34_t &xf) = 0;
+    // Placement relative to a tracked device (OpenVR only; SteamVR moves it with the device).
+    virtual void SetOverlayTransformDeviceRelative(vr::VROverlayHandle_t h, uint32_t device,
+                                                   const vr::HmdMatrix34_t &xf)
+    {
+        (void)h;
+        (void)device;
+        (void)xf;
+    }
     virtual void ShowOverlay(vr::VROverlayHandle_t h) = 0;
     virtual void HideOverlay(vr::VROverlayHandle_t h) = 0;
     // Picture of the panel. OpenVR takes a Vulkan texture, OpenXR a shared D3D texture handle.

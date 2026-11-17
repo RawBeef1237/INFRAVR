@@ -123,6 +123,23 @@ public:
     vr::VROverlayHandle_t cursorOverlay = vr::k_ulOverlayHandleInvalid; // dot where the pointer hits the menu
     vr::VROverlayHandle_t beamOverlay = vr::k_ulOverlayHandleInvalid;   // short pointer beam from the hand
     void UpdateOverlays(bool showMenu, bool showHud, int menuWidth, int menuHeight);
+    // The phone menu panel on the phone model's screen, worked out on the engine thread when the
+    // frame is drawn (same bones and head as the picture) and handed to Present with that frame.
+    // With multicore rendering Present runs later on another thread, where the live values have
+    // already moved on.
+    struct PhonePanel
+    {
+        bool ok = false;
+        vr::HmdMatrix34_t xf{};
+        float width = 0;
+        // Multicore: the panel relative to the phone hand's controller, so SteamVR keeps it on the
+        // controller at display time (the picture is drawn for that time; the panel would trail).
+        bool relative = false;
+        uint32_t device = 0;
+        vr::HmdMatrix34_t rel{};
+    };
+    PhonePanel FramePhonePanel() const;
+    PhonePanel framePhone; // set by the frame's queued call, read in UpdateOverlays
     // Subtitles on their own head-locked panel (see Config::subtitles).
     vr::VROverlayHandle_t subsOverlay = vr::k_ulOverlayHandleInvalid;
     bool SubtitleLayer() const;

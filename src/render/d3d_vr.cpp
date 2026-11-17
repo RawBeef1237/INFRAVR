@@ -1,6 +1,7 @@
 #include "d3d_vr.h"
 #include "config.h"
 #include "mod.h"
+#include "game.h"
 #include "overlay_api.h"
 #include "world_size.h"
 #include "hands_renderer.h"
@@ -16,6 +17,8 @@
 namespace ivr {
 
 D3DVR g_D3D;
+extern volatile LONG g_flatViews[2]; // hooks_game.cpp
+void SeqEvent(char kind, int arg);   // hooks_game.cpp
 
 // --- VrTexture ---------------------------------------------------------------------------------
 bool VrTexture::Attach(IDirect3DTexture9 *tex, bool takeOwnership)
@@ -975,11 +978,14 @@ void D3DVR::LogCompositorStats()
     {
         double now = NowSeconds();
         if (m_xrStatsAt > 0)
-            IVR_LOG("OpenXR: %.1f eye pairs/s sent to the helper; skipped %u (copy still running), %u (no free slot)",
-                    (m_submits - m_xrLastSubmits) / (now - m_xrStatsAt), m_xrBusy, m_xrNoSlot);
+            IVR_LOG("OpenXR: %.1f eye pairs/s sent to the helper; skipped %u (copy still running), %u (no free slot); "
+                    "%u Presents without a new 3D view kept the last one (flat views: %ld not the main view, "
+                    "%ld second views)",
+                    (m_submits - m_xrLastSubmits) / (now - m_xrStatsAt), m_xrBusy, m_xrNoSlot, m_xrReused,
+                    InterlockedExchange(&g_flatViews[0], 0), InterlockedExchange(&g_flatViews[1], 0));
         m_xrStatsAt = now;
         m_xrLastSubmits = m_submits;
-        m_xrBusy = m_xrNoSlot = 0;
+        m_xrBusy = m_xrNoSlot = m_xrReused = 0;
         return;
     }
     if (!g_VR.UsesSteamVR())
@@ -1094,11 +1100,17 @@ void D3DVR::OnPresent()
 
     bool stereo = g_Mod.eyesRendered && !g_Mod.menuMode && eye[0].Valid() && eye[1].Valid();
     bool hudOn = stereo && g_Mod.hudPainted && hud.Valid() && (!hudBroken || g_Mod.phoneMenu);
-    bool subsOn = stereo && g_Mod.subsPainted && subsRaw.Valid() && !g_VR.IsOpenXR();
+    bool subsOn = stereo && g_Mod.subsPainted && subsRaw.Valid();
     // Phone (pause) menu but no new 3D view this frame: show the last one again, tagged with the
     // head pose it was drawn for, so SteamVR keeps it fixed in the world while you look around.
-    bool reuse = !stereo && g_Mod.phoneMenu && !g_Mod.menuMode && m_haveLastEyes && eye[0].Valid() &&
-                 eye[1].Valid();
+    // OpenXR: the same for any in-game Present without a new 3D view. Before, such a Present hid the
+    // eyes and showed the flat menu panel for that headset frame, so the view flashed between the
+    // 3D world and the flat screen (PSVR2: 0-10% of headset frames).
+    bool reuse = !stereo && (g_Mod.phoneMenu || g_VR.IsOpenXR()) && !g_Mod.menuMode && m_haveLastEyes &&
+                 eye[0].Valid() && eye[1].Valid();
+    if (reuse && !g_Mod.phoneMenu)
+        ++m_xrReused;
+    SeqEvent('P', stereo ? 1 : reuse ? 2 : 0);
     if (g_Mod.phoneMenu)
     {
         ++m_phoneFrames;
@@ -1120,13 +1132,30 @@ void D3DVR::OnPresent()
     g_Mod.eyesRendered = false;
     g_Mod.hudPainted = false;
     g_Mod.subsPainted = false;
+    if (g_Config.multicoreExperiment == 1 && g_Game.queueMode == 2)
+    {
+        // Experiment: no Vulkan access and no Submit while the engine renders on its own thread.
+        if (stereo && g_Config.mirrorToDesktop)
+            MirrorEyeToBackBuffer();
+        static bool s_logged = false;
+        if (!s_logged)
+        {
+            s_logged = true;
+            IVR_LOG("multicore experiment 1: nothing is sent to the headset while multicore runs");
+        }
+        return;
+    }
     if (g_VR.IsOpenXR())
         XrHandOver();
+    // The desktop window: the game drew a flat view (or nothing new) into it this frame. Show the last
+    // 3D view there too, or the window flickers between the flat picture and the headset's view.
+    if (reuse && g_Config.mirrorToDesktop)
+        MirrorEyeToBackBuffer();
     if (reuse && g_VR.IsOpenXR())
     {
         // The helper keeps showing the last eye pair with the pose it was drawn for.
         XrShowEyes(true);
-        g_Mod.UpdateOverlays(false, hud.Valid(), (int)m_bbWidth, (int)m_bbHeight);
+        g_Mod.UpdateOverlays(false, g_Mod.phoneMenu ? hud.Valid() : m_lastHudOn, (int)m_bbWidth, (int)m_bbHeight);
         return;
     }
     if (reuse)
@@ -1182,9 +1211,13 @@ void D3DVR::OnPresent()
             XrPublishEyes(m_lastEyePose);
             if (hudOn)
                 XrPublishPanel(g_Mod.hudOverlay, hud);
+            if (subsOn)
+                XrPublishPanel(g_Mod.subsOverlay, subs);
+            g_Mod.ShowSubtitles(subsOn);
         }
         else
             XrPublishPanel(g_Mod.menuOverlay, menu);
+        m_lastHudOn = stereo && hudOn;
         g_Mod.UpdateOverlays(!stereo, hudOn, (int)m_bbWidth, (int)m_bbHeight);
         return;
     }

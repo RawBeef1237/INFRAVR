@@ -33,6 +33,10 @@ struct Config
     // [vr]
     float worldScale = 1.0f;   // multiplies 39.37 game units per metre
     float renderScale = 1.0f;  // multiplies SteamVR's recommended per-eye resolution
+    // Upper limit for the per-eye render size in megapixels (0 = no limit). Larger eyes lose the GPU
+    // device (VK_ERROR_DEVICE_LOST) on an RTX 4070 SUPER: PSVR2 at 3218x2484 (8.0 MP) and Quest 3 at
+    // 3100x3206 (9.9 MP) both did, while Quest 3 at 2542x2630 and 2564x2634 (6.7 MP) ran fine.
+    float maxEyeMegapixels = 6.5f;
     float zNear = 3.0f;
     bool leftHanded = false;
     bool mirrorToDesktop = true;
@@ -40,8 +44,7 @@ struct Config
     int antialiasing = 4;   // MSAA samples for the eye images: 0 (off), 2, 4 or 8
     bool motionBlur = false;   // keep INFRA's motion blur (smears the image in VR)
     bool clearStencil = true;  // clear the eyes' stencil buffer with their depth buffer (selection glow)
-    bool offCenterEyes = true; // OpenXR: draw each eye with only its own field of view (off-center)
-    bool multicore = false; // let the engine render on its own thread (mat_queue_mode 2)
+    bool offCenterEyes = false; // OpenXR: draw each eye with only its own field of view (off-center)
     std::string dxvk = "stock"; // stock = dxvk_d3d9.dll (DXVK 2.7.1), gplall = dxvk_d3d9_gplall.dll
     // VR runtime: "openvr" (SteamVR, in this process) or "openxr" (the 64-bit infravr_openxr.exe
     // helper talks to the headset's own OpenXR runtime; falls back to OpenVR if it cannot start).
@@ -53,8 +56,7 @@ struct Config
     float hudDistance = 1.2f, hudWidth = 1.0f, hudDown = 0.10f;
     float menuDistance = 2.2f, menuWidth = 2.4f;
     // Subtitles (INFRA's close captions) on a panel of their own, head-locked below your view, so
-    // they show in normal play and not only on the phone menu. Only with hud_mode = overlay and the
-    // OpenVR backend. The panel is cut out of the in-game HUD: region is left top right bottom in
+    // they show in normal play and not only on the phone menu. Only with hud_mode = overlay. The panel is cut out of the in-game HUD: region is left top right bottom in
     // HudLayout.res units (x from the screen centre, y from the top, 480 = screen height).
     bool subtitles = true;
     float subtitlesDistance = 1.4f, subtitlesWidth = 1.0f, subtitlesDown = 0.40f;
@@ -208,6 +210,11 @@ struct Config
     bool logInput = false;
     bool probe = true; // log what the headset images contain every few seconds
     bool retrySkipped = false; // forget infravr_skip.txt and try every mechanism again
+    // Multicore rendering experiments (only while mat_queue_mode 2 runs): 0 = normal,
+    // 1 = send nothing to the headset (no Submit; poses read without waiting).
+    int multicoreExperiment = 0;
+    // Multicore: how many frames ahead the head and hands are predicted (plus vsync to photons).
+    float multicorePredictFrames = 1.0f;
 };
 
 extern Config g_Config;

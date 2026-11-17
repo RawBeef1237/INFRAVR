@@ -44,6 +44,11 @@ public:
         if (Valid(h))
             m_ov->SetOverlayTransformTrackedDeviceRelative(h, vr::k_unTrackedDeviceIndex_Hmd, &xf);
     }
+    void SetOverlayTransformDeviceRelative(vr::VROverlayHandle_t h, uint32_t device, const vr::HmdMatrix34_t &xf) override
+    {
+        if (Valid(h))
+            m_ov->SetOverlayTransformTrackedDeviceRelative(h, device, &xf);
+    }
     void ShowOverlay(vr::VROverlayHandle_t h) override
     {
         if (Valid(h))
@@ -76,12 +81,13 @@ public:
     vr::EVROverlayError CreateOverlay(const char *key, const char *, vr::VROverlayHandle_t *out) override
     {
         ivrxr::Shared *s = m_link ? m_link->shm : nullptr;
-        if (!s || m_used >= ivrxr::kLayers)
+        if (!s || m_used >= ivrxr::kAllLayers)
             return vr::VROverlayError_RequestFailed;
         int i = m_used++;
-        std::memset(&s->layers[i], 0, sizeof(s->layers[i]));
-        s->layers[i].widthMeters = 1.0f;
-        s->layers[i].xf[0][0] = s->layers[i].xf[1][1] = s->layers[i].xf[2][2] = 1.0f;
+        ivrxr::Layer &l = ivrxr::LayerAt(*s, i);
+        std::memset(&l, 0, sizeof(l));
+        l.widthMeters = 1.0f;
+        l.xf[0][0] = l.xf[1][1] = l.xf[2][2] = 1.0f;
         *out = (vr::VROverlayHandle_t)(i + 1);
         IVR_LOG("OpenXR overlay \"%s\" is layer %d", key, i);
         return vr::VROverlayError_None;
@@ -101,7 +107,7 @@ public:
         ivrxr::Layer *l = L(h);
         if (!l || bpp != 4 || (uint64_t)w * hg * 4 > ivrxr::kRawBytes)
             return;
-        std::memcpy(m_link->shm->raw[h - 1], px, (size_t)w * hg * 4);
+        std::memcpy(ivrxr::RawAt(*m_link->shm, (int)h - 1), px, (size_t)w * hg * 4);
         l->kind = ivrxr::LAYER_RAW;
         l->width = w;
         l->height = hg;
@@ -154,7 +160,7 @@ private:
     {
         if (!m_link || !m_link->shm || h == 0 || h > (vr::VROverlayHandle_t)m_used)
             return nullptr;
-        return &m_link->shm->layers[h - 1];
+        return &ivrxr::LayerAt(*m_link->shm, (int)h - 1);
     }
     xr::Link *m_link;
     int m_used = 0;

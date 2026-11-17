@@ -88,6 +88,15 @@ public:
 
     // Per frame -------------------------------------------------------------------------
     void WaitPoses();     // blocks until the compositor wants the next frame
+    void LatestPoses();   // the newest poses without waiting (OpenVR GetLastPoses)
+    // Multicore rendering: the render thread calls WaitGetPoses right after Present (frame pacing);
+    // the engine thread samples head and hands together at the start of its frame, predicted for
+    // when that frame reaches the display (one frame later than single-threaded), so one frame is
+    // drawn and tagged for SteamVR with one consistent set of poses.
+    void WaitPosesDeferred();
+    void SampleFramePoses();
+    // The raw pose of the controller in that hand's role from the last poses read (standing space).
+    bool ControllerDevicePose(int hand, vr::HmdMatrix34_t &out, uint32_t &device) const;
     void UpdateInput();
 
     const TrackedPose &Head() const { return m_head; }
@@ -182,6 +191,9 @@ private:
     void *(__cdecl *m_getGenericInterface)(const char *, vr::EVRInitError *) = nullptr;
 
     vr::TrackedDevicePose_t m_poses[vr::k_unMaxTrackedDeviceCount]{};
+    bool m_handsRelative = false; // hand poses predicted m_handPredict seconds from now
+    float m_handPredict = 0;
+    float m_frameDuration = 0, m_vsyncToPhotons = 0;
     vr::VRActionSetHandle_t m_actionSet = vr::k_ulInvalidActionSetHandle;
     vr::VRActionHandle_t m_poseAction[2]{vr::k_ulInvalidActionHandle, vr::k_ulInvalidActionHandle};
     vr::VRActionHandle_t m_hapticAction[2]{vr::k_ulInvalidActionHandle, vr::k_ulInvalidActionHandle};

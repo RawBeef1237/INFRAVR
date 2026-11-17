@@ -22,7 +22,7 @@ target_include_directories(minhook PUBLIC ${TP}/minhook/include)
 
 set(INFRAVR_MODULE_DIRS src/core src/engine src/render src/vr src/gameplay src/ui)
 set(INFRAVR_SOURCES
-    src/core/log.cpp src/core/config.cpp src/core/flags.cpp
+    src/core/log.cpp src/core/config.cpp src/core/flags.cpp src/core/cpu_usage.cpp
     src/engine/mathlib.cpp src/engine/hooks.cpp src/engine/game.cpp src/engine/hooks_game.cpp
     src/render/d3d9_proxy.cpp src/render/d3d_vr.cpp src/render/xr_publish.cpp src/render/world_size.cpp
     src/render/glb_model.cpp src/render/hands_renderer.cpp src/render/subtitles.cpp

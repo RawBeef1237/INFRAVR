@@ -105,7 +105,7 @@ bool VRMod::Init()
             }
         }
         else if (g_Config.subtitles)
-            IVR_LOG("Subtitles: no panel of their own (needs hud_mode = overlay and the OpenVR backend)");
+            IVR_LOG("Subtitles: no panel of their own (needs hud_mode = overlay)");
     }
     m_active = true;
     return true;
@@ -490,7 +490,14 @@ void VRMod::OnFrame()
     double dt = m_lastFrame > 0 ? std::min(0.1, now - m_lastFrame) : 0.0;
     m_lastFrame = now;
 
-    g_VR.WaitPoses();
+    // Multicore rendering runs Present (and the frame hand-over) on the render thread.
+    bool threaded = g_Game.queueMode == 2 && g_Game.presentThread && g_Game.presentThread != GetCurrentThreadId();
+    if (threaded && g_Config.multicoreExperiment == 1)
+        g_VR.LatestPoses(); // experiment: nothing is submitted, so do not wait for the compositor
+    else if (threaded && !g_VR.IsOpenXR())
+        g_VR.SampleFramePoses(); // head and hands together, for when this frame is shown
+    else
+        g_VR.WaitPoses();
     g_VR.UpdateInput();
 
     const TrackedPose &head = g_VR.Head();
@@ -961,11 +968,11 @@ void VRMod::ProcessGameInput(double now, double dt)
 }
 
 // --- overlays / menus ----------------------------------------------------------------------
-// The subtitle panel needs our own D3D pass and an OpenVR overlay texture: the OpenXR helper
-// has a fixed set of layers (openxr_bridge.h), so there it stays on the HUD panel as before.
+// The subtitle panel needs our own D3D pass and an overlay of its own (with OpenXR one of the
+// helper's extra layers, openxr_bridge.h version 2).
 bool VRMod::SubtitleLayer() const
 {
-    return g_Config.subtitles && g_Config.hudMode == HudMode::Overlay && !g_VR.IsOpenXR() &&
+    return g_Config.subtitles && g_Config.hudMode == HudMode::Overlay &&
            (subsOverlay != vr::k_ulOverlayHandleInvalid || !m_active);
 }
 
@@ -1132,13 +1139,37 @@ bool VRMod::PhoneScreenPanel(float aspect, vr::HmdMatrix34_t &xf, float &width) 
     return true;
 }
 
+VRMod::PhonePanel VRMod::FramePhonePanel() const
+{
+    PhonePanel p;
+    if (phoneMenu && !g_Config.phoneMenuInWorld)
+        p.ok = PhoneScreenPanel(m_phoneAspect, p.xf, p.width);
+    vr::HmdMatrix34_t dev;
+    if (p.ok && g_Game.queueMode == 2 && g_VR.ControllerDevicePose(itemHand, dev, p.device))
+    {
+        // rel = inverse(dev) * xf (rigid transforms: rotation part transposed)
+        for (int r = 0; r < 3; ++r)
+        {
+            for (int c = 0; c < 3; ++c)
+                p.rel.m[r][c] = dev.m[0][r] * p.xf.m[0][c] + dev.m[1][r] * p.xf.m[1][c] + dev.m[2][r] * p.xf.m[2][c];
+            p.rel.m[r][3] = dev.m[0][r] * (p.xf.m[0][3] - dev.m[0][3]) + dev.m[1][r] * (p.xf.m[1][3] - dev.m[1][3]) +
+                            dev.m[2][r] * (p.xf.m[2][3] - dev.m[2][3]);
+        }
+        p.relative = true;
+    }
+    return p;
+}
+
 void VRMod::PlaceHud(bool atHand, float aspect)
 {
     OverlayApi *ov = g_VR.Overlays();
     vr::HmdMatrix34_t screenXf;
     float screenW = 0;
-    if (atHand && PhoneScreenPanel(aspect, screenXf, screenW))
+    (void)aspect; // the frame's panel was fitted with the last known aspect
+    if (atHand && framePhone.ok)
     {
+        screenXf = framePhone.xf;
+        screenW = framePhone.width;
         // On the phone model's screen, wherever INFRA's animation holds it.
         m_phoneXf = screenXf;
         if (!m_hudAtHand || std::fabs(screenW - m_phoneWidth) > 0.001f)
@@ -1147,7 +1178,16 @@ void VRMod::PlaceHud(bool atHand, float aspect)
             ov->SetOverlaySortOrder(hudOverlay, 1);
             m_phoneWidth = screenW;
         }
-        ov->SetOverlayTransformAbsolute(hudOverlay, m_phoneXf);
+        if (framePhone.relative)
+        {
+            ov->SetOverlayTransformDeviceRelative(hudOverlay, framePhone.device, framePhone.rel);
+            static int s_logged = 0;
+            if (s_logged++ % 600 == 0)
+                IVR_LOG("Phone menu panel: on controller %u, offset (%.3f %.3f %.3f) m", framePhone.device,
+                        framePhone.rel.m[0][3], framePhone.rel.m[1][3], framePhone.rel.m[2][3]);
+        }
+        else
+            ov->SetOverlayTransformAbsolute(hudOverlay, m_phoneXf);
         m_hudAtHand = true;
     }
     else if (atHand)

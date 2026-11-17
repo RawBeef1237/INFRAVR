@@ -751,8 +751,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
     g_shm->recommendedHeight = views[0].recommendedImageRectHeight;
 
     Swapchain eyeSc[2];
-    Swapchain layerSc[ivrxr::kLayers];
-    RawTexture raw[ivrxr::kLayers];
+    Swapchain layerSc[ivrxr::kAllLayers];
+    RawTexture raw[ivrxr::kAllLayers];
     bool running = false, haveFov = false;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     uint32_t submitted = 0;
@@ -915,7 +915,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
         XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
         XrCompositionLayerProjectionView pv[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
                                                   {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
-        XrCompositionLayerQuad quads[ivrxr::kLayers];
+        XrCompositionLayerQuad quads[ivrxr::kAllLayers];
         uint32_t seq = g_shm->eyeSeq;
         if (fs.shouldRender && seq && g_shm->eyesVisible)
         {
@@ -986,19 +986,21 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmdLine, int)
             }
         }
         // Quad layers, lowest sort order first.
-        int order[ivrxr::kLayers] = {0, 1, 2, 3};
-        for (int i = 0; i < ivrxr::kLayers; ++i)
-            for (int j = i + 1; j < ivrxr::kLayers; ++j)
-                if (g_shm->layers[order[j]].sortOrder < g_shm->layers[order[i]].sortOrder)
+        int order[ivrxr::kAllLayers];
+        for (int i = 0; i < ivrxr::kAllLayers; ++i)
+            order[i] = i;
+        for (int i = 0; i < ivrxr::kAllLayers; ++i)
+            for (int j = i + 1; j < ivrxr::kAllLayers; ++j)
+                if (ivrxr::LayerAt(*g_shm, order[j]).sortOrder < ivrxr::LayerAt(*g_shm, order[i]).sortOrder)
                     std::swap(order[i], order[j]);
-        for (int k = 0; k < ivrxr::kLayers && fs.shouldRender; ++k)
+        for (int k = 0; k < ivrxr::kAllLayers && fs.shouldRender; ++k)
         {
             int i = order[k];
-            const ivrxr::Layer l = g_shm->layers[i];
+            const ivrxr::Layer l = ivrxr::LayerAt(*g_shm, i);
             if (!l.visible || l.kind == ivrxr::LAYER_NONE || !l.width || !l.height)
                 continue;
             ID3D11Texture2D *src = l.kind == ivrxr::LAYER_SHARED ? OpenShared(l.sharedHandle)
-                                                                 : RawLayerTexture(raw[i], l, g_shm->raw[i]);
+                                                                 : RawLayerTexture(raw[i], l, ivrxr::RawAt(*g_shm, i));
             if (!src)
                 continue;
             if (layerSc[i].width != l.width || layerSc[i].height != l.height)
