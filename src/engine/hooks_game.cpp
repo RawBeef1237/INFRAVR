@@ -197,6 +197,8 @@ void UpdateQueueMode()
 // again and the first pair would never be seen. Later views in the same frame are drawn flat.
 volatile LONG g_stereoSincePresent = 0;
 int g_stereoSkipped = 0;
+CViewSetup g_stereoView{}; // the engine's view the last stereo pair was drawn for
+int g_stereoDraw = 0, g_stereoClear = 0;
 
 } // namespace
 
@@ -520,11 +522,19 @@ void IVR_FASTCALL RenderViewDetour(void *self, void *edx, CViewSetup *view, CVie
     if (g_Game.queueMode == 0 && g_stereoSincePresent > 0)
     {
         InterlockedIncrement(&g_flatViews[1]);
-        if (g_stereoSkipped++ < 5)
-            IVR_LOG("A second main view before Present - drawn flat (stereo once per Present)");
+        if (g_stereoSkipped++ < 12)
+            IVR_LOG("A second main view before Present - drawn flat (stereo once per Present): this one at "
+                    "(%.0f %.0f %.0f) fov %.1f draw 0x%x clear 0x%x %dx%d; the 3D one at (%.0f %.0f %.0f) fov %.1f "
+                    "draw 0x%x clear 0x%x",
+                    view->origin.x, view->origin.y, view->origin.z, view->fov, whatToDraw, clearFlags, view->width,
+                    view->height, g_stereoView.origin.x, g_stereoView.origin.y, g_stereoView.origin.z,
+                    g_stereoView.fov, g_stereoDraw, g_stereoClear);
         return hkRenderView.original(self, edx, view, hudView, clearFlags, whatToDraw);
     }
     InterlockedIncrement(&g_stereoSincePresent);
+    g_stereoView = *view;
+    g_stereoDraw = whatToDraw;
+    g_stereoClear = clearFlags;
 
     ++g_renderDepth;
     g_engineView = *view;

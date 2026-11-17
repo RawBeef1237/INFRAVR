@@ -44,7 +44,7 @@ struct Config
     int antialiasing = 4;   // MSAA samples for the eye images: 0 (off), 2, 4 or 8
     bool motionBlur = false;   // keep INFRA's motion blur (smears the image in VR)
     bool clearStencil = true;  // clear the eyes' stencil buffer with their depth buffer (selection glow)
-    bool offCenterEyes = true; // OpenXR: draw each eye with only its own field of view (off-center)
+    bool offCenterEyes = false; // OpenXR: draw each eye with only its own field of view (off-center)
     bool multicore = false; // let the engine render on its own thread (mat_queue_mode 2)
     std::string dxvk = "stock"; // stock = dxvk_d3d9.dll (DXVK 2.7.1), gplall = dxvk_d3d9_gplall.dll
     // VR runtime: "openvr" (SteamVR, in this process) or "openxr" (the 64-bit infravr_openxr.exe
