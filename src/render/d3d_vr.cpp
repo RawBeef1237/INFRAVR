@@ -17,6 +17,7 @@ namespace ivr {
 
 D3DVR g_D3D;
 extern volatile LONG g_flatViews[2]; // hooks_game.cpp
+void SeqEvent(char kind, int arg);   // hooks_game.cpp
 
 // --- VrTexture ---------------------------------------------------------------------------------
 bool VrTexture::Attach(IDirect3DTexture9 *tex, bool takeOwnership)
@@ -1108,6 +1109,7 @@ void D3DVR::OnPresent()
                  eye[0].Valid() && eye[1].Valid();
     if (reuse && !g_Mod.phoneMenu)
         ++m_xrReused;
+    SeqEvent('P', stereo ? 1 : reuse ? 2 : 0);
     if (g_Mod.phoneMenu)
     {
         ++m_phoneFrames;
