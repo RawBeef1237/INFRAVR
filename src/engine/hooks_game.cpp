@@ -185,6 +185,19 @@ namespace {
 void UpdateQueueMode()
 {
     int want = (g_Config.multicore && !g_Mod.menuMode && g_D3D.eye[0].Valid() && g_D3D.eye[1].Valid()) ? 2 : 0;
+    // The game can put the convar back on its own (level loads, its video options): check now and then.
+    static double s_nextCheck = 0;
+    double now = NowSeconds();
+    if (want == g_Game.queueMode && now > s_nextCheck)
+    {
+        s_nextCheck = now + 2.0;
+        std::string cur = g_Game.ConVarString("mat_queue_mode");
+        if (!cur.empty() && atoi(cur.c_str()) != want)
+        {
+            IVR_LOG("mat_queue_mode is \"%s\" again - setting it back to %d", cur.c_str(), want);
+            g_Game.queueMode = -1;
+        }
+    }
     if (want == g_Game.queueMode)
         return;
     g_Game.queueMode = want;

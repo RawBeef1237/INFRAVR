@@ -488,9 +488,11 @@ void Game::UnlockConVar(const char *name) const
 void Game::ApplyVRSettings() const
 {
     IVR_LOG("ConVar mat_queue_mode was \"%s\"", ConVarString("mat_queue_mode").c_str());
-    // mat_queue_mode 0 is queued by the caller (console commands only run at a safe point);
-    // [vr] multicore switches to 2 once the eye images exist.
-    queueMode = 0;
+    // A level load puts mat_queue_mode back to the game's own setting (-1 = INFRA's "multicore
+    // rendering" option), which used to go unnoticed: the mod kept believing it was 0 and the engine
+    // rendered on its own thread anyway (Presents on other threads, double views, flickering hands).
+    // Unknown here, so UpdateQueueMode sets it again (0, or 2 with [vr] multicore) on the next view.
+    queueMode = -1;
     bool postOk = world::Active() || g_Config.renderFitWindow;
     if (g_Config.postProcessing && !postOk)
         IVR_LOG("Post-processing stays off: the engine's buffers are not at the eye size (world_at_eye_size)");

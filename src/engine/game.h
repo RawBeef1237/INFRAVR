@@ -271,7 +271,7 @@ struct Game
     // Multicore rendering (mat_queue_mode 2): the engine's own thread (CreateMove, RenderView)
     // and the thread that calls Present, which is the material system's render thread then.
     volatile DWORD mainThread = 0, presentThread = 0;
-    mutable int queueMode = 0; // the mat_queue_mode we last asked for
+    mutable int queueMode = -1; // the mat_queue_mode we last asked for (-1: not set since the level loaded)
 
     bool Init();
     void FindScreenClicker();
